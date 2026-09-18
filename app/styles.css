@@ -219,6 +219,15 @@ hr { border: 0; border-top: 1px solid var(--grid); margin: 1.2em 0; }
 .checklist .ok { color: var(--good); }
 .checklist .no { color: var(--muted); }
 
+/* chat */
+.chat-log { display: flex; flex-direction: column; gap: 8px; max-height: 50vh; overflow-y: auto; }
+.chat-msg { padding: 8px 12px; border-radius: 10px; max-width: 85%; }
+.chat-user { align-self: flex-end; background: var(--accent); color: var(--accent-ink); }
+.chat-assistant { align-self: flex-start; background: var(--surface-2); }
+.chat-error { align-self: flex-start; background: var(--bad-bg); color: var(--bad); }
+.chat-role { font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; opacity: 0.7; margin-bottom: 2px; }
+.chat-text { white-space: pre-wrap; word-break: break-word; }
+
 /* review */
 .review-card { margin-bottom: 14px; }
 

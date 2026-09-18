@@ -82,7 +82,7 @@ function renderSidebar(activeId = null) {
     }).join('')}</div>`);
   }
   const due = dueReviews().length;
-  parts.push(`<div class="nav-links"><a href="#/review">Review queue${due ? ` (${due} due)` : ''}</a><a href="#/about">How this lab teaches</a><a href="https://github.com/SumerSG/build-to-understand-llms" target="_blank" rel="noopener">Source</a><a href="#" id="theme-toggle">Theme</a></div>`);
+  parts.push(`<div class="nav-links"><a href="#/review">Review queue${due ? ` (${due} due)` : ''}</a><a href="#/chat">Chat playground</a><a href="#/about">How this lab teaches</a><a href="https://github.com/SumerSG/build-to-understand-llms" target="_blank" rel="noopener">Source</a><a href="#" id="theme-toggle">Theme</a></div>`);
   $sidebar.innerHTML = parts.join('');
   $sidebar.querySelector('#theme-toggle').addEventListener('click', (e) => {
     e.preventDefault();
@@ -602,10 +602,97 @@ function renderReflect(body, id, def) {
   });
 }
 
+
+// ---------- chat playground ----------
+
+let chatWorker = null;
+
+function renderChat() {
+  if (chatWorker) { chatWorker.terminate(); chatWorker = null; }
+  $app.innerHTML = '';
+  $app.appendChild(sidebarButton());
+  const wrap = h(`<div>
+    <h1>Chat playground</h1>
+    <p class="muted" style="max-width:760px">Talk to the lab's own model, running in this page: the BPE tokenizer (module 03), the GPT (module 06) trained by
+    <code>tools/pretrain.mjs</code> (module 07), decoded through a KV cache that is reused across turns (modules 15 and 17) and the sampling pipeline (module 14),
+    wrapped in the chat template from module 10. It is a ~100k-parameter model trained on a toy corpus, so expect corpus-like text, not answers. The point is that
+    every piece of it is something you built.</p>
+    <div class="card" style="max-width:860px">
+      <div class="row small" id="chat-info"><span class="muted">Loading model…</span></div>
+      <div class="row" style="margin-top:8px">
+        <label class="small">temperature <input type="number" id="chat-temp" value="0.8" min="0" max="3" step="0.1" style="width:64px"></label>
+        <label class="small">top-p <input type="number" id="chat-topp" value="0.95" min="0" max="1" step="0.05" style="width:64px"></label>
+        <label class="small">top-k <input type="number" id="chat-topk" value="0" min="0" step="1" style="width:64px"></label>
+        <label class="small">max tokens <input type="number" id="chat-max" value="40" min="1" max="200" step="1" style="width:64px"></label>
+        <span class="spacer"></span>
+        <button class="btn btn-small" id="chat-load" type="button">Load checkpoint JSON…</button>
+        <button class="btn btn-small" id="chat-reset" type="button">New conversation</button>
+      </div>
+    </div>
+    <div class="card chat-log" id="chat-log" style="max-width:860px;min-height:160px"></div>
+    <div class="card" style="max-width:860px">
+      <div class="row"><input type="text" id="chat-input" placeholder="Say something to the model… (the toy corpus is about cats, dogs, and the weather)" style="flex:1;font:inherit;padding:8px 10px;border:1px solid var(--border);border-radius:8px;background:var(--bg);color:var(--ink)">
+      <button class="btn btn-primary" id="chat-send" type="button" disabled>Send</button><button class="btn" id="chat-stop" type="button" disabled>Stop</button></div>
+      <div class="small muted" id="chat-stats" style="margin-top:6px"></div>
+    </div>
+  </div>`);
+  $app.appendChild(wrap);
+  const $log = wrap.querySelector('#chat-log'), $input = wrap.querySelector('#chat-input'), $send = wrap.querySelector('#chat-send');
+  const $stop = wrap.querySelector('#chat-stop'), $stats = wrap.querySelector('#chat-stats'), $info = wrap.querySelector('#chat-info');
+  const messages = [];
+  let busy = false, current = null;
+  function addBubble(role, text) {
+    const b = h(`<div class="chat-msg chat-${role}"><div class="chat-role">${role}</div><div class="chat-text"></div></div>`);
+    b.querySelector('.chat-text').textContent = text;
+    $log.appendChild(b);
+    $log.scrollTop = $log.scrollHeight;
+    return b.querySelector('.chat-text');
+  }
+  function startWorker() {
+    chatWorker = new Worker(new URL('./chat-worker.js', import.meta.url), { type: 'module' });
+    chatWorker.onmessage = (e) => {
+      const m = e.data;
+      if (m.type === 'ready') { $info.innerHTML = `<span>Model: ${m.info.config.nLayer} layers · ${m.info.config.nEmbd} dims · ${m.info.config.nHead} heads · context ${m.info.config.blockSize} · vocab ${m.info.vocab} · <b>${m.info.params.toLocaleString()}</b> parameters</span>`; $send.disabled = false; }
+      else if (m.type === 'prefill') { $stats.textContent = `prompt ${m.promptTokens} tokens, ${m.reusedTokens} reused from the KV cache, prefill ${m.ms.toFixed(0)} ms`; }
+      else if (m.type === 'token') { if (current) { current.textContent += m.text; $log.scrollTop = $log.scrollHeight; } }
+      else if (m.type === 'done') { messages.push({ role: 'assistant', content: m.text }); $stats.textContent += ` · generated ${m.tokens} tokens in ${m.ms.toFixed(0)} ms (${(1000 * m.tokens / Math.max(1, m.ms)).toFixed(1)} tok/s)`; busy = false; current = null; $send.disabled = false; $stop.disabled = true; }
+      else if (m.type === 'note') { $stats.textContent += ` · ${m.text}`; }
+      else if (m.type === 'reset-done') { messages.length = 0; $log.innerHTML = ''; $stats.textContent = ''; }
+      else if (m.type === 'error') { addBubble('error', m.message); busy = false; $send.disabled = false; $stop.disabled = true; }
+    };
+    chatWorker.onerror = (e) => { addBubble('error', e.message || 'worker error'); busy = false; $send.disabled = false; };
+    chatWorker.postMessage({ type: 'init', base: BASE });
+  }
+  function send() {
+    const text = $input.value.trim();
+    if (!text || busy) return;
+    $input.value = '';
+    messages.push({ role: 'user', content: text });
+    addBubble('user', text);
+    current = addBubble('assistant', '');
+    busy = true; $send.disabled = true; $stop.disabled = false;
+    chatWorker.postMessage({ type: 'generate', messages: messages.slice(), opts: {
+      temperature: +wrap.querySelector('#chat-temp').value, topP: +wrap.querySelector('#chat-topp').value,
+      topK: +wrap.querySelector('#chat-topk').value, maxNewTokens: +wrap.querySelector('#chat-max').value, seed: messages.length,
+    } });
+  }
+  $send.addEventListener('click', send);
+  $input.addEventListener('keydown', (e) => { if (e.key === 'Enter') send(); });
+  $stop.addEventListener('click', () => { if (chatWorker) { chatWorker.terminate(); } busy = false; current = null; $stop.disabled = true; $send.disabled = true; $info.innerHTML = '<span class="muted">Restarting model…</span>'; startWorker(); });
+  wrap.querySelector('#chat-reset').addEventListener('click', () => { if (busy) return; chatWorker.postMessage({ type: 'reset' }); });
+  wrap.querySelector('#chat-load').addEventListener('click', () => {
+    const inp = document.createElement('input'); inp.type = 'file'; inp.accept = 'application/json';
+    inp.onchange = async () => { const f = inp.files[0]; if (!f) return; try { const json = JSON.parse(await f.text()); $send.disabled = true; chatWorker.postMessage({ type: 'load', model: json }); messages.length = 0; $log.innerHTML = ''; } catch (e) { addBubble('error', 'Could not load checkpoint: ' + e.message); } };
+    inp.click();
+  });
+  startWorker();
+}
+
 // ---------- router ----------
 
 function route() {
   runner.cancel('navigated');
+  if (chatWorker) { chatWorker.terminate(); chatWorker = null; }
   $sidebar.classList.remove('open');
   const hash = location.hash || '#/';
   const parts = hash.replace(/^#\/?/, '').split('/').filter(Boolean);
@@ -614,6 +701,7 @@ function route() {
   renderSidebar(null);
   if (parts[0] === 'review') return renderReview();
   if (parts[0] === 'about') return renderAbout();
+  if (parts[0] === 'chat') return renderChat();
   renderHome();
 }
 
