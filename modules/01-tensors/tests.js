@@ -22,7 +22,9 @@ export const tests = [
   { step: 'indexing', name: 'transposing twice returns the original and does not mutate the input', run(m, T) {
     const a = m.fromArray([[1, 2], [3, 4], [5, 6]]);
     const before = Array.from(a.data);
-    const tt = m.transpose(m.transpose(a));
+    const once = m.transpose(a);
+    T.shape(once, [2, 3], 'a single transpose of [3,2] must have shape [2,3]');
+    const tt = m.transpose(once);
     T.eq(m.toArray(tt), [[1, 2], [3, 4], [5, 6]]);
     T.eq(Array.from(a.data), before, 'input must not be modified');
   } },
