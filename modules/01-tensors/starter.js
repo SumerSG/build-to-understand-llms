@@ -1,0 +1,115 @@
+// Module 01 — Tensors from scratch.
+// A "raw tensor" is { shape: number[], data: Float32Array }, stored row-major: the last index varies fastest.
+// Everything below the "worked examples" line is yours to implement.
+
+// ---------- worked examples (done for you; read them, they set the conventions) ----------
+
+/** Number of elements in a shape: size([2, 3]) === 6. */
+export function size(shape) {
+  let n = 1;
+  for (const d of shape) n *= d;
+  return n;
+}
+
+/** Create a tensor. `data` defaults to zeros; arrays are converted to Float32Array. */
+export function raw(shape, data) {
+  const n = size(shape);
+  if (data === undefined) data = new Float32Array(n);
+  else if (!(data instanceof Float32Array)) data = Float32Array.from(data);
+  if (data.length !== n) throw new Error(`raw: data length ${data.length} != size(shape) ${n}`);
+  return { shape: shape.slice(), data };
+}
+
+/** Nested JS arrays -> tensor: fromArray([[1, 2], [3, 4]]) has shape [2, 2]. */
+export function fromArray(nested) {
+  const shape = [];
+  let cur = nested;
+  while (Array.isArray(cur)) { shape.push(cur.length); cur = cur[0]; }
+  return raw(shape, nested.flat(Infinity));
+}
+
+/** Tensor -> nested JS arrays (handy for printing and for tests). */
+export function toArray(t) {
+  const { shape, data } = t;
+  let i = 0;
+  const build = (d) => {
+    const out = [];
+    for (let j = 0; j < shape[d]; j++) out.push(d === shape.length - 1 ? data[i++] : build(d + 1));
+    return out;
+  };
+  return shape.length ? build(0) : data[0];
+}
+
+// ---------- step 1: indexing and transpose ----------
+
+/**
+ * Flat offset of a multi-index in a row-major tensor.
+ * offset([2, 3], [1, 2]) === 5   because row 1 starts at 3 and column 2 adds 2.
+ */
+export function offset(shape, indices) {
+  // TODO: step 1
+  return 0;
+}
+
+/** Swap the two axes of a 2-D tensor: [n, m] -> [m, n]. */
+export function transpose(a) {
+  // TODO: step 1
+  return a;
+}
+
+// ---------- step 2: matrix multiply ----------
+
+/** 2-D matrix multiply: [n, k] x [k, m] -> [n, m]. Throw if the inner dimensions differ. */
+export function matmul(a, b) {
+  // TODO: step 2
+  return a;
+}
+
+// ---------- step 3: elementwise ops with broadcasting ----------
+
+/**
+ * Elementwise a + b. `b` may be: a tensor of the same shape, a plain number,
+ * or a 1-D tensor of length a.shape[last] that is broadcast across every row.
+ */
+export function add(a, b) {
+  // TODO: step 3
+  return a;
+}
+
+/** Elementwise a * b, same broadcasting rules as add. */
+export function mul(a, b) {
+  // TODO: step 3
+  return a;
+}
+
+// ---------- step 4: row-wise reductions and softmax ----------
+
+/** Sum along the last axis: [.., d] -> [..]. */
+export function sum(a) {
+  // TODO: step 4
+  return a;
+}
+
+/** Index of the largest value along the last axis, as a plain array of ints. */
+export function argmax(a) {
+  // TODO: step 4
+  return [];
+}
+
+/** Softmax along the last axis. Must be numerically stable for large logits. */
+export function softmax(a) {
+  // TODO: step 4
+  return a;
+}
+
+// ---------- step 5: layer normalisation ----------
+
+/**
+ * LayerNorm along the last axis: normalise each row to mean 0, variance 1 (using the
+ * biased variance, divide by d), then scale by gamma and shift by beta (1-D tensors of length d,
+ * or null for 1 and 0). eps is added to the variance before the square root.
+ */
+export function layerNorm(a, gamma = null, beta = null, eps = 1e-5) {
+  // TODO: step 5
+  return a;
+}
