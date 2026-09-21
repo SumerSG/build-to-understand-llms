@@ -47,10 +47,19 @@ docs/               PEDAGOGY.md, MODULE_FORMAT.md, LIB_API.md
 ## Verify
 
 ```bash
-node tools/verify.mjs                      # every module
+node tools/verify.mjs                      # every module: schema, tests on starter & solution, demo
 node tools/verify.mjs --module 05-attention
 node --test lib/tests/                     # shared library tests
+npm i -D playwright-core && npm run e2e    # drive every module through the real UI in headless Chromium
 ```
+
+## Chat playground
+
+The sidebar's **Chat playground** runs the lab's own model in the page: the BPE tokenizer, the GPT trained
+by `tools/pretrain.mjs`, a KV cache reused across turns, and the sampling pipeline, wrapped in the chat
+template. It is a ~100k-parameter model trained on a toy corpus, so it produces corpus-like text rather than
+answers; the point is that every piece of it is something you built in the modules. You can load a
+checkpoint you trained yourself (module 07 lets you download one).
 
 ## Writing a module
 
