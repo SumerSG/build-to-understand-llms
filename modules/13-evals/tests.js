@@ -173,7 +173,10 @@ export const tests = [
     const byLength = (q, a, b) => (a.length >= b.length ? (a.length === b.length ? 'tie' : 'A') : 'B');
     const r2 = m.positionBias(byLength, pairs);
     T.close(r2.consistency, 1, 1e-9, 'a judge that scores content only is consistent under swapping');
-    T.close(r2.firstWinRate, 0.5, 1e-9, 'and picks the first slot exactly half the time');
+    T.close(r2.firstWinRate, 0.5, 1e-9, 'q3 is a tie both ways: ties count for neither side, so 2 of the 4 decided calls chose A');
+    const r3 = m.positionBias(() => 'tie', pairs);
+    T.close(r3.consistency, 1, 1e-9, 'tie both ways is a consistent verdict');
+    T.close(r3.firstWinRate, 0.5, 1e-9, 'a judge that only ties has no slot preference; do not divide by 2*pairs and report 0');
   } },
 
   // ---------- step 5: contamination and the runner ----------

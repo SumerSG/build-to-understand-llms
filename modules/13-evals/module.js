@@ -33,52 +33,52 @@ export default {
   concept: `
 ## The number is not the measurement
 
-By module 12 you can train a model and watch a reward go up. This module is about the other half: deciding whether the number you just produced means anything. An eval has four parts, and only one of them is the model:
+By module 12 you can train a model and watch a reward go up. This module is the other half: deciding whether that number means anything. An eval has four parts, and only one is the model:
 
 1. **Tasks** — the questions, and how their prompts are formatted.
 2. **A grader** — a function from a model response to a score.
 3. **A sampling budget** — how many responses per task, at what temperature.
 4. **A report** — the statistic and its uncertainty.
 
-Get any of the other three wrong and the model's score moves by more than most model upgrades do.
+Get any of the other three wrong and the score moves by more than most model upgrades do.
 
-Four benchmarks worth knowing, because each measures a different thing. **MMLU** (Hendrycks et al. 2020) is 57 subjects of multiple-choice questions; it is scored by letter match, so it mostly measures knowledge plus format compliance. **GSM8K** (Cobbe et al. 2021) is 8.5k grade-school word problems whose reference answer follows a \`####\` marker; it is scored by extracting the final number, so it measures arithmetic reasoning *and* your extraction regex. **HumanEval** (Chen et al. 2021) is 164 Python functions scored by running unit tests — an execution grader, the least ambiguous kind. **SWE-bench** (Jimenez et al. 2023) asks for a patch that makes a real repository's tests pass; it measures the whole agent harness, not the model alone.
+Four benchmarks, each measuring something different. **MMLU** (Hendrycks et al. 2020): 57 subjects of multiple-choice questions, scored by letter match, so it measures knowledge plus format compliance. **GSM8K** (Cobbe et al. 2021): 8.5k grade-school word problems whose reference answer follows a \`####\` marker, scored by extracting the final number — so it measures arithmetic *and* your extraction regex. **HumanEval** (Chen et al. 2021): 164 Python functions scored by running unit tests, an execution grader and the least ambiguous kind. **SWE-bench** (Jimenez et al. 2023): produce a patch that makes a real repository's tests pass, which measures the whole agent harness, not the model alone.
 
 ## The grader is half the eval
 
-A model that answers \`1,188.\` when the reference is \`1188\` is right. A strict string comparison calls it wrong and your reported accuracy drops several points. So graders normalise: lowercase, trim, collapse whitespace, drop a trailing period, strip thousands separators, drop trailing decimal zeros. Then they *extract*: take the text after the last \`####\`, or failing that the last number in the response.
+A model that answers \`1,188.\` when the reference is \`1188\` is right. A strict string comparison calls it wrong and your accuracy drops several points. So graders normalise (lowercase, trim, collapse whitespace, drop a trailing period, strip thousands separators, drop trailing decimal zeros) and then *extract*: the text after the last \`####\`, or failing that the last number.
 
 Every one of those rules is a judgement call that changes the score, which is why the harness is code and must be versioned next to the model. When a lab reports "GSM8K 92.3", the number belongs to a specific harness commit.
 
 :::predict
 You evaluate the same model with two graders: strict exact match, and exact match after extracting the last number. On 100 chain-of-thought responses, roughly how far apart will the two scores be?
 ---
-Usually 10 to 40 points. Chain-of-thought responses almost never end with a bare number, so strict match scores near zero. The gap between two reasonable graders is routinely larger than the gap between two model generations — which is the whole point of this module.
+Usually 10 to 40 points: chain-of-thought responses almost never end with a bare number, so strict match scores near zero. The gap between two reasonable graders is routinely larger than the gap between two model generations.
 :::
 
 ## pass@k, and why the obvious formula is wrong
 
-If you sample \`n\` responses for a task and \`c\` of them are correct, what fraction of the time would \`k\` samples contain at least one correct answer? The tempting answer is \`1 - (1 - c/n)^k\`. It is biased: it treats the estimated rate \`c/n\` as the truth. Chen et al. 2021 use the unbiased combinatorial form instead, \`passAtK(n, c, k) = 1 - C(n-c, k) / C(n, k)\` — the fraction of the \`C(n, k)\` subsets of your own samples that contain a success. You will compute it in log space, because \`C(1000, 500)\` is about \`2.7e299\` and overflows.
+If you sample \`n\` responses for a task and \`c\` are correct, how often would \`k\` samples contain at least one correct answer? The tempting answer, \`1 - (1 - c/n)^k\`, is biased: it treats the estimated rate \`c/n\` as the truth. Chen et al. 2021 use the unbiased combinatorial form \`passAtK(n, c, k) = 1 - C(n-c, k) / C(n, k)\` — the fraction of the \`C(n, k)\` subsets of your own samples that contain a success. Compute it in log space: \`C(1000, 500)\` is about \`2.7e299\` and overflows.
 
-Its twin is \`pass^k = C(c, k) / C(n, k)\`: the chance that *all* \`k\` draws are correct. pass@k is the right metric when you can verify and retry (code with tests); pass^k is the right metric when a single failure is a failure (an agent taking an irreversible action). A 70%-per-attempt model has pass@10 of about 1.0 and pass^10 of about 0.03.
+Its twin is \`pass^k = C(c, k) / C(n, k)\`: the chance that *all* \`k\` draws are correct. pass@k is right when you can verify and retry (code with tests); pass^k is right when one failure is a failure (an agent taking an irreversible action). A 70%-per-attempt model has pass@10 of about 1.0 and pass^10 of about 0.03.
 
 :::predict
 A model solves each task with probability 0.5. You report pass@1 = 0.50. What does pass@10 look like, and does it tell you the model got better?
 ---
-About 0.999. Nothing about the model changed; you changed the measurement to "at least one of ten attempts". Reporting pass@k without k, n and the temperature is meaningless — and pass@k rises with sampling temperature even as pass@1 falls.
+About 0.999. Nothing about the model changed; you changed the measurement to "at least one of ten attempts". Reporting pass@k without k, n and the temperature is meaningless — and pass@k rises with temperature even as pass@1 falls.
 :::
 
 ## Error bars, judges, contamination
 
-Two runs of a 200-task eval on the same model differ by a few points for no reason but sampling. The bootstrap (Efron 1979) gives you the interval without any distributional assumption: resample the per-task scores with replacement \`B\` times, take each resample's mean, and read off the 2.5th and 97.5th percentiles. The width shrinks like \`1/sqrt(tasks)\`, so quadrupling the task count halves the interval. Miller's 2024 note "Adding error bars to evals" is the reason this is becoming standard practice.
+Two runs of a 200-task eval on the same model differ by a few points for no reason but sampling. The bootstrap (Efron 1979) gives the interval without any distributional assumption: resample the per-task scores with replacement \`B\` times, take each resample's mean, and read off the 2.5th and 97.5th percentiles. The width shrinks like \`1/sqrt(tasks)\`, so quadrupling the task count halves it. Miller's 2024 note "Adding error bars to evals" is why this is becoming standard practice.
 
-When no exact answer exists, labs use an **LLM judge**. Judges are cheap and they are biased: toward longer answers (verbosity bias), toward whichever answer came first (position bias — Zheng et al. 2023 found flips on a large fraction of pairs), and toward their own outputs (self-preference). You will not fix the judge; you will measure it, by agreement with exact match and by swapping the two answers.
+When no exact answer exists, labs use an **LLM judge**. Judges are cheap and biased: toward longer answers (verbosity), toward whichever answer came first (position bias — Zheng et al. 2023 found flips on a large fraction of pairs), and toward their own outputs (self-preference). You will not fix the judge; you will measure it, by agreement with exact match and by swapping the two answers.
 
-Finally, **contamination**: if an eval prompt appears verbatim in the training corpus, the score measures memorisation. The standard check is n-gram overlap (13-grams in the GPT-3 and Llama 3 analyses); Sainz et al. 2023 argue for publishing the overlap rate next to the score.
+Finally, **contamination**: if an eval prompt appears verbatim in the training corpus, the score measures memorisation. The standard check is n-gram overlap (13-grams in the GPT-3 and Llama 3 analyses), and Sainz et al. 2023 argue for publishing the overlap rate next to the score.
 
 ## Where this toy differs from production
 
-Your graders run on strings, in one process, on 40 procedurally generated word problems, against a scripted "model" that is a seeded random function rather than a network. A real harness — lm-evaluation-harness, HELM, OpenAI's evals, SWE-bench's Docker runner — executes untrusted model-written code in a sandbox, retries API failures, caches responses by prompt hash, records the exact prompt template, model version, temperature and harness commit with every run, and evaluates thousands of tasks across many shards. The statistics you build here are identical; the plumbing is an order of magnitude larger.
+Your graders run on strings, in one process, on 40 procedurally generated word problems, against a scripted "model" that is a seeded random function rather than a network. A real harness — lm-evaluation-harness, HELM, OpenAI's evals, SWE-bench's Docker runner — executes untrusted model-written code in a sandbox, retries API failures, caches responses by prompt hash, records the prompt template, model version, temperature and harness commit with every run, and shards thousands of tasks across machines. The statistics you build here are identical; the plumbing is an order of magnitude larger.
 `,
   steps: [
     {
@@ -162,7 +162,7 @@ The file already contains \`scriptedJudge(question, answer, reference) → strin
       hints: [
         'For the whole-word test, a regex with word boundaries does it in one line; think about what `\\b` matches around the letters of `incorrect`.',
         '`/\\bcorrect\\b/i.test(verdict)` — in `incorrect` there is no word boundary before the `c`. `agreementRate` is one loop comparing two booleans. `positionBias` calls the judge twice per pair and counts two different things in the same loop.',
-        'Mirrored verdicts: `(v1 === "A" && v2 === "B") || (v1 === "B" && v2 === "A") || (v1 === "tie" && v2 === "tie")`. Count `firstWins` by adding 1 for each of `v1`, `v2` that equals `"A"`, then divide by `2 * pairs.length`.',
+        'Mirrored verdicts: `(v1 === "A" && v2 === "B") || (v1 === "B" && v2 === "A") || (v1 === "tie" && v2 === "tie")`. Keep two counters in the same loop: `decided` (verdicts that are not `"tie"`) and `firstWins` (verdicts equal to `"A"`), then return `decided ? firstWins / decided : 0.5`.',
       ],
     },
     {
@@ -199,7 +199,7 @@ For each \`k\`: the per-task values are \`passAtK(n, c, k)\`; \`value\`, \`lo\`,
     'Add an execution grader: tasks carry a snippet of JavaScript and a list of assertions, and the grader runs the model\'s code against them. This is how HumanEval and SWE-bench score — and it is why they need a sandbox that your `new Function` version does not have.',
     'Implement the paired bootstrap for a model comparison: resample tasks once and recompute *both* models\' means on the same resample, then report the interval for the difference. Because task difficulty cancels, the paired interval is far narrower than the difference of two independent intervals; this is the comparison lm-evaluation-harness and Miller 2024 recommend.',
     'Add prompt-sensitivity measurement: run the same tasks through three prompt templates (bare question, few-shot, chat template from module 10) and report the spread. Published MMLU numbers move by several points on template alone, which is why HELM fixes the template as part of the benchmark.',
-    'Replace the scripted judge with the tiny GPT from `lib/checkpoints/tiny-gpt.json` prompted to answer CORRECT or INCORRECT, and re-measure agreement and position bias. Compare the drop against the agreement numbers Zheng et al. 2023 report for GPT-4 as a judge against human votes on MT-Bench.',
+    'Replace the scripted judge with a real one: the small GPT you trained in module 07, prompted to answer CORRECT or INCORRECT, and re-measure agreement and position bias. Compare the drop against the agreement numbers Zheng et al. 2023 report for GPT-4 as a judge against human votes on MT-Bench.',
   ],
   timeouts: { tests: 20000, demo: 60000 },
 };

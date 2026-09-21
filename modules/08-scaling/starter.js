@@ -43,9 +43,13 @@ export function formatDuration(seconds) {
   return `${(seconds / (86400 * 365)).toFixed(1)} years`;
 }
 
-/** Human-readable byte count: 2.8e12 -> "2.80TB". */
+/** Human-readable byte count: 1.28e11 -> "128.00 GB", 2.8e12 -> "2.80 TB". */
 export function formatBytes(bytes) {
-  return fmt(bytes) + 'B';
+  const abs = Math.abs(bytes);
+  if (abs >= 1e12) return `${(bytes / 1e12).toFixed(2)} TB`;
+  if (abs >= 1e9) return `${(bytes / 1e9).toFixed(2)} GB`;
+  if (abs >= 1e6) return `${(bytes / 1e6).toFixed(2)} MB`;
+  return `${fmt(bytes)} bytes`;
 }
 
 // ---------- step 1: FLOPs ----------
