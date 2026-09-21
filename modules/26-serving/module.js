@@ -71,49 +71,49 @@ export default {
     },
   ],
   concept: `
-## One machine is an engine; many machines are a placement problem
+## From one engine to a fleet
 
-In module 16 you built the engine: a scheduler that decides, at every iteration, which requests share one GPU. This module is the layer above it. You have \`R\` replicas, each running that engine with its own prefix cache (module 17), and a load balancer in front of them. Nothing here changes what a replica does inside an iteration. Everything here changes **which replica a request reaches** and **what kind of work that replica is allowed to do**.
+Module 16 built the engine: the per-iteration scheduler that decides which requests share one GPU. This module is the layer above. You have \`R\` replicas, each running that engine with its own prefix cache (module 17), behind one load balancer. Nothing changes inside an iteration; everything changes **which replica a request reaches** and **what work it may do there**. Two numbers judge the result: **TTFT**, time to first token, which prefill sets, and **TPOT**, time per output token, which decode sets.
 
-The cost model is the one from module 16, and it comes straight from the roofline of module 23: one iteration takes \`tFixed + tPerToken * (tokens in the batch)\`, with \`tFixed\` = 5 ms (reading 16 GB of bf16 weights at approximately 3.35 TB/s, NVIDIA H100 datasheet) and \`tPerToken\` = 50 us. A decode step for 32 requests moves 32 tokens and costs 6.6 ms. A prefill step for one 2,600-token prompt moves 2,600 tokens and costs 135 ms — twenty times as long, on the same replica, in the same queue.
+The cost model is module 16's, from module 23's roofline: an iteration costs \`tFixed + tPerToken * (tokens in the batch)\`, with \`tFixed\` = 5 ms (16 GB of bf16 weights read at approximately 3.35 TB/s, NVIDIA H100 datasheet) and \`tPerToken\` = 50 us. Decoding 32 requests moves 32 tokens and costs 6.6 ms; prefilling one 2,600-token prompt moves 2,600 tokens and costs 135 ms, twenty times longer, in the same queue.
 
-## Decision 1: send the request to the replica that already has its prefix
+## Decision 1: route to the replica that holds the prefix
 
-Prefix caches are **per replica**. A cache hit is worth the entire prefix: 2,600 tokens of prefill that you do not pay for. But the hit only happens if the request lands on the replica that served the same prefix before, and round-robin guarantees that it usually does not. With 16 system prompts, 8 replicas and room for 4 prefixes each, round-robin makes every replica see all 16, so every LRU thrashes.
+Prefix caches are **per replica**: a hit is worth the whole prefix, thousands of prefill tokens you never pay for, but only if the request lands where that prefix was served before, which round-robin rarely does.
 
 :::predict
-Total cache capacity is the same either way: 8 replicas x 4 prefix slots = 32 slots for 16 prefixes. So why does affinity routing raise the hit rate at all?
+Eight replicas with four prefix slots each is 32 slots for 16 system prompts, whichever way you route. So why does affinity routing raise the hit rate?
 ---
-Because capacity is not the constraint, *locality* is. Round-robin spreads each prefix across all 8 replicas, so each replica's 4 slots must cover all 16 prefixes and evict constantly. Affinity sends each prefix to one or two replicas, so each replica covers 2-4 prefixes and keeps them. In the goal demo this takes the hit rate from approximately 45% to approximately 75%, and median TTFT from 0.15 s to 0.04 s, with no extra hardware.
+Capacity is not the constraint, *locality* is. Round-robin makes all 8 replicas cover all 16 prefixes in 4 slots each, so every LRU thrashes; affinity gives each replica 2-4 prefixes it can keep. In the goal demo that moves the hit rate from 45% to 75% and median TTFT from 0.149 s to 0.038 s.
 :::
 
-This is what the SGLang router and the vLLM production stack router do: pick the replica with the longest cached prefix match, unless that replica is much busier than the others, in which case fall back to the least loaded. The escape valve matters — pure affinity turns the popular prefix's replica into everyone's queue. Your \`overloadFactor\` of 1.5 is that valve.
+The SGLang router and the vLLM production-stack router therefore take the replica with the longest cached prefix match, unless it is much busier than the rest; pure affinity would make the popular prefix's replica everyone's queue, and \`overloadFactor\` = 1.5 is that escape valve.
 
-For a prefix nobody has served yet there is nothing to follow, so you need a deterministic *home*: a **hash ring**. Each replica gets 64 virtual nodes at \`hash32(id + '#' + v)\`; a key goes to the first point at or after \`hash32(key)\`. The reason for the ring rather than \`hash(key) % n\` is the autoscaler: modulo remaps almost every key when \`n\` changes, and every remapped key is a cold cache.
+A prefix nobody has served yet needs a deterministic *home*: a **hash ring**, 64 virtual nodes per replica at \`hash32(id + '#' + v)\`, each key going to the first point at or after \`hash32(key)\`. Use a ring, not \`hash(key) % n\`: the autoscaler changes \`n\`, and modulo would remap almost every key — each one a cold cache.
 
-## Decision 2: stop making prefill and decode share a GPU
+## Decision 2: separate prefill from decode
 
-Prefill is compute-bound and decode is memory-bound, and putting them in one queue makes each one the other's tail latency. On a colocated replica, one 135 ms prefill step freezes every decode in flight: the user who was streaming at 100 tokens/s sees a 135 ms gap. TTFT and TPOT are separate SLOs with separate victims, and colocation makes them fight.
+Prefill is compute-bound, decode is memory-bound, and one queue makes each the other's tail latency: one 135 ms prefill step freezes every decode in flight, so a user streaming at 100 tokens/s sees a 135 ms gap; colocation makes TTFT and TPOT fight.
 
-Disaggregation gives each phase its own pool. A request is prefilled in the prefill pool, its KV cache is shipped to a decode replica, and it streams there. This is DistServe (Zhong et al. 2024), Splitwise (Patel et al. 2024) and Mooncake (Qin et al. 2024), which serves Kimi this way with a shared KV store across the fleet. The price is the transfer, and it is the alpha-beta model of module 24: \`setup + tokens * bytesPerToken / bandwidth\`.
+Disaggregation gives each phase its own pool: prefill in one, ship the KV cache, stream in the other. This is DistServe (Zhong et al. 2024), Splitwise (Patel et al. 2024) and Mooncake (Qin et al. 2024), which serves Kimi this way over RDMA with a fleet-wide KV store. The price is the transfer, priced by module 24's alpha-beta model: \`setup + tokens * bytesPerToken / bandwidth\`.
 
 :::predict
-A 4,000-token prompt on Llama-3-8B: its KV cache is 4,000 x 128 KB = 512 MB. Over a 25 GB/s RDMA link that is about 20 ms. Is shipping it cheaper than recomputing it on the decode replica?
+A 4,000-token prompt on Llama-3-8B carries 4,000 x 128 KB = 512 MB of KV cache, about 20 ms over a 25 GB/s RDMA link. Is shipping it cheaper than recomputing it?
 ---
-Much cheaper. Recomputing means prefilling 4,000 tokens again: \`2 * 8e9 * 4000\` = 64 TFLOP, about 160 ms at 40% of an H100's approximately 989 TFLOP/s bf16 peak. Transfer wins by roughly 8x, and the gap widens with prompt length because both scale linearly but the constants differ. This is also why Mooncake keeps KV in a pool and reuses it across requests.
+Much cheaper. Recomputing means prefilling 4,000 tokens again: \`2 * 8e9 * 4000\` = 64 TFLOP, about 160 ms at 40% of an H100's approximately 989 TFLOP/s bf16 peak. Transfer wins by roughly 8x, and both sides are linear in tokens, so the ratio holds.
 :::
 
 ## Goodput, admission control and the bill
 
-Throughput hides failure: a cluster can move plenty of tokens per second while a third of its users wait three seconds for the first one. **Goodput** — requests per second that meet *every* SLO — refuses to count work that broke the contract, and it is the metric to optimise (Zhong et al. 2024). Tail matters more than mean here: p95 and p99 TTFT are what a user actually experiences on a bad day. Past saturation the honest move is **admission control**: reject or queue new requests rather than let everyone miss the SLO, which is what \`maxQueue\` backpressure in your driver does in miniature.
+Throughput hides failure: a cluster can move plenty of tokens per second while a third of its users wait three seconds for the first one. **Goodput** — requests per second meeting *every* SLO — refuses to count work that broke the contract, and it is what this module optimises (Zhong et al. 2024). Report it at p95, where users feel the tail. Past saturation the honest move is **admission control**: hold new requests rather than let everybody miss, which is what the driver's \`maxQueue\` backpressure does.
 
-Capacity itself is a control problem. You scale on queue depth, but a replica takes approximately 30-60 s to pull weights and warm up, so the loop has dead time and needs asymmetric hysteresis: up at once, down only when a whole window agrees (Kubernetes HPA calls this downscale stabilisation). The end metric is neither latency nor GPUs but **dollars per million output tokens** = \`GPU-seconds / 3600 * $ per GPU-hour / (tokens / 1e6)\`.
+Capacity is itself a control problem with dead time: you scale on queue depth, but a replica needs approximately 30-60 s to warm up, so the loop needs asymmetric hysteresis — up at once, down only when a whole window agrees (Kubernetes HPA calls this downscale stabilisation). The end metric is not latency or GPU count but **dollars per million output tokens** = \`GPU-seconds / 3600 * price per GPU-hour / (tokens / 1e6)\`.
 
-One paragraph on the case where a fleet serves many models: with LoRA adapters, hundreds of fine-tunes share one base model's weights and differ by a few tens of megabytes, so a single replica can multiplex them (S-LoRA, Punica) and the router must be adapter-aware as well as prefix-aware — an adapter miss costs a load, not a recompute. For fully separate models the routing problem becomes a bin-packing problem over GPUs, and idle models get evicted the way idle prefixes do.
+When one fleet serves many models, LoRA adapters let hundreds of fine-tunes share one base model's weights, so a replica multiplexes them (S-LoRA, Punica) and the router must be adapter-aware too: an adapter miss costs a load, not a recompute.
 
 ## Where this toy differs from production
 
-The cost model is linear and the GPU is a single number: no kernels, no paging, no KV capacity limit (module 16 modelled that one), no chunked prefill, no speculative decoding, no quantisation. Prefixes are opaque strings standing in for "the first 64 token ids", where a real router hashes token blocks or walks a radix tree. The network is uncontended and every transfer gets the full 25 GB/s. The autoscaler sees perfect instantaneous metrics; real ones see a 15-60 s scrape delay on top of the cold start. There are no failures, no multi-tenancy, no priorities, and one model. Read the numbers it prints as comparisons between configurations, never as capacity plans.
+The cost model is linear and a GPU is one number: no kernels, no paged KV blocks, no KV capacity limit, no chunked prefill, no quantisation. Prefixes are opaque strings standing in for "the first 64 token ids"; a real router hashes token blocks or walks a radix tree; the network is uncontended at the full 25 GB/s. The autoscaler sees perfect metrics instantly; real ones add a 15-60 s scrape delay on top of the cold start, and there are no failures or priorities. Read its numbers as comparisons, never as a capacity plan.
 `,
   steps: [
     {

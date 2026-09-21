@@ -10,11 +10,11 @@ const CODE_MARK = '';
 
 export function inline(text) {
   const codes = [];
-  let s = text.replace(/`([^`]+)`/g, (_, c) => { codes.push(c); return `${CODE_MARK}${codes.length - 1}${CODE_MARK}`; });
-  s = escapeHtml(s);
+  let s = String(text).replace(/`([^`]+)`/g, (_, c) => { codes.push(c); return `${CODE_MARK}${codes.length - 1}${CODE_MARK}`; });
+  s = escapeHtml(s);   // from here on `s` is escaped exactly once; URLs below must not be escaped again
   s = s.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
-  s = s.replace(/(^|[^*\w])\*([^*\n]+)\*(?!\w)/g, '$1<em>$2</em>');
-  s = s.replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, (_, t, u) => `<a href="${escapeHtml(u)}" target="_blank" rel="noopener">${t}</a>`);
+  s = s.replace(/(^|[^*\w])\*(?!\s)([^*\n]+?)(?<!\s)\*(?!\w)/g, '$1<em>$2</em>');   // `2 * 3 * 4` in prose is not italic
+  s = s.replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, (m, t, u) => (/^\s*javascript:/i.test(u) ? m : `<a href="${u}" target="_blank" rel="noopener">${t}</a>`));
   s = s.replace(new RegExp(`${CODE_MARK}(\\d+)${CODE_MARK}`, 'g'), (_, i) => `<code>${escapeHtml(codes[+i])}</code>`);
   return s;
 }
@@ -32,7 +32,7 @@ export function render(md, ctx = {}) {
   while (i < lines.length) {
     const line = lines[i];
     // fenced code
-    const fence = line.match(/^```(\w*)\s*$/);
+    const fence = line.match(/^```([\w.+-]*)[^`]*$/);   // allows ```c-like and ```js title
     if (fence) {
       flushPara();
       const buf = [];
@@ -123,8 +123,20 @@ export function render(md, ctx = {}) {
   return out.join('\n');
 }
 
+// Split a pipe-table row on `|`, ignoring pipes inside code spans (`a | b`) and escaped pipes (\|).
 function splitRow(line) {
-  return line.trim().replace(/^\|/, '').replace(/\|$/, '').split('|').map((c) => c.trim());
+  const s = line.trim().replace(/^\|/, '').replace(/\|$/, '');
+  const cells = [];
+  let cur = '', inCode = false;
+  for (let i = 0; i < s.length; i++) {
+    const c = s[i];
+    if (c === '\\' && s[i + 1] === '|') { cur += '|'; i++; continue; }
+    if (c === '`') inCode = !inCode;
+    if (c === '|' && !inCode) { cells.push(cur.trim()); cur = ''; continue; }
+    cur += c;
+  }
+  cells.push(cur.trim());
+  return cells;
 }
 
 /** Wire up predict cards inside a rendered container. getSaved/setSaved persist the learner's text. */
@@ -136,14 +148,14 @@ export function activatePredicts(root, { getSaved = () => null, setSaved = () =>
     const ans = card.querySelector('.predict-a');
     const saved = getSaved(key);
     if (saved && saved.text) input.value = saved.text;
-    if (saved && saved.revealed) { ans.classList.remove('hidden'); btn.textContent = 'Revealed'; btn.disabled = true; }
-    input.addEventListener('input', () => setSaved(key, { text: input.value, revealed: !ans.classList.contains('hidden') }));
+    // Once revealed, the prediction is committed: it stays visible next to the answer and can no longer be edited.
+    const reveal = () => { ans.classList.remove('hidden'); btn.textContent = 'Revealed'; btn.disabled = true; input.readOnly = true; input.title = 'Your committed prediction'; };
+    if (saved && saved.revealed) reveal();
+    input.addEventListener('input', () => { if (!input.readOnly) setSaved(key, { text: input.value, revealed: false }); });
     btn.addEventListener('click', () => {
       if (!input.value.trim()) { input.focus(); input.classList.add('shake'); setTimeout(() => input.classList.remove('shake'), 400); return; }
-      ans.classList.remove('hidden');
-      btn.textContent = 'Revealed';
-      btn.disabled = true;
       setSaved(key, { text: input.value, revealed: true });
+      reveal();
     });
   });
 }

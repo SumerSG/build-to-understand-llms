@@ -57,7 +57,8 @@ when the attempt fails. *Feature:* hints are locked until you have run the tests
 strengthens memory far more than re-reading, and spreading recall over time beats massing it. *Feature:*
 the Recall phase at the start of each module quizzes earlier modules, and the home page keeps a spaced
 review queue (a Leitner box schedule: 1, 3, 7, 14, 30 days) built from every completed module's
-questions.
+questions. A review sitting promotes the module one box when at least three quarters of its questions
+are answered correctly (all 3 of 3, or 3 of 4); otherwise it drops back to box 1 and is due again tomorrow.
 
 **Predict–Observe–Explain (White & Gunstone 1992).** Committing to a prediction before observing an outcome
 turns passive reading into hypothesis testing. *Feature:* `:::predict` cards and per-step `predict`

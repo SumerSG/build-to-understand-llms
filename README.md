@@ -16,14 +16,17 @@ draws what your code just did. Nothing counts as learned until it runs.
 
 ## Run it
 
-No build step, no dependencies. Serve the folder over HTTP (module workers need it):
+No build step and no npm dependencies: the only external asset is CodeMirror 5, loaded from a CDN for the
+code editor (offline or with the CDN blocked, the editor falls back to a plain textarea; everything else
+still works). Serve the folder over HTTP (module workers need it):
 
 ```bash
 node tools/serve.mjs        # then open http://localhost:8000
 ```
 
 or use any static server (`python3 -m http.server`). Progress is saved in your browser's localStorage;
-the home page can export/import it as JSON.
+the home page can export/import it as JSON. In the editor, Ctrl+Enter (Cmd+Enter on macOS) checks the
+current step.
 
 ## How it teaches
 
@@ -40,6 +43,8 @@ app/                UI, sandbox worker, test kit, charts, markdown, storage
 lib/                the shared reference implementation modules build on (tensor, autograd, tokenizer, GPT, …)
 modules/NN-slug/    one directory per module: module.js, starter.js, solution.js, tests.js, demo.js
 tools/verify.mjs    headless verifier: schema + pedagogy checklist, tests on starter & solution, demo run
+tools/e2e.mjs       drives every module through the real UI in headless Chromium (needs playwright-core)
+tools/pretrain.mjs  trains the chat playground's checkpoint
 tools/serve.mjs     zero-dependency dev server
 docs/               PEDAGOGY.md, MODULE_FORMAT.md, LIB_API.md
 ```

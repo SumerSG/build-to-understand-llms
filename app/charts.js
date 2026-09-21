@@ -65,6 +65,15 @@ function tableHtml(columns, rows) {
 
 function esc(s) { return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;'); }
 
+// A diverging loss or a 1/0 in learner code produces NaN/Infinity; say so instead of drawing a silent gap.
+function noteSkipped(f, n) {
+  if (!n) return;
+  const d = document.createElement('div');
+  d.className = 'chart-note small muted';
+  d.textContent = `${n} value${n > 1 ? 's were' : ' was'} NaN or ±Infinity and ${n > 1 ? 'are' : 'is'} not drawn.`;
+  f.body.appendChild(d);
+}
+
 function showTip(f, x, y, html) {
   f.tip.innerHTML = html;
   f.tip.classList.remove('hidden');
@@ -81,11 +90,13 @@ export function renderPlot(container, spec) {
   const log = spec.yscale === 'log';
   const n = Math.max(...series.map((s) => s.values.length));
   const xs = spec.x && spec.x.length ? spec.x : Array.from({ length: n }, (_, i) => i);
-  const xmin = Math.min(...xs), xmax = Math.max(...xs);
-  let ymin = Infinity, ymax = -Infinity;
-  for (const s of series) for (const v of s.values) if (Number.isFinite(v) && (!log || v > 0)) { ymin = Math.min(ymin, v); ymax = Math.max(ymax, v); }
-  if (!Number.isFinite(ymin)) { ymin = 0; ymax = 1; }
-  if (ymin === ymax) { ymin -= 1; ymax += 1; }
+  const finiteXs = xs.filter(Number.isFinite);
+  const xmin = finiteXs.length ? Math.min(...finiteXs) : 0, xmax = finiteXs.length ? Math.max(...finiteXs) : 1;
+  let ymin = Infinity, ymax = -Infinity, skipped = 0;
+  const drawable = (v, i) => Number.isFinite(v) && (!log || v > 0) && Number.isFinite(xs[i] ?? i);
+  for (const s of series) s.values.forEach((v, i) => { if (drawable(v, i)) { ymin = Math.min(ymin, v); ymax = Math.max(ymax, v); } else skipped++; });
+  if (!Number.isFinite(ymin)) { ymin = log ? 1 : 0; ymax = log ? 10 : 1; }
+  if (ymin === ymax) { if (log) { ymin /= 10; ymax *= 10; } else { ymin -= 1; ymax += 1; } }
   const ty = (v) => (log ? Math.log10(v) : v);
   const lo = ty(ymin), hi = ty(ymax);
   const sx = (x) => PAD.l + ((x - xmin) / Math.max(1e-12, xmax - xmin)) * (W - PAD.l - PAD.r);
@@ -110,18 +121,19 @@ export function renderPlot(container, spec) {
   series.forEach((s, si) => {
     let d = '';
     s.values.forEach((v, i) => {
-      if (!Number.isFinite(v) || (log && v <= 0)) return;
+      if (!drawable(v, i)) return;
       const x = sx(xs[i] ?? i), y = sy(v);
       d += (d ? 'L' : 'M') + x.toFixed(1) + ' ' + y.toFixed(1);
     });
-    el('path', { d, class: `series s${(si % 8) + 1}` }, svg);
+    if (d) el('path', { d, class: `series s${(si % 8) + 1}` }, svg);
     if (s.values.length <= 40) {
       s.values.forEach((v, i) => {
-        if (!Number.isFinite(v) || (log && v <= 0)) return;
+        if (!drawable(v, i)) return;
         el('circle', { cx: sx(xs[i] ?? i), cy: sy(v), r: 3, class: `marker s${(si % 8) + 1}` }, svg);
       });
     }
   });
+  noteSkipped(f, skipped);
   // legend
   if (series.length > 1) {
     const leg = document.createElement('div');
@@ -140,8 +152,9 @@ export function renderPlot(container, spec) {
     const r = svg.getBoundingClientRect();
     const px = ((e.clientX - r.left) / r.width) * W;
     const xv = xmin + ((px - PAD.l) / (W - PAD.l - PAD.r)) * (xmax - xmin);
-    let best = 0;
-    for (let i = 1; i < xs.length; i++) if (Math.abs(xs[i] - xv) < Math.abs(xs[best] - xv)) best = i;
+    let best = -1;
+    for (let i = 0; i < xs.length; i++) if (Number.isFinite(xs[i]) && (best < 0 || Math.abs(xs[i] - xv) < Math.abs(xs[best] - xv))) best = i;
+    if (best < 0) return;
     cross.setAttribute('x1', sx(xs[best])); cross.setAttribute('x2', sx(xs[best]));
     cross.classList.remove('hidden');
     const rows = series.map((s, si) => `<div><i class="swatch s${(si % 8) + 1}"></i>${esc(s.name || 'series')}: <b>${fmtNum(s.values[best])}</b></div>`).join('');
@@ -156,7 +169,8 @@ export function renderBar(container, spec) {
   const f = frame(container, spec.title);
   const labels = spec.labels || [], values = spec.values || [];
   if (!values.length) { f.body.textContent = 'No data.'; return; }
-  const vmin = Math.min(0, ...values), vmax = Math.max(0, ...values);
+  const finite = values.filter(Number.isFinite);
+  const vmin = Math.min(0, ...finite), vmax = Math.max(0, ...finite);
   const svg = el('svg', { viewBox: `0 0 ${W} ${H}`, class: 'chart-svg', role: 'img' }, f.body);
   const sy = (v) => PAD.t + (1 - (v - vmin) / Math.max(1e-12, vmax - vmin)) * (H - PAD.t - PAD.b);
   for (const t of niceTicks(vmin, vmax, 5)) {
@@ -167,17 +181,22 @@ export function renderBar(container, spec) {
   const bw = (W - PAD.l - PAD.r) / values.length;
   values.forEach((v, i) => {
     const x = PAD.l + i * bw + bw * 0.15, w = bw * 0.7;
-    const y0 = sy(0), y1 = sy(v);
-    const rect = el('rect', { x, y: Math.min(y0, y1), width: w, height: Math.max(1, Math.abs(y0 - y1)), rx: 3, class: 'bar s1' }, svg);
-    rect.addEventListener('mousemove', (e) => showTip(f, e.clientX, e.clientY, `<div>${esc(labels[i] ?? i)}: <b>${fmtNum(v)}</b></div>`));
-    rect.addEventListener('mouseleave', () => f.tip.classList.add('hidden'));
     if (values.length <= 24) {
       const t = el('text', { x: x + w / 2, y: H - PAD.b + 16, class: 'tick', 'text-anchor': 'middle' }, svg);
       t.textContent = String(labels[i] ?? i).slice(0, 12);
     }
+    if (!Number.isFinite(v)) {   // mark the slot instead of emitting height="NaN"
+      el('text', { x: x + w / 2, y: sy(0) - 6, class: 'tick', 'text-anchor': 'middle' }, svg).textContent = String(v);
+      return;
+    }
+    const y0 = sy(0), y1 = sy(v);
+    const rect = el('rect', { x, y: Math.min(y0, y1), width: w, height: Math.max(1, Math.abs(y0 - y1)), rx: 3, class: 'bar s1' }, svg);
+    rect.addEventListener('mousemove', (e) => showTip(f, e.clientX, e.clientY, `<div>${esc(labels[i] ?? i)}: <b>${fmtNum(v)}</b></div>`));
+    rect.addEventListener('mouseleave', () => f.tip.classList.add('hidden'));
   });
   el('line', { x1: PAD.l, x2: W - PAD.r, y1: sy(0), y2: sy(0), class: 'axis' }, svg);
   if (spec.ylabel) el('text', { x: 12, y: PAD.t - 10, class: 'label' }, svg).textContent = spec.ylabel;
+  noteSkipped(f, values.length - finite.length);
   f.table.innerHTML = tableHtml(['label', 'value'], values.map((v, i) => [labels[i] ?? i, v]));
 }
 
@@ -191,11 +210,14 @@ export function renderHeatmap(container, spec) {
   if (spec.min === undefined || spec.max === undefined) {
     for (const r of rows) for (const v of r) if (Number.isFinite(v)) { vmin = Math.min(vmin, v); vmax = Math.max(vmax, v); }
   }
+  if (!Number.isFinite(vmin) || !Number.isFinite(vmax)) { vmin = 0; vmax = 1; }
   if (vmin === vmax) vmax = vmin + 1;
   const dark = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches && document.documentElement.dataset.theme !== 'light' || document.documentElement.dataset.theme === 'dark';
   const lo = dark ? [24, 79, 149] : [205, 226, 251];
   const hi = dark ? [205, 226, 251] : [13, 54, 107];
+  let skipped = 0;
   const color = (v) => {
+    if (!Number.isFinite(v)) { skipped++; return 'var(--grid)'; }
     const t = Math.max(0, Math.min(1, (v - vmin) / (vmax - vmin)));
     const c = lo.map((a, i) => Math.round(a + (hi[i] - a) * t));
     return `rgb(${c[0]},${c[1]},${c[2]})`;
@@ -213,6 +235,7 @@ export function renderHeatmap(container, spec) {
     });
   });
   if (spec.colLabels) rows[0].forEach((_, j) => { el('text', { x: labelW + j * cell + cell / 2, y: labelH - 6, class: 'tick', 'text-anchor': 'middle' }, svg).textContent = String(spec.colLabels[j]).slice(0, 4); });
+  noteSkipped(f, skipped);
   f.table.innerHTML = tableHtml(['', ...(spec.colLabels || Array.from({ length: nc }, (_, j) => j))], rows.map((r, i) => [spec.rowLabels ? spec.rowLabels[i] : i, ...r]));
 }
 

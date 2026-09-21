@@ -1,7 +1,7 @@
 // app/main.js — the lab UI: router, sidebar, home, module page (Recall → Concept → Build → Goal → Reflect), review queue.
 import { TRACKS, MODULES, moduleById, nextModule, loadModule } from '../modules/index.js';
 import { store, scheduleReview, enrollReview, dueReviews, reviewSummary, LEITNER_DAYS } from './storage.js';
-import { render as md, activatePredicts, escapeHtml as esc } from './markdown.js';
+import { render as md, inline, activatePredicts, escapeHtml as esc } from './markdown.js';
 import { renderChart } from './charts.js';
 import { createEditor } from './editor.js';
 import { Runner } from './runner.js';
@@ -17,7 +17,14 @@ const PHASES = [
   { id: 'goal', label: 'Goal' },
   { id: 'reflect', label: 'Reflect' },
 ];
-const cache = new Map();   // module id -> { def, starter }
+const DEFAULT_TIMEOUTS = { tests: 20000, demo: 120000 };
+const LOG_DOM_MAX = 2000;          // console lines kept in the DOM per run
+const cache = new Map();           // module id -> { def, starter }
+const failedLoads = new Set();     // module ids whose module.js could not be imported (shown as planned)
+
+let renderSeq = 0;                 // bumped on every route(); async renders bail out when superseded
+let currentPage = null;            // { id, def, starter, phase, phasesEl } for the module page on screen
+let flushPendingSave = null;       // set by renderBuild: writes a debounced edit immediately
 
 // ---------- helpers ----------
 
@@ -30,6 +37,7 @@ function h(html) {
 function isComplete(id) { return !!store.module(id).completedAt; }
 
 function moduleStatus(id) {
+  if (failedLoads.has(id)) return 'planned';
   const s = store.module(id);
   if (s.completedAt) return 'done';
   if (s.code || Object.keys(s.stepsDone).length || Object.keys(s.recall).length) return 'progress';
@@ -49,8 +57,33 @@ async function fetchSolution(id) {
   return (await fetch(`${BASE}/modules/${id}/solution.js`)).text();
 }
 
-function stepsAllDone(def, state) {
-  return def.steps.every((s) => state.stepsDone[s.id]);
+// A pass is recorded together with a hash of the code it ran on, so editing the file afterwards
+// shows the step as "passed on an earlier version" instead of silently keeping the tick (mastery learning).
+function codeHash(s) {
+  let x = 2166136261;
+  for (let i = 0; i < s.length; i++) { x ^= s.charCodeAt(i); x = Math.imul(x, 16777619); }
+  return (x >>> 0).toString(16);
+}
+const currentCode = (state, starter) => state.code ?? starter;
+function stepStatus(state, sid, code) {
+  const v = state.stepsDone[sid];
+  return !v ? 'no' : v === codeHash(code) ? 'pass' : 'stale';
+}
+function stepsAllDone(def, state, code) { return def.steps.every((s) => stepStatus(state, s.id, code) === 'pass'); }
+function demoStatus(state, code) { return !state.demoDone ? 'no' : state.demoDone === codeHash(code) ? 'pass' : 'stale'; }
+const STALE_NOTE = 'passed on an earlier version of your code — check again';
+
+/** Record per-step outcomes of a test run on `code`; steps with no results are left untouched. */
+function applyTestResults(state, def, tests, code, { clearAll = false } = {}) {
+  const byStep = {};
+  for (const t of tests) (byStep[t.step] = byStep[t.step] || []).push(t);
+  const hash = codeHash(code);
+  for (const s of def.steps) {
+    const list = byStep[s.id];
+    if (clearAll) { delete state.stepsDone[s.id]; continue; }
+    if (!list) continue;
+    if (list.every((t) => t.pass)) state.stepsDone[s.id] = hash; else delete state.stepsDone[s.id];
+  }
 }
 
 function debounce(fn, ms) {
@@ -64,6 +97,39 @@ function download(name, text) {
   a.download = name;
   a.click();
   setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+}
+
+// Append a batch of console lines with one layout pass, keeping the DOM bounded.
+function appendLogLines($c, lines) {
+  $c.classList.remove('hidden');
+  const frag = document.createDocumentFragment();
+  for (const l of lines) {
+    const d = document.createElement('div');
+    d.className = `log-line ${l.level === 'error' ? 'log-error' : l.level === 'warn' ? 'log-warn' : ''}`;
+    d.textContent = l.text;
+    frag.appendChild(d);
+  }
+  $c.appendChild(frag);
+  while ($c.childElementCount > LOG_DOM_MAX) $c.firstElementChild.remove();
+  $c.scrollTop = $c.scrollHeight;
+}
+const logLinesOf = (msg) => msg.lines || [{ level: msg.level, text: msg.text }];
+
+/** An error status line; a syntax error with a known line becomes a link that moves the editor there. */
+function errorLine(msg, editor = null) {
+  const el = h(`<div class="status-line bad"></div>`);
+  if (msg.line && editor) {
+    const before = msg.message.split(/\bon line \d+/)[0];
+    el.append(before, h(`<a href="#" data-goto>on line ${msg.line}${msg.col ? `, column ${msg.col}` : ''}</a>`), msg.message.slice(before.length).replace(/^on line \d+(, column \d+)?/, ''));
+    el.querySelector('[data-goto]').addEventListener('click', (e) => { e.preventDefault(); editor.goTo(msg.line); });
+  } else {
+    el.textContent = msg.message.startsWith('Your file') || msg.message.startsWith('Timed out') ? msg.message : `Error: ${msg.message}`;
+  }
+  return el;
+}
+
+function storageWarning() {
+  return h(`<div class="badge warn" style="margin:8px 0">Your browser refused to save progress (private mode, storage disabled or full). Work will be lost on reload: use Download / Export progress.</div>`);
 }
 
 // ---------- sidebar ----------
@@ -109,6 +175,7 @@ function renderHome() {
   const next = MODULES.find((m) => m.status === 'ready' && !isComplete(m.id));
   $app.innerHTML = '';
   $app.appendChild(sidebarButton());
+  if (!store.lastWriteOk) $app.appendChild(storageWarning());
   $app.appendChild(h(`<div>
     <h1>Build to understand the LLM stack</h1>
     <p style="max-width:760px">Twenty-eight self-contained projects. In each one you build a real piece of a modern language-model
@@ -143,7 +210,13 @@ function renderHome() {
   $app.querySelector('#export-progress').addEventListener('click', () => download('btu-progress.json', store.export()));
   $app.querySelector('#import-progress').addEventListener('click', () => {
     const inp = document.createElement('input'); inp.type = 'file'; inp.accept = 'application/json';
-    inp.onchange = async () => { const f = inp.files[0]; if (!f) return; try { store.import(await f.text()); route(); } catch (e) { alert('Could not import: ' + e.message); } };
+    inp.onchange = async () => {
+      const f = inp.files[0];
+      if (!f) return;
+      let ok = false;
+      try { store.import(await f.text()); ok = true; } catch (e) { alert('Could not import: ' + e.message + '. Your existing progress is unchanged.'); }
+      if (ok) route();   // only re-render once the new data is known to be valid and saved
+    };
     inp.click();
   });
   $app.querySelector('#reset-progress').addEventListener('click', () => { if (confirm('Erase all saved code, answers and progress in this browser?')) { store.reset(); route(); } });
@@ -168,7 +241,7 @@ The thesis: **you understand a system when you can build a working version of it
 | Pass all tests before the module counts as complete | Mastery learning (Bloom 1968): feedback and correctives until mastery, rather than moving on with gaps. Gates are soft, because autonomy matters (Deci & Ryan). |
 | Run a goal demo that draws what your code did | Constructionism again (a public, inspectable artifact) and dual coding (Paivio): a picture next to the mechanism. |
 | Explain the threshold concept in your own words | The self-explanation effect (Chi et al. 1989) and the Feynman technique expose gaps that recognition hides. Threshold concepts (Meyer & Land) are the ideas that reorganise everything else. |
-| See a review queue on the home page | Leitner-box spaced repetition: 1, 3, 7, 14, 30 days. Correct answers move an item up a box; a miss sends it back. |
+| See a review queue on the home page | Leitner-box spaced repetition: 1, 3, 7, 14, 30 days. Getting at least three quarters of a module's questions right in one sitting moves it up a box; otherwise it goes back to box 1, due tomorrow. |
 
 ## Why each module imports the reference implementation of earlier modules
 
@@ -182,12 +255,14 @@ Everything runs in your browser on plain JavaScript typed arrays. The models are
 
 // ---------- review queue ----------
 
-async function renderReview() {
+const reviewNeeded = (n) => Math.ceil(n * 0.75);
+
+async function renderReview(seq) {
   $app.innerHTML = '';
   $app.appendChild(sidebarButton());
   const due = dueReviews();
   const all = reviewSummary();
-  const wrap = h(`<div><h1>Review queue</h1><p class="muted" style="max-width:720px">Spaced retrieval on modules you completed. Each correct answer moves the module up a box (${LEITNER_DAYS.join(', ')} days); a miss sends it back to tomorrow.</p></div>`);
+  const wrap = h(`<div><h1>Review queue</h1><p class="muted" style="max-width:720px">Spaced retrieval on modules you completed. Get at least three quarters of a module's questions right in one sitting (all 3 of 3, or 3 of 4) to move it up a box (${LEITNER_DAYS.join(', ')} days); otherwise it goes back to box 1, due tomorrow.</p></div>`);
   $app.appendChild(wrap);
   if (!due.length) {
     wrap.appendChild(h(`<div class="card">Nothing due right now. ${all.length ? `${all.length} module${all.length > 1 ? 's' : ''} scheduled; next due ${new Date(Math.min(...all.map((r) => r.due))).toLocaleDateString()}.` : 'Complete a module to enrol it.'}</div>`));
@@ -196,14 +271,17 @@ async function renderReview() {
   for (const item of due) {
     const meta = moduleById(item.moduleId);
     if (!meta) continue;
-    const { def } = await getModule(item.moduleId);
+    let def;
+    try { ({ def } = await getModule(item.moduleId)); } catch { continue; }
+    if (seq !== renderSeq) return;
     const qs = (def.review && def.review.length ? def.review : def.recall) || [];
-    const card = h(`<div class="card review-card"><h3 style="margin-top:0">${esc(meta.title)} <span class="badge">box ${item.box + 1}</span></h3></div>`);
+    const need = reviewNeeded(qs.length);
+    const card = h(`<div class="card review-card"><h3 style="margin-top:0">${esc(meta.title)} <span class="badge">box ${item.box + 1}</span></h3><p class="muted small">${qs.length} questions; ${need} correct moves this module up a box.</p></div>`);
     let answered = 0, correct = 0;
     for (const q of qs) {
-      const qEl = h(`<div class="quiz-q"><div class="q">${esc(q.q)}</div></div>`);
+      const qEl = h(`<div class="quiz-q"><div class="q">${inline(q.q)}</div></div>`);
       q.options.forEach((opt, oi) => {
-        const b = h(`<button class="quiz-opt" type="button">${esc(opt)}</button>`);
+        const b = h(`<button class="quiz-opt" type="button">${inline(opt)}</button>`);
         b.addEventListener('click', () => {
           if (qEl.dataset.done) return;
           qEl.dataset.done = '1';
@@ -211,9 +289,9 @@ async function renderReview() {
           if (oi === q.answer) { correct++; b.classList.add('correct'); } else { b.classList.add('wrong'); qEl.querySelectorAll('.quiz-opt')[q.answer].classList.add('correct'); }
           qEl.appendChild(h(`<div class="quiz-why">${md(q.why || '')}</div>`));
           if (answered === qs.length) {
-            const ok = correct >= Math.ceil(qs.length * 0.75);
+            const ok = correct >= need;
             const r = scheduleReview(item.moduleId, ok);
-            card.appendChild(h(`<div class="status-line ${ok ? 'ok' : 'bad'}">${correct}/${qs.length} correct. ${ok ? 'Moved up' : 'Back'} to box ${r.box + 1}; next review in ${LEITNER_DAYS[r.box]} day${LEITNER_DAYS[r.box] > 1 ? 's' : ''}. <a href="#/m/${item.moduleId}">Revisit the module</a></div>`));
+            card.appendChild(h(`<div class="status-line ${ok ? 'ok' : 'bad'}">${correct}/${qs.length} correct (${need} needed). ${ok ? 'Moved up' : 'Back'} to box ${r.box + 1}; next review in ${LEITNER_DAYS[r.box]} day${LEITNER_DAYS[r.box] > 1 ? 's' : ''}. <a href="#/m/${item.moduleId}">Revisit the module</a></div>`));
             renderSidebar();
           }
         });
@@ -227,7 +305,7 @@ async function renderReview() {
 
 // ---------- module page ----------
 
-async function renderModulePage(id, phaseArg) {
+async function renderModulePage(id, phaseArg, seq) {
   const meta = moduleById(id);
   if (!meta) { $app.innerHTML = '<p>Unknown module.</p>'; return; }
   $app.innerHTML = '';
@@ -237,10 +315,16 @@ async function renderModulePage(id, phaseArg) {
     return;
   }
   let entry;
-  try { entry = await getModule(id); } catch (err) { $app.appendChild(h(`<div class="card">Could not load module: ${esc(err.message)}</div>`)); return; }
+  try { entry = await getModule(id); } catch (err) {
+    if (seq !== renderSeq) return;
+    failedLoads.add(id);
+    renderSidebar(id);
+    $app.appendChild(h(`<div><h1>${esc(meta.title)}</h1><div class="card"><p>This module is not available in this build yet. Goal: ${esc(meta.goal)}</p><p class="muted small">${esc(err.message)}</p><p><a class="btn" href="#/">Back to the lab</a></p></div></div>`));
+    return;
+  }
+  if (seq !== renderSeq) return;   // the learner navigated on while this module was loading
   const { def, starter } = entry;
   const state = store.module(id);
-  store.update(id, {});
   const track = TRACKS.find((t) => t.id === meta.track);
   const hasRecall = def.recall && def.recall.length;
   let phase = phaseArg || state.tab || (hasRecall ? 'recall' : 'concept');
@@ -254,42 +338,59 @@ async function renderModulePage(id, phaseArg) {
     <div class="goal-banner"><div class="label">Working goal</div><div class="goal">${esc(def.goal)}</div><div class="threshold"><b>Threshold concept:</b> ${esc(def.threshold || '')}</div></div>
   </div>`);
   $app.appendChild(head);
+  if (!store.lastWriteOk) $app.appendChild(storageWarning());
 
   const phasesEl = h(`<div class="phases"></div>`);
-  const phaseDone = {
-    recall: Object.keys(state.recall).length >= (def.recall || []).length && hasRecall,
-    concept: !!state.conceptRead,
-    build: stepsAllDone(def, state),
-    goal: !!state.demoDone,
-    reflect: !!state.completedAt,
-  };
-  for (const p of PHASES) {
-    if (p.id === 'recall' && !hasRecall) continue;
-    const b = h(`<div class="phase ${p.id === phase ? 'active' : ''}" data-phase="${p.id}">${phaseDone[p.id] ? '<span class="tick">✓</span>' : ''}${p.label}</div>`);
-    b.addEventListener('click', () => { location.hash = `#/m/${id}/${p.id}`; });
-    phasesEl.appendChild(b);
-  }
   $app.appendChild(phasesEl);
+  currentPage = { id, def, starter, phase, phasesEl };
+  refreshPhases();
   store.update(id, { tab: phase });
   const body = h(`<div class="phase-body"></div>`);
   $app.appendChild(body);
+  const timeouts = Object.assign({}, DEFAULT_TIMEOUTS, def.timeouts || {});
   if (phase === 'recall') renderRecall(body, id, def);
   else if (phase === 'concept') renderConcept(body, id, def);
-  else if (phase === 'build') renderBuild(body, id, def, starter);
-  else if (phase === 'goal') renderGoal(body, id, def, starter);
-  else if (phase === 'reflect') renderReflect(body, id, def);
+  else if (phase === 'build') renderBuild(body, id, def, starter, timeouts);
+  else if (phase === 'goal') renderGoal(body, id, def, starter, timeouts);
+  else if (phase === 'reflect') renderReflect(body, id, def, starter, timeouts);
+}
+
+/** Re-render the phase strip (ticks) from the current saved state; safe to call after any store.update. */
+function refreshPhases() {
+  if (!currentPage) return;
+  const { id, def, starter, phase, phasesEl } = currentPage;
+  const state = store.module(id);
+  const code = currentCode(state, starter);
+  const hasRecall = def.recall && def.recall.length;
+  const build = stepsAllDone(def, state, code) ? 'pass' : def.steps.some((s) => stepStatus(state, s.id, code) === 'stale') && def.steps.every((s) => stepStatus(state, s.id, code) !== 'no') ? 'stale' : 'no';
+  const status = {
+    recall: hasRecall && Object.keys(state.recall).length >= def.recall.length ? 'pass' : 'no',
+    concept: state.conceptRead ? 'pass' : 'no',
+    build,
+    goal: demoStatus(state, code),
+    reflect: state.completedAt ? 'pass' : 'no',
+  };
+  phasesEl.innerHTML = '';
+  for (const p of PHASES) {
+    if (p.id === 'recall' && !hasRecall) continue;
+    const mark = status[p.id] === 'pass' ? '<span class="tick">✓</span>' : status[p.id] === 'stale' ? `<span class="hint-stale" title="${STALE_NOTE}">↻</span>` : '';
+    const b = h(`<div class="phase ${p.id === phase ? 'active' : ''}" data-phase="${p.id}">${mark}${p.label}</div>`);
+    b.addEventListener('click', () => { location.hash = `#/m/${id}/${p.id}`; });
+    phasesEl.appendChild(b);
+  }
 }
 
 function renderRecall(body, id, def) {
   const state = store.module(id);
-  body.appendChild(h(`<p class="muted" style="max-width:720px">Before building, pull a few things back out of memory. These questions are about <em>earlier</em> modules; getting one wrong is useful information, not a penalty.</p>`));
+  const about = (def.prereqs || []).length ? 'These questions are about <em>earlier</em> modules' : 'These questions are about basic JavaScript and how this lab works';
+  body.appendChild(h(`<p class="muted" style="max-width:720px">Before building, pull a few things back out of memory. ${about}; getting one wrong is useful information, not a penalty.</p>`));
   const wrap = h(`<div class="card" style="max-width:760px"></div>`);
   let answered = Object.keys(state.recall).length;
   def.recall.forEach((q, qi) => {
-    const qEl = h(`<div class="quiz-q"><div class="q">${qi + 1}. ${esc(q.q)}</div></div>`);
+    const qEl = h(`<div class="quiz-q"><div class="q">${qi + 1}. ${inline(q.q)}</div></div>`);
     const prev = state.recall[qi];
     q.options.forEach((opt, oi) => {
-      const b = h(`<button class="quiz-opt" type="button">${esc(opt)}</button>`);
+      const b = h(`<button class="quiz-opt" type="button">${inline(opt)}</button>`);
       if (prev !== undefined) {
         if (oi === q.answer) b.classList.add('correct');
         if (oi === prev && prev !== q.answer) b.classList.add('wrong');
@@ -302,6 +403,8 @@ function renderRecall(body, id, def) {
         if (oi === q.answer) b.classList.add('correct'); else { b.classList.add('wrong'); qEl.querySelectorAll('.quiz-opt')[q.answer].classList.add('correct'); }
         qEl.appendChild(h(`<div class="quiz-why">${md(q.why || '')}</div>`));
         answered++;
+        renderSidebar(id);
+        refreshPhases();
         if (answered >= def.recall.length) showNext();
       });
       qEl.appendChild(b);
@@ -314,7 +417,6 @@ function renderRecall(body, id, def) {
   function showNext() {
     const correct = def.recall.filter((q, qi) => state.recall[qi] === q.answer).length;
     wrap.appendChild(h(`<div class="status-line ${correct === def.recall.length ? 'ok' : ''}">${correct}/${def.recall.length} correct.</div>`));
-    renderSidebar(id);
   }
   if (answered >= def.recall.length) showNext();
   body.appendChild(nextRow);
@@ -323,16 +425,21 @@ function renderRecall(body, id, def) {
 function renderConcept(body, id, def) {
   const state = store.module(id);
   const el = h(`<div class="concept card">${md(def.concept, { predictKey: (i) => `concept-${i}` })}</div>`);
-  activatePredicts(el, { getSaved: (k) => state.predictions[k], setSaved: (k, v) => { state.predictions[k] = v; store.update(id, { predictions: state.predictions }); } });
+  activatePredicts(el, { getSaved: (k) => state.predictions[k], setSaved: (k, v) => {
+    state.predictions[k] = v;
+    const cards = [...el.querySelectorAll('.predict')];
+    const allRevealed = cards.length > 0 && cards.every((c) => state.predictions[c.dataset.key]?.revealed);
+    store.update(id, { predictions: state.predictions, ...(allRevealed ? { conceptRead: true } : {}) });
+    if (allRevealed) refreshPhases();
+  } });
   body.appendChild(el);
   const row = h(`<div class="row" style="margin-top:14px"><a class="btn btn-primary" href="#/m/${id}/build">I'm ready to build →</a></div>`);
   row.firstElementChild.addEventListener('click', () => store.update(id, { conceptRead: true }));
   body.appendChild(row);
 }
 
-function renderBuild(body, id, def, starter) {
+function renderBuild(body, id, def, starter, timeouts) {
   const state = store.module(id);
-  const timeouts = Object.assign({ tests: 20000, demo: 120000 }, def.timeouts || {});
   let stepIdx = Math.min(state.step || 0, def.steps.length - 1);
   const layout = h(`<div>
     <div class="steps-nav"></div>
@@ -349,7 +456,7 @@ function renderBuild(body, id, def, starter) {
           <div class="editor-host"></div>
         </div>
         <div class="row" style="margin-top:10px">
-          <button class="btn btn-primary" id="btn-check" type="button">Check this step (Ctrl+Enter)</button>
+          <button class="btn btn-primary" id="btn-check" type="button">Check this step (Ctrl/Cmd+Enter)</button>
           <button class="btn" id="btn-check-all" type="button">Check all steps</button>
           <span class="muted small" id="run-state"></span>
         </div>
@@ -365,18 +472,37 @@ function renderBuild(body, id, def, starter) {
   const $console = layout.querySelector('.console');
   const $runState = layout.querySelector('#run-state');
   const $saveState = layout.querySelector('#save-state');
+  const $check = layout.querySelector('#btn-check'), $checkAll = layout.querySelector('#btn-check-all');
 
-  const save = debounce((code) => { store.update(id, { code }); $saveState.textContent = 'saved'; }, 400);
+  // Saving: debounced, honest about failure, and flushable (route change, tab hide, unload).
+  let pendingCode = null, panelStatus = null;
+  function showSaved(ok) {
+    $saveState.textContent = ok ? 'saved' : 'not saved — browser storage unavailable (use Download / Export)';
+    $saveState.className = ok ? 'muted' : 'save-warn';
+  }
+  function commit(code) {
+    pendingCode = null;
+    store.update(id, { code });
+    showSaved(store.lastWriteOk);
+    renderNav();
+    if (stepStatus(state, def.steps[stepIdx].id, code) !== panelStatus) renderPanel();
+    refreshPhases();
+  }
+  const save = debounce((code) => { if (pendingCode === code) commit(code); }, 400);
+  flushPendingSave = () => { if (pendingCode !== null) commit(pendingCode); };
   const editor = createEditor(layout.querySelector('.editor-host'), {
-    value: state.code ?? starter,
-    onChange: (v) => { $saveState.textContent = 'saving…'; save(v); },
-    onRun: () => check(def.steps[stepIdx].id),
+    value: currentCode(state, starter),
+    onChange: (v) => { pendingCode = v; $saveState.textContent = 'saving…'; $saveState.className = 'muted'; save(v); },
+    onRun: () => { if (!runner.busy) check(def.steps[stepIdx].id); },
   });
+  showSaved(store.lastWriteOk);
 
   function renderNav() {
     $nav.innerHTML = '';
+    const code = currentCode(state, starter);
     def.steps.forEach((s, i) => {
-      const chip = h(`<button class="step-chip ${i === stepIdx ? 'active' : ''} ${state.stepsDone[s.id] ? 'done' : ''}" type="button">${state.stepsDone[s.id] ? '✓ ' : ''}${i + 1}. ${esc(s.title)}</button>`);
+      const st = stepStatus(state, s.id, code);
+      const chip = h(`<button class="step-chip ${i === stepIdx ? 'active' : ''} ${st === 'pass' ? 'done' : ''}" type="button" ${st === 'stale' ? `title="${STALE_NOTE}"` : ''}>${st === 'pass' ? '✓ ' : st === 'stale' ? '↻ ' : ''}${i + 1}. ${esc(s.title)}</button>`);
       chip.addEventListener('click', () => { stepIdx = i; store.update(id, { step: i }); renderNav(); renderPanel(); });
       $nav.appendChild(chip);
     });
@@ -409,79 +535,75 @@ function renderBuild(body, id, def, starter) {
       hints.appendChild(hint);
     });
     $panel.appendChild(hints);
-    if (state.stepsDone[s.id]) $panel.appendChild(h(`<div class="status-line ok">✓ This step's tests pass.${stepIdx + 1 < def.steps.length ? ` <a href="#" data-next>Next step →</a>` : ` <a href="#/m/${id}/goal">Run the goal →</a>`}</div>`));
+    panelStatus = stepStatus(state, s.id, currentCode(state, starter));
+    if (panelStatus === 'pass') $panel.appendChild(h(`<div class="status-line ok">✓ This step's tests pass.${stepIdx + 1 < def.steps.length ? ` <a href="#" data-next>Next step →</a>` : ` <a href="#/m/${id}/goal">Run the goal →</a>`}</div>`));
+    else if (panelStatus === 'stale') $panel.appendChild(h(`<div class="status-line hint-stale">↻ This step ${STALE_NOTE}.</div>`));
     const nx = $panel.querySelector('[data-next]');
     if (nx) nx.addEventListener('click', (e) => { e.preventDefault(); stepIdx++; store.update(id, { step: stepIdx }); renderNav(); renderPanel(); });
   }
 
-  function logLine(msg) {
-    $console.classList.remove('hidden');
-    const d = document.createElement('div');
-    d.className = `log-line ${msg.level === 'error' ? 'log-error' : msg.level === 'warn' ? 'log-warn' : ''}`;
-    d.textContent = msg.text;
-    $console.appendChild(d);
-    $console.scrollTop = $console.scrollHeight;
-  }
-
+  let activeRun = 0;
   async function check(stepId) {
     const code = editor.getValue();
+    pendingCode = null;
     store.update(id, { code });
+    showSaved(store.lastWriteOk);
     $results.innerHTML = '';
     $console.innerHTML = '';
     $console.classList.add('hidden');
     $runState.textContent = 'running…';
-    layout.querySelector('#btn-check').disabled = true;
-    layout.querySelector('#btn-check-all').disabled = true;
-    const byStep = {};
+    $check.disabled = true; $checkAll.disabled = true;
+    const myRun = ++activeRun;
     let res;
     try {
       res = await runner.run({ mode: 'tests', code, moduleId: id, stepId, timeout: timeouts.tests, onMessage: (msg) => {
-        if (msg.type === 'log') logLine(msg);
+        if (msg.type === 'log') appendLogLines($console, logLinesOf(msg));
         if (msg.type === 'test') {
-          (byStep[msg.step] = byStep[msg.step] || []).push(msg);
           const stepTitle = def.steps.find((s) => s.id === msg.step)?.title || msg.step;
-          const el = h(`<div class="test ${msg.pass ? 'pass' : 'fail'}"><span class="mark">${msg.pass ? '✓' : '✗'}</span><div><div>${stepId ? '' : `<span class="muted">${esc(stepTitle)} · </span>`}${esc(msg.name)}</div>${msg.pass ? '' : `<div class="msg">${esc(msg.message)}</div>`}</div><span class="ms">${msg.ms.toFixed(0)} ms</span></div>`);
-          $results.appendChild(el);
+          $results.appendChild(h(`<div class="test ${msg.pass ? 'pass' : 'fail'}"><span class="mark">${msg.pass ? '✓' : '✗'}</span><div><div>${stepId ? '' : `<span class="muted">${esc(stepTitle)} · </span>`}${esc(msg.name)}</div>${msg.pass ? '' : `<div class="msg">${esc(msg.message)}</div>`}</div><span class="ms">${msg.ms.toFixed(0)} ms</span></div>`));
         }
-        if (msg.type === 'error') $results.appendChild(h(`<div class="status-line bad">Error: ${esc(msg.message)}</div>`));
+        if (msg.type === 'error') $results.appendChild(errorLine(msg, editor));
       } });
     } catch (err) {
-      if (err.message !== 'superseded') $results.appendChild(h(`<div class="status-line bad">${esc(err.message)}</div>`));
+      if (err.message !== 'superseded' && err.message !== 'navigated') $results.appendChild(h(`<div class="status-line bad">${esc(err.message)}</div>`));
       return;
     } finally {
-      layout.querySelector('#btn-check').disabled = false;
-      layout.querySelector('#btn-check-all').disabled = false;
-      $runState.textContent = '';
+      if (myRun === activeRun) { $check.disabled = false; $checkAll.disabled = false; $runState.textContent = ''; }
     }
     state.attempts = typeof state.attempts === 'object' && state.attempts ? state.attempts : {};
-    const touched = stepId ? [stepId] : def.steps.map((s) => s.id);
-    for (const sid of touched) {
-      state.attempts[sid] = (state.attempts[sid] || 0) + 1;
-      const list = byStep[sid] || [];
-      const allPass = list.length > 0 && list.every((t) => t.pass);
-      if (allPass) state.stepsDone[sid] = true; else delete state.stepsDone[sid];
+    // Hints unlock per step after a genuine attempt at that step: "Check all" counts only for the step you are on.
+    const attempted = stepId || def.steps[stepIdx].id;
+    state.attempts[attempted] = (state.attempts[attempted] || 0) + 1;
+    if (res.summary) {
+      applyTestResults(state, def, res.tests, code);
+    } else {
+      // The file did not load at all (syntax error or a throw at top level): nothing can be considered passing.
+      applyTestResults(state, def, [], code, { clearAll: true });
+      $results.appendChild(h(`<div class="status-line bad">No tests ran, so every step is marked as not passing until the file loads again.</div>`));
     }
     store.update(id, { attempts: state.attempts, stepsDone: state.stepsDone });
     if (res.summary) {
       const ok = res.summary.failed === 0 && res.summary.total > 0;
-      $results.prepend(h(`<div class="status-line ${ok ? 'ok' : 'bad'}">${res.summary.passed}/${res.summary.total} tests passed${ok && stepsAllDone(def, state) ? ' — all steps done. Head to the Goal tab.' : ''}</div>`));
+      $results.prepend(h(`<div class="status-line ${ok ? 'ok' : 'bad'}">${res.summary.passed}/${res.summary.total} tests passed${ok && stepsAllDone(def, state, code) ? ' — all steps done. Head to the Goal tab.' : ''}</div>`));
     }
     renderNav();
     renderPanel();
     renderSidebar(id);
+    refreshPhases();
   }
 
-  layout.querySelector('#btn-check').addEventListener('click', () => check(def.steps[stepIdx].id));
-  layout.querySelector('#btn-check-all').addEventListener('click', () => check(null));
-  layout.querySelector('#btn-reset').addEventListener('click', () => { if (confirm('Replace your code with the starter file?')) { editor.setValue(starter); store.update(id, { code: starter }); } });
+  $check.addEventListener('click', () => check(def.steps[stepIdx].id));
+  $checkAll.addEventListener('click', () => check(null));
+  layout.querySelector('#btn-reset').addEventListener('click', () => { if (confirm('Replace your code with the starter file?')) { editor.setValue(starter); commit(starter); } });
   layout.querySelector('#btn-download').addEventListener('click', () => download(`${id}.js`, editor.getValue()));
   layout.querySelector('#btn-solution').addEventListener('click', async () => {
-    const attempts = Object.values((state.attempts && typeof state.attempts === 'object') ? state.attempts : {}).reduce((a, b) => a + b, 0);
-    if (attempts < 2 && !confirm('You have not tried the tests twice yet. Looking at the reference now will cost you most of the learning. Show it anyway?')) return;
+    const cur = def.steps[stepIdx].id;
+    const attempts = (state.attempts && typeof state.attempts === 'object' && state.attempts[cur]) || 0;
+    if (attempts < 2 && !confirm(`You have not tried this step's tests twice yet (${attempts} so far). The reference contains every step's solution; looking now will cost you most of the learning. Show it anyway?`)) return;
     const sol = await fetchSolution(id);
     const wrap = h(`<div class="card" style="margin-top:12px"><div class="row"><b>Reference solution</b><span class="spacer"></span><button class="btn btn-small" id="sol-copy" type="button">Load into editor</button><button class="btn btn-small" id="sol-close" type="button">Close</button></div><pre class="code"><code>${esc(sol)}</code></pre></div>`);
     wrap.querySelector('#sol-close').addEventListener('click', () => wrap.remove());
-    wrap.querySelector('#sol-copy').addEventListener('click', () => { if (confirm('Replace your code with the reference? Your version will be lost.')) { editor.setValue(sol); store.update(id, { code: sol }); } });
+    wrap.querySelector('#sol-copy').addEventListener('click', () => { if (confirm('Replace your code with the reference? Your version will be lost.')) { editor.setValue(sol); commit(sol); } });
     $results.before(wrap);
   });
   renderNav();
@@ -489,17 +611,19 @@ function renderBuild(body, id, def, starter) {
   setTimeout(() => editor.refresh(), 0);
 }
 
-function renderGoal(body, id, def, starter) {
+function renderGoal(body, id, def, starter, timeouts) {
   const state = store.module(id);
-  const timeouts = Object.assign({ tests: 20000, demo: 120000 }, def.timeouts || {});
-  const ready = stepsAllDone(def, state);
+  const code = currentCode(state, starter);
+  const ready = stepsAllDone(def, state, code);
+  const demo = demoStatus(state, code);
   const wrap = h(`<div>
     <div class="card" style="max-width:820px">
       <h2 style="margin-top:0">Run the goal</h2>
       <p>${esc(def.goal)}</p>
-      <p class="muted small">The demo runs <em>your</em> code from the Build tab. ${ready ? 'All steps pass.' : 'Not all steps pass yet; the demo may fail or show odd results, which is itself informative.'}</p>
+      <p class="muted small">The demo runs <em>your</em> code from the Build tab. ${ready ? 'All steps pass on the current code.' : 'Not all steps pass on the current code yet; the demo may fail or show odd results, which is itself informative.'}</p>
       <div class="row"><button class="btn btn-primary" id="btn-run" type="button">Run the goal demo</button><button class="btn" id="btn-stop" type="button" disabled>Stop</button><span class="muted small" id="goal-state"></span></div>
-      ${state.demoDone ? `<div class="done-banner"><b>Working goal achieved</b> (last run)<div>${md(state.demoSummary || '')}</div></div>` : ''}
+      ${demo === 'pass' ? `<div class="done-banner"><b>Working goal achieved</b> (last run)<div>${md(state.demoSummary || '')}</div></div>` : ''}
+      ${demo === 'stale' ? `<div class="status-line hint-stale">↻ The goal demo ${STALE_NOTE} — run it again on this version.</div>` : ''}
     </div>
     <div class="goal-out"></div>
   </div>`);
@@ -509,24 +633,19 @@ function renderGoal(body, id, def, starter) {
   const $run = wrap.querySelector('#btn-run');
   const $stop = wrap.querySelector('#btn-stop');
   let progressEl = null, consoleEl = null;
-  function consoleLine(text, level) {
-    if (!consoleEl) { consoleEl = h(`<div class="console"></div>`); $out.appendChild(consoleEl); }
-    const d = document.createElement('div');
-    d.className = `log-line ${level === 'error' ? 'log-error' : level === 'warn' ? 'log-warn' : ''}`;
-    d.textContent = text;
-    consoleEl.appendChild(d);
-    consoleEl.scrollTop = consoleEl.scrollHeight;
-  }
   $stop.addEventListener('click', () => runner.cancel('stopped'));
   $run.addEventListener('click', async () => {
     $out.innerHTML = '';
     consoleEl = null; progressEl = null;
     $run.disabled = true; $stop.disabled = false;
     $state.textContent = 'running…';
-    const code = state.code ?? starter;
+    const runCode = currentCode(state, starter);
     try {
-      const res = await runner.run({ mode: 'demo', code, moduleId: id, timeout: timeouts.demo, onMessage: (msg) => {
-        if (msg.type === 'log') consoleLine(msg.text, msg.level);
+      const res = await runner.run({ mode: 'demo', code: runCode, moduleId: id, timeout: timeouts.demo, onMessage: (msg) => {
+        if (msg.type === 'log') {
+          if (!consoleEl) { consoleEl = h(`<div class="console"></div>`); $out.appendChild(consoleEl); }
+          appendLogLines(consoleEl, logLinesOf(msg));
+        }
         else if (msg.type === 'md') { const d = h(`<div class="card md">${md(msg.markdown)}</div>`); $out.appendChild(d); }
         else if (msg.type === 'plot' || msg.type === 'bar' || msg.type === 'heatmap' || msg.type === 'table') { consoleEl = null; renderChart($out, msg.type, msg.spec); }
         else if (msg.type === 'progress') {
@@ -535,11 +654,16 @@ function renderGoal(body, id, def, starter) {
           progressEl.querySelector('.plabel').textContent = msg.label || '';
         }
         else if (msg.type === 'demo-done') {
-          store.update(id, { demoDone: true, demoSummary: msg.summary });
+          store.update(id, { demoDone: codeHash(runCode), demoSummary: msg.summary });
           $out.appendChild(h(`<div class="done-banner"><b>Working goal achieved.</b><div>${md(msg.summary)}</div><div style="margin-top:8px"><a class="btn btn-primary btn-small" href="#/m/${id}/reflect">Continue to Reflect →</a></div></div>`));
           renderSidebar(id);
+          refreshPhases();
         }
-        else if (msg.type === 'error') $out.appendChild(h(`<div class="status-line bad">Error: ${esc(msg.message)}${msg.stack ? `<pre class="code small">${esc(String(msg.stack).split('\n').slice(0, 6).join('\n'))}</pre>` : ''}</div>`));
+        else if (msg.type === 'error') {
+          const el = errorLine(msg);
+          if (msg.stack) el.appendChild(h(`<pre class="code small">${esc(String(msg.stack).split('\n').slice(0, 6).join('\n'))}</pre>`));
+          $out.appendChild(el);
+        }
       } });
       $state.textContent = res.error ? 'finished with errors' : 'finished';
     } catch (err) {
@@ -550,9 +674,13 @@ function renderGoal(body, id, def, starter) {
   });
 }
 
-function renderReflect(body, id, def) {
+function renderReflect(body, id, def, starter, timeouts) {
   const state = store.module(id);
-  const ready = stepsAllDone(def, state) && state.demoDone;
+  const code = currentCode(state, starter);
+  const mark = (st) => (st === 'pass' ? '✓' : st === 'stale' ? '↻' : '○');
+  const cls = (st) => (st === 'pass' ? 'ok' : st === 'stale' ? 'hint-stale' : 'no');
+  const buildSt = stepsAllDone(def, state, code) ? 'pass' : def.steps.some((s) => stepStatus(state, s.id, code) === 'stale') ? 'stale' : 'no';
+  const demoSt = demoStatus(state, code);
   const wrap = h(`<div class="reflect">
     <div class="card" style="max-width:820px">
       <h2 style="margin-top:0">Explain it in your own words</h2>
@@ -566,21 +694,26 @@ function renderReflect(body, id, def) {
     <div class="card" style="max-width:820px">
       <h3 style="margin-top:0">Complete the module</h3>
       <ul class="checklist">
-        <li class="${stepsAllDone(def, state) ? 'ok' : 'no'}">${stepsAllDone(def, state) ? '✓' : '○'} All build steps pass</li>
-        <li class="${state.demoDone ? 'ok' : 'no'}">${state.demoDone ? '✓' : '○'} Goal demo ran on your code</li>
+        <li class="${cls(buildSt)}" id="build-check">${mark(buildSt)} All build steps pass on the current code${buildSt === 'stale' ? ` (${STALE_NOTE})` : ''}</li>
+        <li class="${cls(demoSt)}">${mark(demoSt)} Goal demo ran on the current code${demoSt === 'stale' ? ` (${STALE_NOTE})` : ''}</li>
         <li class="no" id="refl-check">○ At least one reflection written</li>
       </ul>
-      <div class="row"><button class="btn btn-primary" id="btn-complete" type="button" ${ready ? '' : 'disabled'}>${state.completedAt ? 'Completed ✓' : 'Mark module complete'}</button>${state.completedAt ? `<span class="muted small">Completed ${new Date(state.completedAt).toLocaleDateString()}. Enrolled in the review queue.</span>` : ''}</div>
+      <p class="muted small">Completing re-runs every test on the code in the editor first.</p>
+      <div class="row"><button class="btn btn-primary" id="btn-complete" type="button" disabled>${state.completedAt ? 'Completed ✓' : 'Mark module complete'}</button>${state.completedAt ? `<span class="muted small">Completed ${new Date(state.completedAt).toLocaleDateString()}. Enrolled in the review queue.</span>` : ''}</div>
+      <div id="complete-msg"></div>
     </div>
   </div>`);
   body.appendChild(wrap);
   const $prompts = wrap.querySelector('.prompts');
   const $reflCheck = wrap.querySelector('#refl-check');
   const $complete = wrap.querySelector('#btn-complete');
+  const $msg = wrap.querySelector('#complete-msg');
+  const anyReflection = () => Object.values(state.reflections).some((t) => t && t.trim().length > 20);
   function updateChecklist() {
-    const any = Object.values(state.reflections).some((t) => t && t.trim().length > 20);
+    const any = anyReflection();
     $reflCheck.className = any ? 'ok' : 'no';
     $reflCheck.textContent = `${any ? '✓' : '○'} At least one reflection written (20+ characters)`;
+    const ready = buildSt !== 'no' && demoSt === 'pass';   // stale steps are re-checked on completion; a stale demo must be re-run
     $complete.disabled = !(ready && any) || !!state.completedAt;
   }
   (def.reflection || []).forEach((p, i) => {
@@ -591,13 +724,29 @@ function renderReflect(body, id, def) {
     $prompts.appendChild(el);
   });
   updateChecklist();
-  $complete.addEventListener('click', () => {
+  $complete.addEventListener('click', async () => {
+    $complete.disabled = true;
+    $complete.textContent = 'Re-checking your code…';
+    $msg.innerHTML = '';
+    let res = null;
+    try { res = await runner.run({ mode: 'tests', code, moduleId: id, stepId: null, timeout: timeouts.tests, onMessage: () => {} }); }
+    catch (err) { if (err.message === 'navigated') return; $msg.appendChild(h(`<div class="status-line bad">${esc(err.message)}</div>`)); }
+    if (res) applyTestResults(state, def, res.tests, code, { clearAll: !res.summary });
+    store.update(id, { stepsDone: state.stepsDone });
+    const ok = res && res.summary && res.summary.failed === 0 && res.summary.total > 0 && stepsAllDone(def, state, code) && demoStatus(state, code) === 'pass';
+    if (!ok) {
+      const failed = res && res.summary ? `${res.summary.failed} of ${res.summary.total} tests fail on the current code` : res && res.error ? res.error.message : 'the tests could not run';
+      $msg.appendChild(h(`<div class="status-line bad">Not complete yet: ${esc(failed)}. <a href="#/m/${id}/build">Back to Build</a></div>`));
+      $complete.textContent = 'Mark module complete';
+      renderSidebar(id); refreshPhases();
+      return;
+    }
     store.update(id, { completedAt: Date.now() });
     enrollReview(id);
     renderSidebar(id);
+    refreshPhases();
     const nx = nextModule(id);
     $complete.textContent = 'Completed ✓';
-    $complete.disabled = true;
     $complete.parentElement.appendChild(h(`<span>Enrolled in the review queue. ${nx ? `<a class="btn btn-small" href="#/m/${nx.id}">Next: ${esc(nx.title)} →</a>` : 'That was the last module.'}</span>`));
   });
 }
@@ -690,21 +839,52 @@ function renderChat() {
 
 // ---------- router ----------
 
+// No stored state may lock the learner out: any render failure shows a way to reset saved progress.
+function showFatal(err) {
+  console.error(err);
+  $app.innerHTML = '';
+  $app.appendChild(h(`<div class="card" style="max-width:720px"><h2 style="margin-top:0">Something went wrong</h2><pre class="code small">${esc(err && err.stack || String(err))}</pre>
+    <div class="row"><a class="btn" href="#/">Reload the home page</a><button class="btn" id="fatal-export" type="button">Export saved progress</button><button class="btn" id="fatal-reset" type="button">Reset saved progress</button></div></div>`));
+  $app.querySelector('#fatal-export').addEventListener('click', () => { try { download('btu-progress.json', store.export()); } catch (e) { alert('Could not export: ' + e.message); } });
+  $app.querySelector('#fatal-reset').addEventListener('click', () => { if (confirm('Erase all saved code, answers and progress in this browser?')) { store.reset(); location.hash = '#/'; route(); } });
+}
+
+function leavePage() {
+  if (flushPendingSave) { try { flushPendingSave(); } catch { /* ignore */ } flushPendingSave = null; }
+  // Leaving the Concept phase by any route (a tab, a chip, the sidebar) counts as having read it.
+  if (currentPage && currentPage.phase === 'concept') store.update(currentPage.id, { conceptRead: true });
+  currentPage = null;
+}
+
 function route() {
+  const seq = ++renderSeq;
   runner.cancel('navigated');
   if (chatWorker) { chatWorker.terminate(); chatWorker = null; }
+  leavePage();
   $sidebar.classList.remove('open');
   const hash = location.hash || '#/';
   const parts = hash.replace(/^#\/?/, '').split('/').filter(Boolean);
   window.scrollTo(0, 0);
-  if (parts[0] === 'm' && parts[1]) { renderSidebar(parts[1]); renderModulePage(parts[1], parts[2] || null); return; }
-  renderSidebar(null);
-  if (parts[0] === 'review') return renderReview();
-  if (parts[0] === 'about') return renderAbout();
-  if (parts[0] === 'chat') return renderChat();
-  renderHome();
+  try {
+    let p;
+    if (parts[0] === 'm' && parts[1]) { renderSidebar(parts[1]); p = renderModulePage(parts[1], parts[2] || null, seq); }
+    else {
+      renderSidebar(null);
+      if (parts[0] === 'review') p = renderReview(seq);
+      else if (parts[0] === 'about') renderAbout();
+      else if (parts[0] === 'chat') renderChat();
+      else renderHome();
+    }
+    if (p) p.catch((err) => { if (seq === renderSeq) showFatal(err); });
+  } catch (err) {
+    showFatal(err);
+  }
 }
 
 try { const t = localStorage.getItem('btu:theme'); if (t) document.documentElement.dataset.theme = t; } catch { /* ignore */ }
 window.addEventListener('hashchange', route);
+window.addEventListener('pagehide', () => { if (flushPendingSave) flushPendingSave(); });
+window.addEventListener('beforeunload', () => { if (flushPendingSave) flushPendingSave(); });
+document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden' && flushPendingSave) flushPendingSave(); });
+store.onExternalChange(() => { renderSidebar(currentPage ? currentPage.id : null); refreshPhases(); });
 route();

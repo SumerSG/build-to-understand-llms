@@ -14,7 +14,7 @@
 import { mkdirSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
-import { CORPUS, getBatch, trainValSplit } from '../lib/data.js';
+import { CORPUS, getBatch, interleavedSplit } from '../lib/data.js';
 import { BPETokenizer } from '../lib/tokenizer.js';
 import { GPT } from '../lib/gpt.js';
 import { crossEntropy, noGrad } from '../lib/tensor.js';
@@ -114,7 +114,7 @@ function main() {
 
   const tokenizer = prepareTokenizer(resume);
   const ids = tokenizer.encode(CORPUS);
-  const { train, val } = trainValSplit(ids, 0.9);
+  const { train, val } = interleavedSplit(ids, { chunk: 256, holdOut: 10 });
   const baseline = unigramEntropy(train, tokenizer.vocabSize);
   console.log(
     `data: ${CORPUS.length} chars -> ${ids.length} tokens ` +
@@ -143,6 +143,8 @@ function main() {
   const total = startStep + steps;
   const started = now();
   let lastLoss = NaN;
+  let bestVal = Infinity;
+  let bestStep = startStep;
 
   for (let step = startStep; step < total; step++) {
     // The schedule is defined over the whole run, so a resumed run picks it up where it left off.
@@ -164,18 +166,29 @@ function main() {
           `lr ${optimizer.lr.toExponential(2)} | |g| ${gradNorm.toFixed(2)} | ` +
           `${((step - startStep + 1) / elapsed).toFixed(2)} steps/s`,
       );
+      // Keep the checkpoint with the best validation loss: a small corpus overfits long before the schedule ends.
+      if (valLoss < bestVal) {
+        bestVal = valLoss;
+        bestStep = step;
+        saveCheckpoint(model, { step: step + 1, trainLoss: lastLoss, valLoss, baseline, config: CONFIG, best: true });
+      }
     }
     if (step > startStep && step % TRAIN.sampleEvery === 0) {
       console.log(`sample @ ${step}: ${JSON.stringify(sampleText(model, tokenizer, 'The ', step))}`);
-    }
-    if (step > startStep && step % TRAIN.saveEvery === 0) {
-      saveCheckpoint(model, { step: step + 1, trainLoss: lastLoss, config: CONFIG });
     }
   }
 
   const trainLoss = estimateLoss(model, train, 7);
   const valLoss = estimateLoss(model, val, 99);
-  saveCheckpoint(model, { step: total, trainLoss, valLoss, baseline, config: CONFIG });
+  if (valLoss < bestVal) {
+    bestVal = valLoss;
+    bestStep = total - 1;
+    saveCheckpoint(model, { step: total, trainLoss, valLoss, baseline, config: CONFIG, best: true });
+  }
+  // Report on the checkpoint that was actually kept.
+  const kept = GPT.fromJSON(JSON.parse(readFileSync(MODEL_PATH, 'utf8')));
+  console.log(`kept: best validation checkpoint from step ${bestStep} (val ${bestVal.toFixed(4)})`);
+  model = kept;
 
   const wallClock = (now() - started) / 1000;
   const tokensSeen = steps * TRAIN.batchSize * CONFIG.blockSize;

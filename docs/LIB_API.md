@@ -140,14 +140,15 @@ export function generate(model /* InferModel */, tokenizer, prompt, { maxNewToke
 
 ## `lib/data.js`
 ```js
-export const CORPUS: string                       // ≈40 KB: toyCorpus(4000, 1) + PROSE
+export const CORPUS: string                       // ≈43 KB: toyCorpus(800, 1) + '\n\n' + PROSE
 export const PROSE: string                        // ≈12 KB public-domain English prose/verse
 export function toyCorpus(nSentences = 4000, seed = 1) → string   // procedural grammar with clear structure
 export const INSTRUCTIONS: Array<{ prompt: string, response: string }>      // ≥ 60 short pairs
 export const PREFERENCES: Array<{ prompt: string, chosen: string, rejected: string }>  // ≥ 40
 export const MATH_TASKS: Array<{ question: string, answer: string }>       // ≥ 100 one-step arithmetic tasks (verifiable rewards)
 export function getBatch(ids /* number[] */, { blockSize, batchSize, next }) → { x: number[][], y: number[][] }
-export function trainValSplit(ids, frac = 0.9) → { train, val }
+export function trainValSplit(ids, frac = 0.9) → { train, val }   // contiguous: the last (1-frac) of the tokens
+export function interleavedSplit(ids, { chunk = 256, holdOut = 10 } = {}) → { train, val }  // every holdOut-th chunk held out (representative of all sources)
 export const CHAT = { system: '<|system|>', user: '<|user|>', assistant: '<|assistant|>', end: '<|end|>' }
 export function formatChat(messages /* [{role, content}] */) → string
 ```

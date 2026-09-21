@@ -212,6 +212,9 @@ hr { border: 0; border-top: 1px solid var(--grid); margin: 1.2em 0; }
 .chart-tip { position: absolute; background: var(--surface); border: 1px solid var(--axis); border-radius: 6px; padding: 6px 10px; font-size: 12px; pointer-events: none; box-shadow: 0 4px 12px rgba(0,0,0,0.15); z-index: 5; white-space: nowrap; }
 .chart-tip .tip-x { color: var(--muted); }
 .chart-table { max-height: 320px; overflow: auto; }
+.chart-note { margin-top: 4px; }
+.save-warn { color: var(--warn); }
+.hint-stale { color: var(--warn); font-size: 13px; }
 
 /* reflect */
 .reflect textarea { width: 100%; min-height: 90px; font: inherit; font-size: 14px; padding: 10px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg); color: var(--ink); resize: vertical; }
@@ -265,4 +268,9 @@ hr { border: 0; border-top: 1px solid var(--grid); margin: 1.2em 0; }
   .sidebar-toggle { display: inline-block; margin-bottom: 12px; }
   .main { padding: 16px 16px 60px; }
   .editor-host { height: 380px; }
+}
+@media (max-width: 480px) {
+  /* five phases must fit a 360–390 px phone without hiding "Reflect" behind an unsignalled scroll */
+  .phases { flex-wrap: wrap; gap: 2px; }
+  .phase { padding: 8px 9px; font-size: 13px; gap: 4px; }
 }

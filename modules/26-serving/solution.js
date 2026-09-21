@@ -350,7 +350,7 @@ export function runCluster(requests, opts = {}) {
   let promptTokens = 0, computedPromptTokens = 0, cachedTokens = 0, cacheHits = 0;
   let decodeTokens = 0, transferSecondsTotal = 0, handoffs = 0, peakReplicas = replicas.length;
   let nextScaleAt = t + cfg.scaleIntervalSeconds;
-  const window = [];
+  const rawWindow = [];
 
   const drop = (r, s) => {
     const i = r.running.indexOf(s);
@@ -451,9 +451,9 @@ export function runCluster(requests, opts = {}) {
       const snap = { pendingTokens, ready: alive.filter((x) => x.ready).length, total: alive.length };
       const raw = queueTarget(snap, cfg);
       if (!Number.isFinite(raw)) throw new Error(`queueTarget returned ${raw}; it must be a replica count`);
-      window.push(raw);
-      while (window.length > cfg.stabilizationTicks) window.shift();
-      const desired = autoscaleTarget({ ...snap, raw, window }, cfg);
+      rawWindow.push(raw);
+      while (rawWindow.length > cfg.stabilizationTicks) rawWindow.shift();
+      const desired = autoscaleTarget({ ...snap, raw, window: rawWindow }, cfg);
       if (!Number.isFinite(desired) || desired < 0) throw new Error(`autoscaleTarget returned ${desired}; it must be a non-negative replica count`);
       if (desired > alive.length) {
         for (let k = alive.length; k < desired; k++) addReplica('both', t, t + cfg.coldStartSeconds);
