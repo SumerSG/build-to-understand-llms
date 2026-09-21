@@ -49,7 +49,7 @@ docs/               PEDAGOGY.md, MODULE_FORMAT.md, LIB_API.md
 ```bash
 node tools/verify.mjs                      # every module: schema, tests on starter & solution, demo
 node tools/verify.mjs --module 05-attention
-node --test lib/tests/                     # shared library tests
+node --test 'lib/tests/*.test.mjs'                     # shared library tests
 npm i -D playwright-core && npm run e2e    # drive every module through the real UI in headless Chromium
 ```
 
