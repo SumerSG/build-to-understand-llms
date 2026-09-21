@@ -298,6 +298,8 @@ label.small input { width: 72px; padding: 6px var(--s2); font-size: var(--text-s
 .goal-banner .goal { font-size: 19px; line-height: 1.4; letter-spacing: -0.005em; }
 .goal-banner .threshold { font-size: 15px; color: var(--ink-2); margin-top: var(--s3); padding-top: var(--s3); border-top: 1px solid var(--border); line-height: 1.45; }
 .goal-banner .threshold b { color: var(--ink); }
+.prereq-note { font-size: var(--text-secondary); color: var(--warn-ink); background: var(--warn-tint); padding: var(--s2) var(--s3); border-radius: var(--r-input); margin: var(--s2) 0 var(--s4); max-width: var(--measure); line-height: 1.45; }
+.prereq-note a { color: inherit; font-weight: 600; }
 .phases { position: relative; display: inline-flex; gap: 2px; padding: 2px; background: var(--seg-bg); border-radius: 10px; margin: 0 0 var(--s6); max-width: 100%; overflow-x: auto; scrollbar-width: none; -webkit-overflow-scrolling: touch; }
 .phases::-webkit-scrollbar { display: none; }
 .phases-ind { position: absolute; top: 2px; bottom: 2px; left: 0; width: 0; background: var(--seg-ind); border-radius: 8px; box-shadow: var(--seg-shadow); transition: transform var(--dur-slow) var(--ease), width var(--dur-slow) var(--ease); pointer-events: none; }

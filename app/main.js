@@ -339,7 +339,7 @@ async function renderModulePage(id, phaseArg, seq) {
   const head = h(`<div class="mod-head">
     <nav class="crumbs" aria-label="Breadcrumb"><a href="#/">Lab</a><span class="sep">›</span><span>${esc(track ? track.title : meta.track)}</span><span class="sep">›</span><span class="num">Module ${id.slice(0, 2)}</span><span class="sep">·</span><span class="num">about ${meta.minutes} min</span></nav>
     <h1>${esc(def.title)}</h1>
-    ${missingPrereqs.length ? `<div class="badge warn">Recommended first: ${missingPrereqs.map((p) => `<a href="#/m/${p}">${esc(moduleById(p)?.title || p)}</a>`).join(', ')}</div>` : ''}
+    ${missingPrereqs.length ? `<p class="prereq-note">Recommended first: ${missingPrereqs.map((p) => `<a href="#/m/${p}">${esc(moduleById(p)?.title || p)}</a>`).join(' · ')}</p>` : ''}
     <div class="goal-banner"><div class="label">Working goal</div><div class="goal">${esc(def.goal)}</div><div class="threshold"><b>Threshold concept:</b> ${esc(def.threshold || '')}</div></div>
   </div>`);
   $app.appendChild(head);
@@ -348,6 +348,7 @@ async function renderModulePage(id, phaseArg, seq) {
   const phasesEl = h(`<div class="phases"></div>`);
   $app.appendChild(phasesEl);
   currentPage = { id, def, starter, phase, phasesEl };
+  document.dispatchEvent(new Event('btu:page'));
   refreshPhases();
   store.update(id, { tab: phase });
   const body = h(`<div class="phase-body"></div>`);
@@ -397,9 +398,22 @@ function placePhaseIndicator(target = null) {
   const ind = currentPage.phasesEl.querySelector('.phases-ind');
   const el = target || currentPage.phasesEl.querySelector('.phase.active');
   if (!ind || !el) return;
-  ind.style.transform = `translateX(${el.offsetLeft}px)`;
-  ind.style.width = `${el.offsetWidth}px`;
-  if (!target) el.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+  const place = () => {
+    ind.style.transform = `translateX(${el.offsetLeft}px)`;
+    ind.style.width = `${el.offsetWidth}px`;
+  };
+  place();
+  if (!target) {
+    // Measure again once layout and fonts have settled, so the indicator never sits at a stale position.
+    requestAnimationFrame(place);
+    if (document.fonts && document.fonts.ready) document.fonts.ready.then(place);
+    el.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+  }
+}
+if (typeof ResizeObserver !== 'undefined') {
+  const ro = new ResizeObserver(() => placePhaseIndicator());
+  const watch = () => { if (currentPage && currentPage.phasesEl && !currentPage.phasesEl.dataset.watched) { currentPage.phasesEl.dataset.watched = '1'; ro.observe(currentPage.phasesEl); } };
+  document.addEventListener('btu:page', watch);
 }
 
 function renderRecall(body, id, def) {
@@ -830,7 +844,7 @@ function renderChat() {
       const m = e.data;
       if (m.type === 'ready') { $info.innerHTML = `<span>Model: ${m.info.config.nLayer} layers · ${m.info.config.nEmbd} dims · ${m.info.config.nHead} heads · context ${m.info.config.blockSize} · vocab ${m.info.vocab} · <b>${m.info.params.toLocaleString()}</b> parameters</span>`; $send.disabled = false; }
       else if (m.type === 'prefill') { $stats.textContent = `prompt ${m.promptTokens} tokens, ${m.reusedTokens} reused from the KV cache, prefill ${m.ms.toFixed(0)} ms`; }
-      else if (m.type === 'token') { if (current) { current.textContent += m.text; $log.scrollTop = $log.scrollHeight; } }
+      else if (m.type === 'token') { if (current) { current.dataset.raw = (current.dataset.raw || '') + m.text; current.textContent = current.dataset.raw.replace(/\n{3,}/g, '\n\n').replace(/^\n+/, ''); $log.scrollTop = $log.scrollHeight; } }
       else if (m.type === 'done') { messages.push({ role: 'assistant', content: m.text }); $stats.textContent += ` · generated ${m.tokens} tokens in ${m.ms.toFixed(0)} ms (${(1000 * m.tokens / Math.max(1, m.ms)).toFixed(1)} tok/s)`; busy = false; current = null; $send.disabled = false; $stop.disabled = true; }
       else if (m.type === 'note') { $stats.textContent += ` · ${m.text}`; }
       else if (m.type === 'reset-done') { messages.length = 0; $log.innerHTML = ''; $stats.textContent = ''; }
