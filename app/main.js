@@ -25,6 +25,7 @@ const failedLoads = new Set();     // module ids whose module.js could not be im
 let renderSeq = 0;                 // bumped on every route(); async renders bail out when superseded
 let currentPage = null;            // { id, def, starter, phase, phasesEl } for the module page on screen
 let flushPendingSave = null;       // set by renderBuild: writes a debounced edit immediately
+let lastPhaseUI = null;            // { id, phase } of the last rendered phase strip, for the sliding indicator
 
 // ---------- helpers ----------
 
@@ -129,7 +130,7 @@ function errorLine(msg, editor = null) {
 }
 
 function storageWarning() {
-  return h(`<div class="badge warn" style="margin:8px 0">Your browser refused to save progress (private mode, storage disabled or full). Work will be lost on reload: use Download / Export progress.</div>`);
+  return h(`<div class="badge warn" style="margin:0 0 16px">Your browser refused to save progress (private mode, storage disabled or full). Work will be lost on reload: use Download / Export progress.</div>`);
 }
 
 // ---------- sidebar ----------
@@ -176,36 +177,40 @@ function renderHome() {
   $app.innerHTML = '';
   $app.appendChild(sidebarButton());
   if (!store.lastWriteOk) $app.appendChild(storageWarning());
-  $app.appendChild(h(`<div>
+  $app.appendChild(h(`<section class="hero">
     <h1>Build to understand the LLM stack</h1>
-    <p style="max-width:760px">Twenty-eight self-contained projects. In each one you build a real piece of a modern language-model
-    system in your browser — from a tensor library to a data-center serving simulator — and it is not done until
-    <em>your</em> code passes the tests and runs the goal demo. Reading is optional; building is not.</p>
-    <div class="row" style="margin:14px 0 22px">
-      ${lastMod ? `<a class="btn btn-primary" href="#/m/${lastMod.id}">Continue: ${esc(lastMod.title)}</a>` : ''}
-      ${next && (!lastMod || next.id !== lastMod.id) ? `<a class="btn" href="#/m/${next.id}">${lastMod ? 'Next up' : 'Start'}: ${esc(next.title)}</a>` : ''}
+    <p class="lede">Twenty-eight self-contained projects: build every layer of a modern language-model system in your browser,
+    and nothing counts as done until <em>your</em> code passes the tests and runs the goal demo.</p>
+    <div class="hero-actions">
+      ${lastMod ? `<a class="btn btn-primary" href="#/m/${lastMod.id}">Continue: ${esc(lastMod.title)}</a>` : next ? `<a class="btn btn-primary" href="#/m/${next.id}">Start: ${esc(next.title)}</a>` : ''}
+      ${lastMod && next && next.id !== lastMod.id ? `<a class="btn" href="#/m/${next.id}">Next up: ${esc(next.title)}</a>` : ''}
       ${due.length ? `<a class="btn" href="#/review">Review ${due.length} due item${due.length > 1 ? 's' : ''}</a>` : ''}
       <a class="btn btn-ghost" href="#/about">How this lab teaches</a>
     </div>
-  </div>`));
-  const grid = h(`<div class="grid-2"></div>`);
+  </section>`));
+  const grid = h(`<div class="grid-2 tracks"></div>`);
   for (const t of TRACKS) {
     const mods = MODULES.filter((m) => m.track === t.id);
     const done = mods.filter((m) => isComplete(m.id)).length;
     grid.appendChild(h(`<div class="card track-card">
       <h3>${esc(t.title)}</h3>
       <div class="blurb">${esc(t.blurb)}</div>
-      <div class="progress-bar"><i style="width:${mods.length ? (100 * done) / mods.length : 0}%"></i></div>
-      <div class="mods">${mods.map((m) => `<a href="#/m/${m.id}" class="${isComplete(m.id) ? 'done' : ''}">${isComplete(m.id) ? '✓ ' : ''}${m.id.slice(0, 2)} · ${esc(m.title)} <span class="muted small">· ${m.minutes} min</span></a>`).join('')}</div>
+      <div class="progress-bar" title="${done} of ${mods.length} complete"><i style="width:${mods.length ? (100 * done) / mods.length : 0}%"></i></div>
+      <div class="mods">${mods.map((m) => `<a href="#/m/${m.id}" class="${isComplete(m.id) ? 'done' : ''}"><span class="num">${m.id.slice(0, 2)}</span><span class="title">${esc(m.title)}</span><span class="mins">${m.minutes} min</span><span class="check" aria-hidden="true"></span></a>`).join('')}</div>
     </div>`));
   }
   $app.appendChild(grid);
-  $app.appendChild(h(`<div class="card" style="margin-top:18px;max-width:760px">
-    <h3 style="margin-top:0">The loop in every module</h3>
-    <p><b>Recall</b> a few facts from earlier modules (retrieval practice) → <b>Concept</b>: a short read with prediction checkpoints →
-    <b>Build</b> it in 3–6 tested steps with a hint ladder → run the <b>Goal</b> demo on your own code → <b>Reflect</b> in your own words.
-    Your work is saved in this browser only. <a href="#/about">Why it is designed this way.</a></p>
-    <div class="row small"><button class="btn btn-small" id="export-progress" type="button">Export progress</button><button class="btn btn-small" id="import-progress" type="button">Import progress</button><button class="btn btn-small" id="reset-progress" type="button">Reset progress</button></div>
+  $app.appendChild(h(`<div class="card loop-card">
+    <h3>The loop in every module</h3>
+    <ol class="loop">
+      <li><b>Recall</b><span>a few facts from earlier modules</span></li>
+      <li><b>Concept</b><span>a short read with prediction checkpoints</span></li>
+      <li><b>Build</b><span>3–6 tested steps with a hint ladder</span></li>
+      <li><b>Goal</b><span>a demo that runs on your own code</span></li>
+      <li><b>Reflect</b><span>explain it in your own words</span></li>
+    </ol>
+    <p class="small muted">Your work is saved in this browser only. <a href="#/about">Why it is designed this way.</a></p>
+    <div class="row"><button class="btn btn-small" id="export-progress" type="button">Export progress</button><button class="btn btn-small" id="import-progress" type="button">Import progress</button><button class="btn btn-small" id="reset-progress" type="button">Reset progress</button></div>
   </div>`));
   $app.querySelector('#export-progress').addEventListener('click', () => download('btu-progress.json', store.export()));
   $app.querySelector('#import-progress').addEventListener('click', () => {
@@ -227,7 +232,7 @@ function renderHome() {
 function renderAbout() {
   $app.innerHTML = '';
   $app.appendChild(sidebarButton());
-  $app.appendChild(h(`<div class="concept">${md(`
+  $app.appendChild(h(`<div class="concept prose measure">${md(`
 # How this lab teaches
 
 The thesis: **you understand a system when you can build a working version of it.** Every feature in the UI comes from a specific learning principle. The full map is in [docs/PEDAGOGY.md](https://github.com/SumerSG/build-to-understand-llms/blob/main/docs/PEDAGOGY.md); here is the short version.
@@ -262,7 +267,7 @@ async function renderReview(seq) {
   $app.appendChild(sidebarButton());
   const due = dueReviews();
   const all = reviewSummary();
-  const wrap = h(`<div><h1>Review queue</h1><p class="muted" style="max-width:720px">Spaced retrieval on modules you completed. Get at least three quarters of a module's questions right in one sitting (all 3 of 3, or 3 of 4) to move it up a box (${LEITNER_DAYS.join(', ')} days); otherwise it goes back to box 1, due tomorrow.</p></div>`);
+  const wrap = h(`<div class="measure"><h1>Review queue</h1><p class="muted lede-p">Spaced retrieval on modules you completed. Get at least three quarters of a module's questions right in one sitting (all 3 of 3, or 3 of 4) to move it up a box (${LEITNER_DAYS.join(', ')} days); otherwise it goes back to box 1, due tomorrow.</p></div>`);
   $app.appendChild(wrap);
   if (!due.length) {
     wrap.appendChild(h(`<div class="card">Nothing due right now. ${all.length ? `${all.length} module${all.length > 1 ? 's' : ''} scheduled; next due ${new Date(Math.min(...all.map((r) => r.due))).toLocaleDateString()}.` : 'Complete a module to enrol it.'}</div>`));
@@ -276,7 +281,7 @@ async function renderReview(seq) {
     if (seq !== renderSeq) return;
     const qs = (def.review && def.review.length ? def.review : def.recall) || [];
     const need = reviewNeeded(qs.length);
-    const card = h(`<div class="card review-card"><h3 style="margin-top:0">${esc(meta.title)} <span class="badge">box ${item.box + 1}</span></h3><p class="muted small">${qs.length} questions; ${need} correct moves this module up a box.</p></div>`);
+    const card = h(`<div class="card review-card"><h3>${esc(meta.title)} <span class="badge">box ${item.box + 1}</span></h3><p class="muted small">${qs.length} questions; ${need} correct moves this module up a box.</p></div>`);
     let answered = 0, correct = 0;
     for (const q of qs) {
       const qEl = h(`<div class="quiz-q"><div class="q">${inline(q.q)}</div></div>`);
@@ -332,7 +337,7 @@ async function renderModulePage(id, phaseArg, seq) {
   const missingPrereqs = (def.prereqs || []).filter((p) => !isComplete(p));
 
   const head = h(`<div class="mod-head">
-    <div class="crumbs"><a href="#/">Lab</a> › ${esc(track ? track.title : meta.track)} › Module ${id.slice(0, 2)} · about ${meta.minutes} min</div>
+    <nav class="crumbs" aria-label="Breadcrumb"><a href="#/">Lab</a><span class="sep">›</span><span>${esc(track ? track.title : meta.track)}</span><span class="sep">›</span><span class="num">Module ${id.slice(0, 2)}</span><span class="sep">·</span><span class="num">about ${meta.minutes} min</span></nav>
     <h1>${esc(def.title)}</h1>
     ${missingPrereqs.length ? `<div class="badge warn">Recommended first: ${missingPrereqs.map((p) => `<a href="#/m/${p}">${esc(moduleById(p)?.title || p)}</a>`).join(', ')}</div>` : ''}
     <div class="goal-banner"><div class="label">Working goal</div><div class="goal">${esc(def.goal)}</div><div class="threshold"><b>Threshold concept:</b> ${esc(def.threshold || '')}</div></div>
@@ -371,20 +376,37 @@ function refreshPhases() {
     reflect: state.completedAt ? 'pass' : 'no',
   };
   phasesEl.innerHTML = '';
+  const ind = h(`<span class="phases-ind" aria-hidden="true"></span>`);
+  phasesEl.appendChild(ind);
   for (const p of PHASES) {
     if (p.id === 'recall' && !hasRecall) continue;
     const mark = status[p.id] === 'pass' ? '<span class="tick">✓</span>' : status[p.id] === 'stale' ? `<span class="hint-stale" title="${STALE_NOTE}">↻</span>` : '';
-    const b = h(`<div class="phase ${p.id === phase ? 'active' : ''}" data-phase="${p.id}">${mark}${p.label}</div>`);
+    const b = h(`<div class="phase ${p.id === phase ? 'active' : ''}" data-phase="${p.id}" role="tab" aria-selected="${p.id === phase}">${mark}${p.label}</div>`);
     b.addEventListener('click', () => { location.hash = `#/m/${id}/${p.id}`; });
     phasesEl.appendChild(b);
   }
+  // Segmented control: the indicator slides from the previously selected phase of the same module.
+  const from = lastPhaseUI && lastPhaseUI.id === id && lastPhaseUI.phase !== phase ? phasesEl.querySelector(`.phase[data-phase="${lastPhaseUI.phase}"]`) : null;
+  if (from) { ind.style.transition = 'none'; placePhaseIndicator(from); void ind.offsetWidth; ind.style.transition = ''; }
+  placePhaseIndicator();
+  lastPhaseUI = { id, phase };
+}
+
+function placePhaseIndicator(target = null) {
+  if (!currentPage) return;
+  const ind = currentPage.phasesEl.querySelector('.phases-ind');
+  const el = target || currentPage.phasesEl.querySelector('.phase.active');
+  if (!ind || !el) return;
+  ind.style.transform = `translateX(${el.offsetLeft}px)`;
+  ind.style.width = `${el.offsetWidth}px`;
+  if (!target) el.scrollIntoView({ block: 'nearest', inline: 'nearest' });
 }
 
 function renderRecall(body, id, def) {
   const state = store.module(id);
   const about = (def.prereqs || []).length ? 'These questions are about <em>earlier</em> modules' : 'These questions are about basic JavaScript and how this lab works';
-  body.appendChild(h(`<p class="muted" style="max-width:720px">Before building, pull a few things back out of memory. ${about}; getting one wrong is useful information, not a penalty.</p>`));
-  const wrap = h(`<div class="card" style="max-width:760px"></div>`);
+  body.appendChild(h(`<p class="muted measure">Before building, pull a few things back out of memory. ${about}; getting one wrong is useful information, not a penalty.</p>`));
+  const wrap = h(`<div class="card measure"></div>`);
   let answered = Object.keys(state.recall).length;
   def.recall.forEach((q, qi) => {
     const qEl = h(`<div class="quiz-q"><div class="q">${qi + 1}. ${inline(q.q)}</div></div>`);
@@ -413,7 +435,7 @@ function renderRecall(body, id, def) {
     wrap.appendChild(qEl);
   });
   body.appendChild(wrap);
-  const nextRow = h(`<div class="row" style="margin-top:14px"><a class="btn btn-primary" href="#/m/${id}/concept">Continue to Concept →</a><a class="btn btn-ghost" href="#/m/${id}/concept">Skip recall</a></div>`);
+  const nextRow = h(`<div class="row" style="margin-top:24px"><a class="btn btn-primary" href="#/m/${id}/concept">Continue to Concept</a><a class="btn btn-ghost" href="#/m/${id}/concept">Skip recall</a></div>`);
   function showNext() {
     const correct = def.recall.filter((q, qi) => state.recall[qi] === q.answer).length;
     wrap.appendChild(h(`<div class="status-line ${correct === def.recall.length ? 'ok' : ''}">${correct}/${def.recall.length} correct.</div>`));
@@ -424,7 +446,7 @@ function renderRecall(body, id, def) {
 
 function renderConcept(body, id, def) {
   const state = store.module(id);
-  const el = h(`<div class="concept card">${md(def.concept, { predictKey: (i) => `concept-${i}` })}</div>`);
+  const el = h(`<div class="concept card measure">${md(def.concept, { predictKey: (i) => `concept-${i}` })}</div>`);
   activatePredicts(el, { getSaved: (k) => state.predictions[k], setSaved: (k, v) => {
     state.predictions[k] = v;
     const cards = [...el.querySelectorAll('.predict')];
@@ -433,7 +455,7 @@ function renderConcept(body, id, def) {
     if (allRevealed) refreshPhases();
   } });
   body.appendChild(el);
-  const row = h(`<div class="row" style="margin-top:14px"><a class="btn btn-primary" href="#/m/${id}/build">I'm ready to build →</a></div>`);
+  const row = h(`<div class="row" style="margin-top:24px"><a class="btn btn-primary" href="#/m/${id}/build">I'm ready to build</a></div>`);
   row.firstElementChild.addEventListener('click', () => store.update(id, { conceptRead: true }));
   body.appendChild(row);
 }
@@ -455,9 +477,10 @@ function renderBuild(body, id, def, starter, timeouts) {
           </div>
           <div class="editor-host"></div>
         </div>
-        <div class="row" style="margin-top:10px">
-          <button class="btn btn-primary" id="btn-check" type="button">Check this step (Ctrl/Cmd+Enter)</button>
+        <div class="row check-row">
+          <button class="btn btn-primary" id="btn-check" type="button">Check this step</button>
           <button class="btn" id="btn-check-all" type="button">Check all steps</button>
+          <span class="kbd">⌘↩ / Ctrl+Enter checks the current step</span>
           <span class="muted small" id="run-state"></span>
         </div>
         <div class="results"></div>
@@ -524,19 +547,23 @@ function renderBuild(body, id, def, starter, timeouts) {
     (s.hints || []).forEach((text, hi) => {
       const unlocked = attempts > 0 && hi <= open;
       const revealed = attempts > 0 && hi < open;
-      const hint = h(`<div class="hint"><button type="button" ${unlocked ? '' : 'disabled'}>Hint ${hi + 1} of ${s.hints.length}${['', ' · a nudge', ' · the strategy', ' · nearly the code'][hi + 1] || ''}</button><div class="hint-body ${revealed ? '' : 'hidden'}">${md(text)}</div></div>`);
-      hint.querySelector('button').addEventListener('click', () => {
-        hint.querySelector('.hint-body').classList.remove('hidden');
+      const hint = h(`<div class="hint ${revealed ? 'open' : ''}"><button type="button" aria-expanded="${revealed}" ${unlocked ? '' : 'disabled'}><span>Hint ${hi + 1} of ${s.hints.length}${['', ' · a nudge', ' · the strategy', ' · nearly the code'][hi + 1] || ''}</span></button><div class="hint-body"><div class="hint-inner"><div>${md(text)}</div></div></div></div>`);
+      hint.querySelector('button').addEventListener('click', (e) => {
+        // Expand in place (animated) and unlock the next rung; a revealed hint can be folded again without losing it.
+        const open = hint.classList.toggle('open');
+        e.currentTarget.setAttribute('aria-expanded', String(open));
+        if (!open) return;
         state.hintsOpen = state.hintsOpen || {};
         state.hintsOpen[s.id] = Math.max(state.hintsOpen[s.id] || 0, hi + 1);
         store.update(id, { hintsOpen: state.hintsOpen });
-        renderPanel();
+        const next = hint.nextElementSibling && hint.nextElementSibling.querySelector('button');
+        if (next) next.disabled = false;
       });
       hints.appendChild(hint);
     });
     $panel.appendChild(hints);
     panelStatus = stepStatus(state, s.id, currentCode(state, starter));
-    if (panelStatus === 'pass') $panel.appendChild(h(`<div class="status-line ok">✓ This step's tests pass.${stepIdx + 1 < def.steps.length ? ` <a href="#" data-next>Next step →</a>` : ` <a href="#/m/${id}/goal">Run the goal →</a>`}</div>`));
+    if (panelStatus === 'pass') $panel.appendChild(h(`<div class="status-line ok"><span>This step's tests pass.${stepIdx + 1 < def.steps.length ? ` <a href="#" data-next>Next step ›</a>` : ` <a href="#/m/${id}/goal">Run the goal ›</a>`}</span></div>`));
     else if (panelStatus === 'stale') $panel.appendChild(h(`<div class="status-line hint-stale">↻ This step ${STALE_NOTE}.</div>`));
     const nx = $panel.querySelector('[data-next]');
     if (nx) nx.addEventListener('click', (e) => { e.preventDefault(); stepIdx++; store.update(id, { step: stepIdx }); renderNav(); renderPanel(); });
@@ -560,7 +587,7 @@ function renderBuild(body, id, def, starter, timeouts) {
         if (msg.type === 'log') appendLogLines($console, logLinesOf(msg));
         if (msg.type === 'test') {
           const stepTitle = def.steps.find((s) => s.id === msg.step)?.title || msg.step;
-          $results.appendChild(h(`<div class="test ${msg.pass ? 'pass' : 'fail'}"><span class="mark">${msg.pass ? '✓' : '✗'}</span><div><div>${stepId ? '' : `<span class="muted">${esc(stepTitle)} · </span>`}${esc(msg.name)}</div>${msg.pass ? '' : `<div class="msg">${esc(msg.message)}</div>`}</div><span class="ms">${msg.ms.toFixed(0)} ms</span></div>`));
+          $results.appendChild(h(`<div class="test ${msg.pass ? 'pass' : 'fail'}"><span class="mark" role="img" aria-label="${msg.pass ? 'passed' : 'failed'}"></span><div><div>${stepId ? '' : `<span class="muted">${esc(stepTitle)} · </span>`}${esc(msg.name)}</div>${msg.pass ? '' : `<div class="msg">${esc(msg.message)}</div>`}</div><span class="ms">${msg.ms.toFixed(0)} ms</span></div>`));
         }
         if (msg.type === 'error') $results.appendChild(errorLine(msg, editor));
       } });
@@ -601,7 +628,7 @@ function renderBuild(body, id, def, starter, timeouts) {
     const attempts = (state.attempts && typeof state.attempts === 'object' && state.attempts[cur]) || 0;
     if (attempts < 2 && !confirm(`You have not tried this step's tests twice yet (${attempts} so far). The reference contains every step's solution; looking now will cost you most of the learning. Show it anyway?`)) return;
     const sol = await fetchSolution(id);
-    const wrap = h(`<div class="card" style="margin-top:12px"><div class="row"><b>Reference solution</b><span class="spacer"></span><button class="btn btn-small" id="sol-copy" type="button">Load into editor</button><button class="btn btn-small" id="sol-close" type="button">Close</button></div><pre class="code"><code>${esc(sol)}</code></pre></div>`);
+    const wrap = h(`<div class="card"><div class="row"><b>Reference solution</b><span class="spacer"></span><button class="btn btn-small" id="sol-copy" type="button">Load into editor</button><button class="btn btn-small" id="sol-close" type="button">Close</button></div><pre class="code"><code>${esc(sol)}</code></pre></div>`);
     wrap.querySelector('#sol-close').addEventListener('click', () => wrap.remove());
     wrap.querySelector('#sol-copy').addEventListener('click', () => { if (confirm('Replace your code with the reference? Your version will be lost.')) { editor.setValue(sol); commit(sol); } });
     $results.before(wrap);
@@ -617,8 +644,8 @@ function renderGoal(body, id, def, starter, timeouts) {
   const ready = stepsAllDone(def, state, code);
   const demo = demoStatus(state, code);
   const wrap = h(`<div>
-    <div class="card" style="max-width:820px">
-      <h2 style="margin-top:0">Run the goal</h2>
+    <div class="card measure">
+      <h2>Run the goal</h2>
       <p>${esc(def.goal)}</p>
       <p class="muted small">The demo runs <em>your</em> code from the Build tab. ${ready ? 'All steps pass on the current code.' : 'Not all steps pass on the current code yet; the demo may fail or show odd results, which is itself informative.'}</p>
       <div class="row"><button class="btn btn-primary" id="btn-run" type="button">Run the goal demo</button><button class="btn" id="btn-stop" type="button" disabled>Stop</button><span class="muted small" id="goal-state"></span></div>
@@ -655,7 +682,7 @@ function renderGoal(body, id, def, starter, timeouts) {
         }
         else if (msg.type === 'demo-done') {
           store.update(id, { demoDone: codeHash(runCode), demoSummary: msg.summary });
-          $out.appendChild(h(`<div class="done-banner"><b>Working goal achieved.</b><div>${md(msg.summary)}</div><div style="margin-top:8px"><a class="btn btn-primary btn-small" href="#/m/${id}/reflect">Continue to Reflect →</a></div></div>`));
+          $out.appendChild(h(`<div class="done-banner"><b>Working goal achieved.</b><div>${md(msg.summary)}</div><div style="margin-top:8px"><a class="btn btn-primary btn-small" href="#/m/${id}/reflect">Continue to Reflect</a></div></div>`));
           renderSidebar(id);
           refreshPhases();
         }
@@ -681,18 +708,18 @@ function renderReflect(body, id, def, starter, timeouts) {
   const cls = (st) => (st === 'pass' ? 'ok' : st === 'stale' ? 'hint-stale' : 'no');
   const buildSt = stepsAllDone(def, state, code) ? 'pass' : def.steps.some((s) => stepStatus(state, s.id, code) === 'stale') ? 'stale' : 'no';
   const demoSt = demoStatus(state, code);
-  const wrap = h(`<div class="reflect">
-    <div class="card" style="max-width:820px">
-      <h2 style="margin-top:0">Explain it in your own words</h2>
+  const wrap = h(`<div class="reflect measure">
+    <div class="card">
+      <h2>Explain it in your own words</h2>
       <p class="muted small">Write as if teaching a colleague who has not seen the module. Naming the thing you are least sure about is the most useful sentence you can write.</p>
       <div class="prompts"></div>
     </div>
-    <div class="card" style="max-width:820px">
-      <h3 style="margin-top:0">Stretch goals (optional)</h3>
+    <div class="card">
+      <h3>Stretch goals (optional)</h3>
       <ul>${(def.stretch || []).map((s) => `<li>${md(s).replace(/^<p>|<\/p>$/g, '')}</li>`).join('')}</ul>
     </div>
-    <div class="card" style="max-width:820px">
-      <h3 style="margin-top:0">Complete the module</h3>
+    <div class="card">
+      <h3>Complete the module</h3>
       <ul class="checklist">
         <li class="${cls(buildSt)}" id="build-check">${mark(buildSt)} All build steps pass on the current code${buildSt === 'stale' ? ` (${STALE_NOTE})` : ''}</li>
         <li class="${cls(demoSt)}">${mark(demoSt)} Goal demo ran on the current code${demoSt === 'stale' ? ` (${STALE_NOTE})` : ''}</li>
@@ -747,7 +774,7 @@ function renderReflect(body, id, def, starter, timeouts) {
     refreshPhases();
     const nx = nextModule(id);
     $complete.textContent = 'Completed ✓';
-    $complete.parentElement.appendChild(h(`<span>Enrolled in the review queue. ${nx ? `<a class="btn btn-small" href="#/m/${nx.id}">Next: ${esc(nx.title)} →</a>` : 'That was the last module.'}</span>`));
+    $complete.parentElement.appendChild(h(`<span>Enrolled in the review queue. ${nx ? `<a class="btn btn-small" href="#/m/${nx.id}">Next: ${esc(nx.title)}</a>` : 'That was the last module.'}</span>`));
   });
 }
 
@@ -760,29 +787,29 @@ function renderChat() {
   if (chatWorker) { chatWorker.terminate(); chatWorker = null; }
   $app.innerHTML = '';
   $app.appendChild(sidebarButton());
-  const wrap = h(`<div>
+  const wrap = h(`<div class="measure">
     <h1>Chat playground</h1>
-    <p class="muted" style="max-width:760px">Talk to the lab's own model, running in this page: the BPE tokenizer (module 03), the GPT (module 06) trained by
+    <p class="muted lede-p">Talk to the lab's own model, running in this page: the BPE tokenizer (module 03), the GPT (module 06) trained by
     <code>tools/pretrain.mjs</code> (module 07), decoded through a KV cache that is reused across turns (modules 15 and 17) and the sampling pipeline (module 14),
     wrapped in the chat template from module 10. It is a ~100k-parameter model trained on a toy corpus, so expect corpus-like text, not answers. The point is that
     every piece of it is something you built.</p>
-    <div class="card" style="max-width:860px">
+    <div class="card">
       <div class="row small" id="chat-info"><span class="muted">Loading model…</span></div>
-      <div class="row" style="margin-top:8px">
-        <label class="small">temperature <input type="number" id="chat-temp" value="0.8" min="0" max="3" step="0.1" style="width:64px"></label>
-        <label class="small">top-p <input type="number" id="chat-topp" value="0.95" min="0" max="1" step="0.05" style="width:64px"></label>
-        <label class="small">top-k <input type="number" id="chat-topk" value="0" min="0" step="1" style="width:64px"></label>
-        <label class="small">max tokens <input type="number" id="chat-max" value="40" min="1" max="200" step="1" style="width:64px"></label>
+      <div class="row chat-controls">
+        <label class="small">temperature <input type="number" id="chat-temp" value="0.8" min="0" max="3" step="0.1"></label>
+        <label class="small">top-p <input type="number" id="chat-topp" value="0.95" min="0" max="1" step="0.05"></label>
+        <label class="small">top-k <input type="number" id="chat-topk" value="0" min="0" step="1"></label>
+        <label class="small">max tokens <input type="number" id="chat-max" value="40" min="1" max="200" step="1"></label>
         <span class="spacer"></span>
         <button class="btn btn-small" id="chat-load" type="button">Load checkpoint JSON…</button>
         <button class="btn btn-small" id="chat-reset" type="button">New conversation</button>
       </div>
     </div>
-    <div class="card chat-log" id="chat-log" style="max-width:860px;min-height:160px"></div>
-    <div class="card" style="max-width:860px">
-      <div class="row"><input type="text" id="chat-input" placeholder="Say something to the model… (the toy corpus is about cats, dogs, and the weather)" style="flex:1;font:inherit;padding:8px 10px;border:1px solid var(--border);border-radius:8px;background:var(--bg);color:var(--ink)">
+    <div class="card chat-log" id="chat-log"></div>
+    <div class="card">
+      <div class="chat-composer"><input type="text" class="chat-input" id="chat-input" placeholder="Say something to the model… (the toy corpus is about cats, dogs, and the weather)" autocomplete="off">
       <button class="btn btn-primary" id="chat-send" type="button" disabled>Send</button><button class="btn" id="chat-stop" type="button" disabled>Stop</button></div>
-      <div class="small muted" id="chat-stats" style="margin-top:6px"></div>
+      <div class="small muted" id="chat-stats"></div>
     </div>
   </div>`);
   $app.appendChild(wrap);
@@ -843,7 +870,7 @@ function renderChat() {
 function showFatal(err) {
   console.error(err);
   $app.innerHTML = '';
-  $app.appendChild(h(`<div class="card" style="max-width:720px"><h2 style="margin-top:0">Something went wrong</h2><pre class="code small">${esc(err && err.stack || String(err))}</pre>
+  $app.appendChild(h(`<div class="card measure"><h2>Something went wrong</h2><pre class="code small">${esc(err && err.stack || String(err))}</pre>
     <div class="row"><a class="btn" href="#/">Reload the home page</a><button class="btn" id="fatal-export" type="button">Export saved progress</button><button class="btn" id="fatal-reset" type="button">Reset saved progress</button></div></div>`));
   $app.querySelector('#fatal-export').addEventListener('click', () => { try { download('btu-progress.json', store.export()); } catch (e) { alert('Could not export: ' + e.message); } });
   $app.querySelector('#fatal-reset').addEventListener('click', () => { if (confirm('Erase all saved code, answers and progress in this browser?')) { store.reset(); location.hash = '#/'; route(); } });
@@ -883,6 +910,11 @@ function route() {
 
 try { const t = localStorage.getItem('btu:theme'); if (t) document.documentElement.dataset.theme = t; } catch { /* ignore */ }
 window.addEventListener('hashchange', route);
+window.addEventListener('resize', () => placePhaseIndicator());
+// The mobile sidebar is a sheet: a tap outside it (on the scrim) closes it.
+document.addEventListener('click', (e) => {
+  if ($sidebar.classList.contains('open') && !$sidebar.contains(e.target) && !e.target.closest('.sidebar-toggle')) $sidebar.classList.remove('open');
+});
 window.addEventListener('pagehide', () => { if (flushPendingSave) flushPendingSave(); });
 window.addEventListener('beforeunload', () => { if (flushPendingSave) flushPendingSave(); });
 document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden' && flushPendingSave) flushPendingSave(); });

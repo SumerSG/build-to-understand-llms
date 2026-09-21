@@ -1,4 +1,5 @@
 import * as ops from 'lib/ops.js';
+import { rng } from 'lib/util.js';
 
 /** A tensor filled deterministically from the seeded rng, uniform in [-1, 1). */
 function randomTensor(m, shape, seed, opts) {
@@ -6,10 +7,6 @@ function randomTensor(m, shape, seed, opts) {
   const t = new m.Tensor(ops.zeros(shape), opts);
   for (let i = 0; i < t.data.length; i++) t.data[i] = next() * 2 - 1;
   return t;
-}
-function rng(seed) {
-  let a = seed >>> 0;
-  return () => { a = (a + 0x6d2b79f5) >>> 0; let t = a; t = Math.imul(t ^ (t >>> 15), t | 1); t ^= t + Math.imul(t ^ (t >>> 7), t | 61); return ((t ^ (t >>> 14)) >>> 0) / 4294967296; };
 }
 
 /** Central-difference gradient of the scalar fn() with respect to every element of t (t.data is restored). */
@@ -43,6 +40,7 @@ export const tests = [
     const x = a.add(b);
     const y = x.add(a);        // y = 2a + b, and a is used twice
     y.backward();
+    T.ok(y.grad !== null && a.grad !== null, 'after backward() the root and every leaf that requires a gradient must hold a Float32Array in .grad, not null: seed the root with 1 and run every _backward');
     T.eq(Array.from(y.grad), [1], 'the root gradient dy/dy is 1');
     T.eq(Array.from(x.grad), [1], 'x feeds y once, so x.grad = 1');
     T.eq(Array.from(a.grad), [2], 'a is used twice (in x and directly in y): the two contributions must ADD to 2');
@@ -60,6 +58,7 @@ export const tests = [
     const y = x.add(a);
     y.backward();
     y.backward();
+    T.ok(a.grad !== null, 'backward() must fill a.grad');
     T.eq(Array.from(a.grad), [4], 'two backward passes on the same graph must give exactly twice the leaf gradient: intermediates (x, y) are scratch space and must be reset each pass, leaves accumulate');
     T.eq(Array.from(b.grad), [2]);
     a.zeroGrad();
@@ -190,6 +189,7 @@ export const tests = [
     for (let i = 0; i < logits.data.length; i++) logits.data[i] *= 3;
     const targets = [3, 0, 4, 1];
     m.crossEntropy(logits, targets).backward();
+    T.ok(logits.grad !== null, 'logits.grad is still null after backward(): the crossEntropy closure must call accumulate(logits, dLogits)');
     const p = ops.softmax(logits);
     const expect = new Float32Array(20);
     for (let i = 0; i < 4; i++) for (let j = 0; j < 5; j++) expect[i * 5 + j] = (p.data[i * 5 + j] - (j === targets[i] ? 1 : 0)) / 4;
@@ -248,6 +248,7 @@ export const tests = [
     const x = m.Tensor.from([2], { requiresGrad: true });
     const cube = (t) => t.mul(t).mul(t).sum();
     const res = m.gradCheck(cube, [x], { eps: 0.1, tol: 1e-2 });
+    T.eq(res.details.length, 1, 'x has one element, so details must have exactly one entry');
     T.close(res.details[0].analytic, 12, 1e-5, 'd(x³)/dx at 2 is 12');
     T.ok(res.ok && res.maxRelErr < 2e-3, `with eps = 0.1 a central difference of x³ at 2 is 12.01 (error 8e-4); a one-sided difference gives 12.61 (error 5%). Got maxRelErr=${res.maxRelErr}`);
     const strict = m.gradCheck(cube, [x], { eps: 0.1, tol: 1e-6 });

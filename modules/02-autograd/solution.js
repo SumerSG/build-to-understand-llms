@@ -79,7 +79,7 @@ export function topoSort(root) {
   return order;
 }
 
-// ---------- step 2: broadcasting ----------
+// ---------- step 3: broadcasting ----------
 
 /** Sum `grad` (laid out as gradShape) down to targetShape, the input shape it was broadcast from. */
 export function unbroadcast(grad, gradShape, targetShape) {
@@ -189,7 +189,7 @@ export class Tensor {
     return fromOp(ops.neg(this), 'neg', [this], (g) => accumulate(this, ops.neg(g).data));
   }
 
-  // ---------- step 3: matmul and reductions ----------
+  // ---------- step 2: matmul and reductions ----------
 
   /** Matrix product A·B (2-D, or batched with a shared 2-D B). dA = dC·Bᵀ and dB = Aᵀ·dC. */
   matmul(o) {
