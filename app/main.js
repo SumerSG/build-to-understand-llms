@@ -179,7 +179,7 @@ function renderHome() {
   if (!store.lastWriteOk) $app.appendChild(storageWarning());
   $app.appendChild(h(`<section class="hero">
     <h1>Build to understand the LLM stack</h1>
-    <p class="lede">Twenty-eight self-contained projects: build every layer of a modern language-model system in your browser,
+    <p class="lede">Thirty self-contained projects: build every layer of a modern language-model system in your browser,
     and nothing counts as done until <em>your</em> code passes the tests and runs the goal demo.</p>
     <div class="hero-actions">
       ${lastMod ? `<a class="btn btn-primary" href="#/m/${lastMod.id}">Continue: ${esc(lastMod.title)}</a>` : next ? `<a class="btn btn-primary" href="#/m/${next.id}">Start: ${esc(next.title)}</a>` : ''}

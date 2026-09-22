@@ -1,7 +1,7 @@
 # Build to Understand LLMs
 
 A build-it-yourself curriculum for the whole LLM stack, running entirely in your browser.
-Twenty-eight self-contained projects: you write the code, the tests check it, and a goal demo
+Thirty self-contained projects: you write the code, the tests check it, and a goal demo
 draws what your code just did. Nothing counts as learned until it runs.
 
 | Track | You build |
