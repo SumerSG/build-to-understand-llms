@@ -337,10 +337,9 @@ async function renderModulePage(id, phaseArg, seq) {
   const missingPrereqs = (def.prereqs || []).filter((p) => !isComplete(p));
 
   const head = h(`<div class="mod-head">
-    <nav class="crumbs" aria-label="Breadcrumb"><a href="#/">Lab</a><span class="sep">›</span><span>${esc(track ? track.title : meta.track)}</span><span class="sep">›</span><span class="num">Module ${id.slice(0, 2)}</span><span class="sep">·</span><span class="num">about ${meta.minutes} min</span></nav>
+    <nav class="crumbs" aria-label="Breadcrumb"><span>${esc(track ? track.title : meta.track)}</span><span class="sep"></span><span class="num">Module ${id.slice(0, 2)}</span><span class="sep"></span><span class="num">About ${meta.minutes} min</span></nav>
     <h1>${esc(def.title)}</h1>
-    ${missingPrereqs.length ? `<p class="prereq-note">Recommended first: ${missingPrereqs.map((p) => `<a href="#/m/${p}">${esc(moduleById(p)?.title || p)}</a>`).join(' · ')}</p>` : ''}
-    <div class="goal-banner"><div class="label">Working goal</div><div class="goal">${esc(def.goal)}</div><div class="threshold"><b>Threshold concept:</b> ${esc(def.threshold || '')}</div></div>
+    <div class="goal-banner"><p class="goal">${esc(def.goal)}</p><p class="threshold"><b>The idea to take away.</b> ${esc(def.threshold || '')}</p>${missingPrereqs.length ? `<p class="prereq-note">Builds on ${missingPrereqs.map((p) => `<a href="#/m/${p}">${esc(moduleById(p)?.title || p)}</a>`).join(', ')}.</p>` : ''}</div>
   </div>`);
   $app.appendChild(head);
   if (!store.lastWriteOk) $app.appendChild(storageWarning());

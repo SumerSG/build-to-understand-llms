@@ -52,7 +52,10 @@ export const tests = [
     const out = m.formatChat([{ role: 'user', content: 'Hi' }, { role: 'assistant', content: 'Hello!' }]);
     T.ok(!out.endsWith(CHAT.assistant), 'after a finished assistant turn there is nothing for the model to continue, so no trailing assistant marker');
     T.eq(out, '<|user|>Hi<|end|><|assistant|>Hello!<|end|>');
-    T.eq(m.formatChat([{ role: 'tool', content: 'x' }]), '<|user|>x<|end|><|assistant|>', 'roles outside CHAT fall back to the user marker (the lib convention)');
+    const multi = m.formatChat([{ role: 'user', content: 'Hi' }, { role: 'assistant', content: 'Hello!' }, { role: 'user', content: 'Name a color.' }]);
+    T.eq(multi, '<|user|>Hi<|end|><|assistant|>Hello!<|end|><|user|>Name a color.<|end|><|assistant|>',
+      'a second user turn re-opens the assistant turn: the template is the same for every turn of a multi-turn chat');
+    T.eq(m.formatChat([{ role: 'tool', content: 'x' }]), '<|user|>x<|end|>', 'a role outside CHAT uses the user marker (the lib convention) but only a literal user role opens the assistant turn');
   } },
   { step: 'template', name: 'addChatTokens appends the four markers as single-id specials without touching the base vocabulary', run(m, T) {
     const base = baseTokenizer();
@@ -72,6 +75,7 @@ export const tests = [
   { step: 'template', name: 'addChatTokens keeps eos and existing ids, and is idempotent', run(m, T) {
     const base = baseTokenizer();
     const tok = m.addChatTokens(base);
+    T.eq(tok.vocabSize, base.vocabSize + 4, 'the returned tokenizer must have the four markers added (returning the input unchanged is not enough)');
     T.eq(tok.eos, base.eos, '<|endoftext|> must keep its id: the checkpoint was trained with it');
     T.eq(tok.encode('the cat sat on the mat'), base.encode('the cat sat on the mat'), 'existing ids must not shift, or the checkpoint\'s embeddings would point at the wrong tokens');
     T.eq(m.addChatTokens(tok).vocabSize, tok.vocabSize, 'adding the markers twice must not add them again');
