@@ -336,7 +336,7 @@ async function renderModulePage(id, phaseArg, seq) {
   if (phase === 'recall' && !hasRecall) phase = 'concept';
   const missingPrereqs = (def.prereqs || []).filter((p) => !isComplete(p));
 
-  const head = h(`<div class="mod-head">
+  const head = h(`<div class="mod-head" data-num="${id.slice(0, 2)}">
     <nav class="crumbs" aria-label="Breadcrumb"><span>${esc(track ? track.title : meta.track)}</span><span class="sep"></span><span class="num">Module ${id.slice(0, 2)}</span><span class="sep"></span><span class="num">About ${meta.minutes} min</span></nav>
     <h1>${esc(def.title)}</h1>
     <div class="goal-banner"><p class="goal">${esc(def.goal)}</p><p class="threshold"><b>The idea to take away.</b> ${esc(def.threshold || '')}</p>${missingPrereqs.length ? `<p class="prereq-note">Builds on ${missingPrereqs.map((p) => `<a href="#/m/${p}">${esc(moduleById(p)?.title || p)}</a>`).join(', ')}.</p>` : ''}</div>

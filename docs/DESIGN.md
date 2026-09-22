@@ -1,4 +1,9 @@
-# Design system
+# Design
+
+## Identity: the atelier
+
+The lab's visual identity is monochrome and typographic, after Yohji Yamamoto: paper (#f3f1ea) and ink (#101010) in the light mood, black (#0b0b0b) and bone (#ecebe5) in the dark one; one serif with drama (Cormorant Garamond, falling back to Iowan Old Style, Palatino, Georgia) for anything that speaks, and wide-tracked 11px uppercase Helvetica for anything that labels; rules instead of boxes; no rounded corners; no shadows; one red (#b3121b) reserved for failure; a single indulgence, the faint 260px module numeral behind each module header. Buttons are rectangles that invert on hover. Charts keep their validated data palette; only their chrome follows the system. The section that implements this is the last one in `app/styles.css` ("16. ATELIER"); the sections before it are the structural base it re-tokens.
+
 
 The lab's UI should feel calm, oriented and in control: one accent, hairlines instead of boxes, generous
 space, and motion that explains rather than decorates. Everything below lives in `app/styles.css` as CSS

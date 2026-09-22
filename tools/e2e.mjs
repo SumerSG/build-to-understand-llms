@@ -41,14 +41,14 @@ for (const m of targets) {
     await page.waitForSelector('.step-chip', { timeout: 20000 });
     await page.click('#btn-check-all');
     await page.waitForSelector('.results .status-line', { timeout: 60000 });
-    row.starter = (await page.locator('.results .status-line').first().innerText()).split(' tests')[0];
+    row.starter = (await page.locator('.results .status-line').first().evaluate((el) => el.textContent)).split(' tests')[0];
     if (/^(\d+)\/\1 /.test(row.starter + ' ')) throw new Error(`starter already passes everything (${row.starter})`);
     await page.click('#btn-solution');
     await page.waitForSelector('#sol-copy', { timeout: 10000 });
     await page.click('#sol-copy');
     await page.click('#btn-check-all');
     await page.waitForFunction(() => { const s = document.querySelector('.results .status-line'); return s && /tests passed/.test(s.textContent); }, null, { timeout: 90000 });
-    row.solution = (await page.locator('.results .status-line').first().innerText()).split(' tests')[0];
+    row.solution = (await page.locator('.results .status-line').first().evaluate((el) => el.textContent)).split(' tests')[0];
     const [p, t] = row.solution.split('/').map(Number);
     if (p !== t) {
       const fails = await page.locator('.test.fail').allInnerTexts();
