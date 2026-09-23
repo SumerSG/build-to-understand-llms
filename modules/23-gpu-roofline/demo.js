@@ -102,14 +102,31 @@ export default async function demo(m, lab) {
   const sizes = [256, 512, 1024];
   const blockSize = 64;
   const naiveGf = [], tiledGf = [];
+  // The tests have already called your kernels with plain Arrays and a Proxy, which leaves the JIT's
+  // type feedback for these functions polymorphic and can make them several times slower. Time fresh
+  // copies built from your source instead, checked against the originals on a small Float32Array
+  // product (which also warms them up). If a copy cannot stand alone, for example because it calls a
+  // helper defined elsewhere in your file, fall back to the original function.
+  const fresh = (fn, args) => {
+    try {
+      const copy = new Function(`return (${fn.toString()});`)();
+      const want = fn(...args), got = copy(...args);
+      if (got.length !== want.length) return fn;
+      for (let i = 0; i < want.length; i++) if (Math.abs(got[i] - want[i]) > 1e-3) return fn;
+      return copy;
+    } catch { return fn; }
+  };
+  const warmA = m.randomMatrix(96, 5), warmB = m.randomMatrix(96, 6);
+  const naiveKernel = fresh(m.naiveMatmul, [warmA, warmB, 96]);
+  const tiledKernel = fresh(m.tiledMatmul, [warmA, warmB, 96, 16]);
   for (const n of sizes) {
     const A = m.randomMatrix(n, n + 1), B = m.randomMatrix(n, n + 2);
     let t0 = now();
-    const cN = m.naiveMatmul(A, B, n);
+    const cN = naiveKernel(A, B, n);
     naiveGf.push(m.gflops(2 * n ** 3, (now() - t0) / 1000));
     await lab.tick();
     t0 = now();
-    const cT = m.tiledMatmul(A, B, n, blockSize);
+    const cT = tiledKernel(A, B, n, blockSize);
     tiledGf.push(m.gflops(2 * n ** 3, (now() - t0) / 1000));
     let maxDiff = 0;
     for (let i = 0; i < cN.length; i++) maxDiff = Math.max(maxDiff, Math.abs(cN[i] - cT[i]));
@@ -165,15 +182,17 @@ the crossover is a batch of **${minBatch.toFixed(0)}** once the activations are 
 
 Attention at 4096 tokens moves **${fmt(attn.bytes / 1e6)} MB** per head naively and **${fmt(flash.bytes / 1e6)} MB** when the
 score tiles stay in SRAM — **${(attn.bytes / flash.bytes).toFixed(0)}x less traffic** for identical arithmetic, which is FlashAttention's
-whole argument; at headDim ${L.headDim} in bf16, 228 KB of shared memory holds a block of **${sram}** rows.
+whole argument; at headDim ${L.headDim} in bf16, 228 KiB (233,472 bytes) of shared memory holds a block of **${sram}** rows.
 Your online-softmax \`tiledAttention\` matched module 05's attention to within **${flashWorst.toExponential(1)}** at every block size
 while holding only one block of scores per query row. On the plot, the ${m.B200.name} line sits higher on both roofs, but its
 ridge of **${b200Ridge.toFixed(0)} FLOP/byte** is close to the H100's, so a batch-1 decode stays just as far on the memory side.
 
 Your own kernels, measured just now: naive **${naiveGf.at(-1).toFixed(2)} GFLOP/s** and tiled(${blockSize}) **${tiledGf.at(-1).toFixed(2)} GFLOP/s**
-at n=${big} (**${speedup.toFixed(2)}x**) — ${smallRatio < 1
-    ? `but tiling *lost* at n=${sizes[0]} (**${smallRatio.toFixed(2)}x**), because at that size B already fits in cache and the extra loop bookkeeping is pure cost`
-    : `but at n=${sizes[0]} it bought only **${smallRatio.toFixed(2)}x**, because at that size B already fits in cache and there is little traffic left to save`}.
+at n=${big} (**${speedup.toFixed(2)}x**) — ${speedup < 1
+    ? `so on this run tiling did not pay off even at the largest size. A single JavaScript timing is noisy (other tabs, garbage collection and JIT tiering all move it), so run the demo again; if tiling keeps losing, compare your tile loop with the worked naive loop for extra work in the innermost loop`
+    : smallRatio < speedup
+    ? `against **${smallRatio.toFixed(2)}x** at n=${sizes[0]}, where B (${(4 * sizes[0] ** 2 / 1024).toFixed(0)} KiB) already fits in cache, so there is little traffic to save and the extra loop bookkeeping ${smallRatio < 1 ? 'costs more than it saves' : 'eats most of the gain'}`
+    : `and **${smallRatio.toFixed(2)}x** at n=${sizes[0]}; on this machine the cache effect did not separate the sizes, so run the demo again to see how much of the difference is timing noise`}.
 The trend across sizes in the chart is the lesson, not the headline speedup. Meanwhile the traffic model says tiling raises intensity from
 **${m.arithmeticIntensity(2 * big ** 3, m.blockTraffic(big, 1, 4)).toFixed(2)}** to **${m.arithmeticIntensity(2 * big ** 3, m.blockTraffic(big, blockSize, 4)).toFixed(1)} FLOP/byte**.
 That peak is roughly **${(hw.flops / 1e9 / Math.max(naiveGf.at(-1), tiledGf.at(-1))).toExponential(1)}x** below the ${hw.name}'s bf16 peak — JavaScript never gets near either roof.

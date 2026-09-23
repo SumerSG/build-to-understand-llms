@@ -70,7 +70,7 @@ An H100 holds Llama-3-8B in bf16, which is 16.06 GB of weights. Every generated 
 
 ## The hierarchy under the roof
 
-"Bandwidth" is not one number. On an H100 each streaming multiprocessor has approximately 256 KB of registers and up to 228 KB of shared memory (SRAM), backed by a 50 MB L2 cache, then 80 GB of HBM3, then host DRAM across PCIe at roughly 64 GB/s. Aggregate shared-memory bandwidth is roughly an order of magnitude above HBM. Every optimisation in this module is the same move: **keep data in a faster level and reuse it there.** Tiling a matmul into \`blockSize x blockSize\` blocks reuses each loaded tile \`blockSize\` times, cutting slow-memory traffic by that same factor. Kernel fusion avoids a round trip to HBM between two elementwise ops. FlashAttention (Dao et al., 2022) tiles attention so that the score matrix, which is \`[seqLen, seqLen]\` for a sequence of \`seqLen\` tokens, is never written to HBM at all: same FLOPs, roughly 30 times fewer bytes at 4096 tokens. The enabling trick is the **online softmax**: process keys a block at a time, keep a running max and sum, and rescale the accumulated output whenever a block raises the max (step 5).
+"Bandwidth" is not one number. On an H100 each streaming multiprocessor has approximately 256 KiB of registers and up to 228 KiB (233,472 bytes) of shared memory (SRAM), backed by a 50 MB L2 cache, then 80 GB of HBM3, then host DRAM across PCIe at roughly 64 GB/s. Aggregate shared-memory bandwidth is roughly an order of magnitude above HBM. Every optimisation in this module is the same move: **keep data in a faster level and reuse it there.** Tiling a matmul into \`blockSize x blockSize\` blocks reuses each loaded tile \`blockSize\` times, cutting slow-memory traffic by that same factor. Kernel fusion avoids a round trip to HBM between two elementwise ops. FlashAttention (Dao et al., 2022) tiles attention so that the score matrix, which is \`[seqLen, seqLen]\` for a sequence of \`seqLen\` tokens, is never written to HBM at all: same FLOPs, about 33 times fewer bytes at 4096 tokens (headDim 128, bf16). The enabling trick is the **online softmax**: process keys a block at a time, keep a running max and sum, and rescale the accumulated output whenever a block raises the max (step 5).
 
 ## Where this toy differs from production
 
@@ -142,8 +142,8 @@ the ridge point to four decimals.
 \`decodeThroughput(hw, { params, bytesPerParam = 2, batch = 1 })\` returns
 \`{ memoryBound, computeBound, tokensPerSecond, bound }\` in tokens per second:
 
-- \`memoryBound = batch * bandwidth / (params * bytesPerParam)\` — every step reads all the weights once, and all \`batch\` sequences in the step share that one read.
-- \`computeBound = flops / (2 * params)\` — about 2 FLOPs per parameter per token (module 08). Both the FLOPs and the tokens scale with the batch, so this ceiling does not move.
+- \`memoryBound = batch * hw.bandwidth / (params * bytesPerParam)\` — every step reads all the weights once, and all \`batch\` sequences in the step share that one read.
+- \`computeBound = hw.flops / (2 * params)\` — about 2 FLOPs per parameter per token (module 08). Both the FLOPs and the tokens scale with the batch, so this ceiling does not move.
 - \`tokensPerSecond\` is the smaller; \`bound\` names which one won (call a tie \`'memory'\`). Throw if \`batch\` is below 1.
 
 You will end this step holding two crossover batches for the same H100 and the same 4096-wide bf16
@@ -174,11 +174,12 @@ already in \`C\`, not overwrite it. \`blockSize\` need not divide \`n\`: clamp e
 level: there are \`(n/blockSize)^3\` tile products, each reading one tile of \`A\` and one of \`B\`
 (\`blockSize^2\` elements each), and \`C\` is written once:
 \`(2*n^3/blockSize + n^2) * bytesPerElement\`. At \`blockSize = 1\` this reduces to the naive count,
-which is how you check the formula.
+which is how you check the formula. Throw if \`blockSize\` is below 1 here too: the formula divides by
+it, and a block of 0 describes no kernel at all.
 `,
       predict: {
         question: 'Your tiled matmul does exactly the same 2*n^3 multiply-adds as the naive one. Will it be faster in JavaScript at n = 256, and at n = 1024?',
-        answer: 'At n = 256 the whole of B is 256 KB and already fits in cache, so tiling buys little and the extra loop bookkeeping often makes it slower. At n = 1024, B is 4 MB and the naive dot-product order re-reads it column by column; in the goal demo the tiled version typically runs 1.5x to 2x faster there, though the exact figure depends on your cache sizes. The shape of the curve is the lesson: tiling pays only once the working set stops fitting in the fast level.',
+        answer: 'At n = 256 the whole of B is 256 KB and already fits in cache, so tiling buys little and the extra loop bookkeeping often makes it slower. At n = 1024, B is 4 MB and the naive dot-product order re-reads it column by column; in the goal demo the tiled version typically runs about 1.1x to 2x faster there, though the exact figure depends on your cache sizes and varies from run to run, because a single JavaScript timing is noisy. The shape of the curve is the lesson: tiling pays only once the working set stops fitting in the fast level.',
       },
       hints: [
         'Start from `naiveMatmul` and wrap its three loops in three outer loops over tile origins; the body changes only in its bounds.',

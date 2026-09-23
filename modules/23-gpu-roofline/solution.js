@@ -36,8 +36,8 @@ export const LLAMA3_8B = {
  * numbers — treat them as ratios, not measurements. Used by the demo table.
  */
 export const MEMORY_HIERARCHY = [
-  { level: 'registers', capacity: 256e3 * 132, bandwidth: 100e12, latencyNs: 1, note: '256 KB per SM x 132 SMs' },
-  { level: 'SRAM (L1 / shared)', capacity: 228e3 * 132, bandwidth: 30e12, latencyNs: 25, note: 'up to 228 KB per SM; where FlashAttention keeps its tiles' },
+  { level: 'registers', capacity: 256 * 1024 * 132, bandwidth: 100e12, latencyNs: 1, note: '256 KiB per SM x 132 SMs' },
+  { level: 'SRAM (L1 / shared)', capacity: 228 * 1024 * 132, bandwidth: 30e12, latencyNs: 25, note: 'up to 228 KiB (233,472 bytes) per SM; where FlashAttention keeps its tiles' },
   { level: 'L2 cache', capacity: 50e6, bandwidth: 7e12, latencyNs: 200, note: 'shared by all SMs' },
   { level: 'HBM3', capacity: 80e9, bandwidth: 3.35e12, latencyNs: 500, note: 'the "memory" in memory-bound' },
   { level: 'host DRAM over PCIe 5 x16', capacity: 2e12, bandwidth: 64e9, latencyNs: 2000, note: 'offloading lands here' },

@@ -158,7 +158,7 @@ export const tests = [
     const intensity = m.arithmeticIntensity(2 * 256 ** 3, m.blockTraffic(256, 32, 4));
     T.close(intensity, 7.5294, 1e-4, 'arithmetic intensity of a tiled fp32 matmul is about blockSize / bytesPerElement = 32/4 = 8');
     T.ok(m.blockTraffic(512, 64, 2) < m.blockTraffic(512, 32, 2), 'doubling the tile size must roughly halve the traffic');
-    T.throws(() => m.blockTraffic(256, 0, 4), 'blockSize 0 has no meaning; throw');
+    T.throws(() => m.blockTraffic(256, 0, 4), 'blockTraffic(256, 0, 4) must throw: the formula divides by blockSize, and a block of 0 describes no kernel (check blockSize >= 1 here as well as in tiledMatmul)');
   } },
 
   // ---------- step 5: the memory hierarchy and FlashAttention ----------
@@ -181,7 +181,7 @@ export const tests = [
       'at 4096 tokens and headDim 128 the score matrix is 33x the streamed tensors');
   } },
   { step: 'hierarchy', name: 'flashBlockSize fits four tiles in SRAM', run(m, T) {
-    T.eq(m.flashBlockSize(228 * 1024, 128, 2), 228, 'four tiles of 128 bf16 values per row need 1024 bytes per row; 228 KB of shared memory holds 228 rows');
+    T.eq(m.flashBlockSize(228 * 1024, 128, 2), 228, 'four tiles of 128 bf16 values per row need 1024 bytes per row; 228 KiB of shared memory (228 * 1024 = 233,472 bytes) holds 228 rows');
     T.eq(m.flashBlockSize(228 * 1024, 64, 2), 456, 'halving headDim doubles the block that fits');
     T.eq(m.flashBlockSize(228 * 1024, 128, 1), 456, 'an int8 KV cache doubles the block that fits, which is a second reason to quantise it');
     T.eq(m.flashBlockSize(100 * 1024, 96, 2), 133, 'a block is a whole number of rows: 102400 bytes / (4 * 96 * 2) = 133.3 must floor to 133, not round up and overflow SRAM');
