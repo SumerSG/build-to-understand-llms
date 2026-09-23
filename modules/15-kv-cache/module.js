@@ -33,7 +33,7 @@ export default {
   concept: `
 ## What the uncached model wastes
 
-To produce token 11, the uncached \`forward\` of module 14 embeds all ten earlier tokens, runs them through every layer, and reads one row of the result: the logits at the last position. The other nine rows are thrown away. Token 12 repeats all of it, plus one more token. Generating \`n\` tokens costs about \`n²/2\` token-forwards instead of \`n\`.
+To produce token 11 without a cache, a \`forward\` over the whole sequence (what module 14's \`generate\` would have done without lib/infer.js) embeds all ten earlier tokens, runs them through every layer, and reads one row of the result: the logits at the last position. The other nine rows are thrown away. Token 12 repeats all of it, plus one more token. Generating \`n\` tokens costs about \`n²/2\` token-forwards instead of \`n\`.
 
 The waste is avoidable because of the causal mask. In every layer, the key and value of position \`t\` are linear functions of the residual stream at position \`t\`, which depends only on positions \`0…t\`. Nothing that arrives later can change them. So once computed, \`k\` and \`v\` are final: store them. The **KV cache** is that store: per layer, a key block and a value block of shape \`[H, T, dh]\` (\`H\` heads, \`T\` tokens so far, \`dh = C / H\` channels per head) that grows by one row per token.
 
@@ -186,7 +186,7 @@ Three functions of a config, no model needed.
   ],
   stretch: [
     'Replace concat with a preallocated `[H, blockSize, dh]` buffer per layer written in place at row `cache.length`, and measure the per-token latency change at long context. This is the difference between HF transformers\' `DynamicCache` and `StaticCache`, and the reason vLLM writes into fixed blocks.',
-    'Add grouped-query attention to the toy: give the config `nKVHead < nHead`, project only that many key/value heads, and repeat each one across its group of queries. Check `cacheBytes` shrinks by `nHead / nKVHead` as it does in Llama 3 (32 query heads, 8 KV heads).',
+    'Add grouped-query attention to the toy: give the config `nKVHead < nHead`, project only that many key/value heads, and repeat each one across its group of queries. Check `cacheBytes` shrinks by `nHead / nKVHead` as it does in Llama-3-8B (32 query heads, 8 KV heads). Module 29 later builds GQA and MLA in full.',
     'Implement a batched prefill: run the worked `forward`-style pass over the whole prompt once, copy every layer\'s `[H, T, dh]` keys and values into the cache, and confirm the logits match the token-by-token prefill. Then time both on a 60-token prompt. vLLM and SGLang schedule prefill and decode as different kinds of work for exactly this reason.',
     'Add a sliding window: keep only the last `W` positions in each layer\'s cache (Mistral 7B uses W = 4096) and measure how the logits drift from the full-context model as the sequence passes W. Then read how StreamingLLM keeps the first few "attention sink" tokens as well.',
   ],

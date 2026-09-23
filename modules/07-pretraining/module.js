@@ -10,14 +10,14 @@ export default {
     { q: 'In module 02, what does `loss.backward()` do to a leaf tensor\'s `.grad` when it already holds a value?', options: ['Overwrites it', 'Adds to it (accumulates)', 'Throws an error'], answer: 1,
       why: 'Gradients accumulate with `+=` so a tensor used twice receives both contributions. That is why every training step must start by zeroing them; forgetting it is the most common training-loop bug.' },
     { q: 'Module 04 measured perplexity as `exp(mean NLL)`. A model whose mean cross-entropy is 2.0 nats per character has a perplexity of about…', options: ['2', '7.4', '100'], answer: 1,
-      why: 'e² ≈ 7.39: on average the model is as uncertain as a fair choice among 7.4 characters. Uniform guessing over a 46-character vocabulary is ln 46 ≈ 3.83 nats, perplexity 46.' },
+      why: 'e² ≈ 7.39: on average the model is as uncertain as a fair choice among 7.4 characters. Uniform guessing over the 46 distinct characters of this module\'s toy corpus is ln 46 ≈ 3.83 nats, perplexity 46 (module 04\'s corpus had 71 characters).' },
     { q: 'In module 06, `GPT.forward(ids)` with `ids` of shape B×T returns logits of shape…', options: ['[B, V]: one prediction per sequence', '[B, T, V]: one prediction per position', '[T, V]'], answer: 1,
       why: 'The causal mask means position t only sees tokens 0..t, so every position\'s logits are a valid next-token prediction. One forward pass therefore yields B·T training examples.' },
     { q: 'Why can a sequence longer than `blockSize` not be fed to the module-06 GPT?', options: ['The attention matmul would be too slow', 'The position-embedding table `wpe` has exactly `blockSize` rows', 'The vocabulary would overflow'], answer: 1,
       why: 'Learned position embeddings are a lookup table with one row per slot. This is why `getBatch` cuts the corpus into windows of exactly `blockSize` tokens.' },
   ],
   review: [
-    { q: 'In `getBatch`, why is `y` the window `x` shifted right by one token?', options: ['To make the batch twice as large', 'Because the causal transformer predicts every position at once, so the target at position t is the token at t+1', 'So that x and y have different lengths'], answer: 1,
+    { q: 'In `getBatch`, why is `y` the window `x` shifted left by one token (`y[t] = x[t+1]`)?', options: ['To make the batch twice as large', 'Because the causal transformer predicts every position at once, so the target at position t is the token at t+1', 'So that x and y have different lengths'], answer: 1,
       why: 'One forward pass over a B×T window gives B·T next-token predictions; the targets for all of them are simply the same text shifted by one. This is the trick that makes pre-training efficient.' },
     { q: 'What does AdamW\'s division by `sqrt(v)` achieve?', options: ['It normalises the loss', 'Every parameter moves by roughly `lr` per step, whatever the scale of its gradient', 'It makes the update exactly the negative gradient'], answer: 1,
       why: 'Rare-token embedding rows get tiny gradients and MLP weights get large ones; per-parameter scaling by the running RMS of the gradient lets one learning rate serve all of them. The `m` and `v` buffers cost 8 extra bytes per parameter in fp32.' },
@@ -35,7 +35,7 @@ Every large language model was made by the same loop, and you already own every 
 
 \`\`\`
 repeat:
-  x, y   = a batch of token windows, y shifted one token right
+  x, y   = a batch of token windows, y = x shifted left by one token
   loss   = mean cross-entropy over every position of forward(x) against y
   loss.backward();  clip the gradients;  optimizer.step()
 \`\`\`
@@ -64,6 +64,8 @@ Bias correction fixes the *size* of Adam's early estimates but not their *noise*
 
 Even with warmup, an occasional batch produces a gradient ten times larger than usual, and one such step can undo hours of progress. Clipping the *global* norm of all gradients to \`maxNorm\` bounds the length of the update while keeping its direction. Log the norm before clipping: a run whose gradient norm creeps upward is about to diverge.
 
+Recipes since 2024 keep this loop and change the parts around it. **Warmup-stable-decay** (WSD; Hu et al. 2024, MiniCPM) holds the learning rate at its peak and decays it only over a short final stretch, so you can branch a decayed checkpoint off the flat phase at any point instead of fixing \`total\` in advance. Llama 3 (2024) ended pre-training by annealing the learning rate to zero over its final approximately 40 million tokens while upsampling high-quality data. **Muon** (Jordan et al. 2024) orthogonalises the momentum update of each hidden weight matrix and is the most prominent alternative to AdamW at scale; Moonshot AI trained Kimi K2 (2025) with a variant of it. Against loss spikes, two cheap guards are now common: **z-loss** (PaLM, Chowdhery et al. 2022), a small penalty \`1e-4 · (log Z)²\`, where \`Z\` is the softmax normaliser (the sum of \`exp\` over the output logits), which holds \`log Z\` near 0 so the logits cannot drift upward together, and **QK-norm** (Dehghani et al. 2023, ViT-22B), a normalisation of queries and keys before their dot product so that attention logits cannot grow without bound.
+
 :::predict
 You run the same 350-step config twice, once with clipping at 1.0 and once without. Do you expect a different final loss?
 ---
@@ -79,13 +81,15 @@ The training loss is measured on batches the model is updating on; the validatio
 ## What is missing here, and what production adds
 
 This loop runs in fp32 on one thread of one CPU. Real runs add **mixed precision** (bf16 matmuls with fp32 master weights and optimizer state, 16 bytes per parameter in total), **gradient checkpointing** (recompute activations during backward instead of storing them), **checkpoint and resume** (model, optimizer buffers and rng state saved every few hundred steps so a crash costs minutes, not days), and a **data loader** that shards trillions of tokens across thousands of workers (module 09). Nothing here is distributed; module 24 splits this same loop across GPUs. The loop itself does not change.
+
+The choice of bf16 is deliberate. bf16 keeps fp32's 8-bit exponent, so it has the same range with fewer mantissa bits (7 instead of 23). fp16 spends more bits on the mantissa (10) and fewer on the exponent (5): it tops out at 65,504, and gradients smaller than about 6e-8 underflow to zero. That is why fp16 training needs **loss scaling** (Micikevicius et al. 2018): multiply the loss by a large factor before \`backward()\`, divide the gradients by the same factor before the optimizer step, and when any gradient overflows to inf or NaN, skip that step and lower the factor.
 `,
   steps: [
     {
       id: 'batch',
       title: 'Batches of shifted windows',
       instructions: `
-Implement \`getBatch(ids, blockSize, batchSize, next)\` returning \`{ x, y }\`, two arrays of \`batchSize\` rows. Each row of \`x\` is a contiguous window of \`blockSize\` token ids drawn from a random start offset; the matching row of \`y\` is the same window shifted one token to the right, so \`y[b][t]\` is the next token after \`x[b][t]\`.
+Implement \`getBatch(ids, blockSize, batchSize, next)\` returning \`{ x, y }\`, two arrays of \`batchSize\` rows. Each row of \`x\` is a contiguous window of \`blockSize\` token ids drawn from a random start offset; the matching row of \`y\` is the same window shifted one token to the left, so \`y[b][t]\` is the next token after \`x[b][t]\`.
 
 Draw each row's start offset with its own call \`randInt(next, lastStart + 1)\` (already imported), one call per row in row order, so a seed reproduces the batch exactly (the tests replay the same draws). The last valid start \`lastStart\` is \`ids.length − blockSize − 1\`, because the target of the final position needs one more token. Throw an \`Error\` if the corpus is too short for that.
 
@@ -190,7 +194,7 @@ Resolve to \`{ model, history, tokensSeen }\` with \`tokensSeen = steps · batch
 
 The tests replay your run against a reference loop built from these exact rules and compare the loss, gradient norm and validation loss at every step, so pass \`maxGradNorm\` to \`trainStep\`, use \`valIds\` (not \`trainIds\`) for evaluation, and draw validation batches from the same \`next\` right after that step's training batch.
 
-\`sample(model, tokenizer, prompt, { maxNewTokens, temperature, next })\`: encode the prompt, call \`model.generate(ids, { maxNewTokens, temperature, next })\` (from module 06; it runs under \`noGrad\`), decode the result and return the whole string, prompt included.
+\`sample(model, tokenizer, prompt, { maxNewTokens, temperature, next })\`: encode the prompt, call \`model.generate(ids, { maxNewTokens, temperature, next })\` (\`lib/gpt.js\`'s \`GPT.generate\`, which runs under \`noGrad\`), decode the result and return the whole string, prompt included.
 `,
       hints: [
         'Build the optimizer once, before the loop; its m and v buffers must persist. The schedule is a property write on the optimizer each step, not a new optimizer.',
@@ -205,8 +209,8 @@ The tests replay your run against a reference loop built from these exact rules 
     'The train loss is measured on batches the model is updating on and the validation loss on held-out text. Describe what the two curves look like when a model is undertrained, when it is overfitting, and when the learning rate is too high.',
   ],
   stretch: [
-    'Add `saveCheckpoint` / `loadCheckpoint` that serialise the model (`GPT.toJSON`), the AdamW buffers, `t` and the step number, and show that a run interrupted at step 150 and resumed reproduces the uninterrupted run exactly; this is what every Megatron-LM and DeepSpeed job does every few hundred steps.',
-    'Simulate mixed precision: round every parameter to bf16 (8 exponent bits, 7 explicit mantissa bits: the top 16 bits of the fp32 pattern, rounded to nearest) after each step while keeping an fp32 master copy inside the optimizer, and compare loss curves; this is the fp32-master-weights scheme in NVIDIA Apex and PyTorch AMP.',
+    'Add `saveCheckpoint` / `loadCheckpoint` that serialise the model (`GPT.toJSON`), the AdamW buffers, `t` and the step number, and show that a run interrupted at step 150 and resumed reproduces the uninterrupted run exactly; this is what every Megatron-LM and DeepSpeed job does every few hundred steps. Then use checkpoints for warmup-stable-decay: implement `wsdSchedule(step, { warmup, total, peak, decayFrac = 0.2, min = 0 })` next to `cosineWithWarmup` (linear warmup, flat at `peak` until the last `decayFrac` of the run, then a linear decay to `min`), save a checkpoint from the flat phase at half the steps, resume it with a short decay of its own, and compare that branch\'s final loss with a cosine run of the shorter length; MiniCPM (Hu et al. 2024) trains this way.',
+    'Simulate mixed precision: round every parameter to bf16 (8 exponent bits, 7 explicit mantissa bits: the top 16 bits of the fp32 pattern, rounded to nearest) after each step while keeping an fp32 master copy inside the optimizer, and compare loss curves; this is the fp32-master-weights scheme in NVIDIA Apex and PyTorch AMP. Then try fp16 with dynamic loss scaling (start the scale at 2^16, halve it and skip the step on inf or NaN, double it after 2,000 clean steps, which are the defaults of PyTorch\'s `GradScaler`) and compare.',
     'Implement gradient accumulation: run `k` micro-batches, summing gradients, before one optimizer step, and confirm the loss curve matches a run with batch size `k × batchSize`; this is how Llama-scale runs reach millions of tokens per step on limited memory.',
     'Replace the contiguous split with `interleavedSplit` from `lib/data.js`, train on the full `CORPUS` (toy sentences plus Shakespeare), and explain why the validation curve changes; GPT-3\'s data mixing (Brown et al. 2020, Table 2.2) is the same question at scale.',
   ],

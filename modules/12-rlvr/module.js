@@ -71,7 +71,7 @@ A checker that accepts any completion *containing* the answer is beaten by a pol
 
 ## Reasoning traces and test-time scaling
 
-On a real model the completion is a chain of thought followed by an answer, and only the answer is verified. Nothing in the objective asks for long chains, yet R1-style training makes them grow, because longer deliberation raises the fraction of correct samples and the gradient follows. Spending more tokens per question to get more right answers is **test-time scaling**; \`pass@k\` in module 13 measures the same curve from the outside.
+On a real model the completion is a chain of thought followed by an answer, and only the answer is verified. Nothing in the objective asks for long chains, yet R1-style training makes them grow, because longer deliberation raises the fraction of correct samples and the gradient follows. Spending more tokens per question to get more right answers is **test-time scaling**; \`pass@k\` in module 13 measures the same curve from the outside. Module 34 later spends that compute on purpose at inference: voting, verifiers, process reward models and thinking budgets.
 
 ## Systems note: rollouts dominate
 

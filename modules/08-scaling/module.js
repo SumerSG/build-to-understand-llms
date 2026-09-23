@@ -75,7 +75,7 @@ Because Chinchilla optimises the **training** bill only. Serving costs \`2N\` FL
 
 ## Where this toy is wrong
 
-These are fits, not laws. The constants come from dense decoder-only models on one data distribution; mixture-of-experts models such as DeepSeek-V3 break the \`6ND\` rule (only active parameters count), repeated data breaks the \`D\` term (Muennighoff et al. 2023), and none of this predicts whether a model can do arithmetic. The planner also assumes perfect linear scaling across GPUs, no failures and no restarts — Meta reports 419 unexpected interruptions during Llama-3-405B pre-training. Treat its output as the right order of magnitude, which is exactly what it is good for.
+These are fits, not laws. The constants come from dense decoder-only models on one data distribution; mixture-of-experts models such as DeepSeek-V3 break the \`6ND\` rule (only active parameters count), repeated data breaks the \`D\` term (Muennighoff et al. 2023), and none of this predicts whether a model can do arithmetic. The planner also assumes perfect linear scaling across GPUs, no failures and no restarts — Meta reports 419 unexpected interruptions in a 54-day snapshot of Llama-3-405B pre-training (466 counting planned maintenance). Treat its output as the right order of magnitude, which is exactly what it is good for.
 `,
   steps: [
     {

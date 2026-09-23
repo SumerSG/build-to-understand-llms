@@ -29,7 +29,7 @@ export function makeModel(config) {
 
 /**
  * Draw `batchSize` random windows of `blockSize` tokens from `ids`. x[b] is the window, y[b] is the
- * same window shifted one token to the right, so y[b][t] is the target for the prefix x[b][0..t].
+ * same window shifted one token to the left (y[b][t] = x[b][t+1]), so y[b][t] is the target for the prefix x[b][0..t].
  * All randomness comes from `next` (an rng function), so a seed reproduces the batch.
  */
 export function getBatch(ids, blockSize, batchSize, next) {

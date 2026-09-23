@@ -76,7 +76,7 @@ export const tests = [
       for (let t = 0; t < 8; t++) T.ok(Number.isInteger(y[b][t]), `y[${b}][${t}] is ${y[b][t]}; every target must be a token id (did a window run past the end?)`);
     }
   } },
-  { step: 'batch', name: 'y is x shifted right by exactly one token (the target for position t is the token at t+1)', run(m, T) {
+  { step: 'batch', name: 'y is x shifted left by exactly one token (the target for position t is the token at t+1)', run(m, T) {
     const { x, y } = m.getBatch(IDS, 8, 6, T.rng(2));
     for (let b = 0; b < 6; b++) {
       const s = findStart(x[b]);

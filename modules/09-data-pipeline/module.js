@@ -13,7 +13,7 @@ export default {
       why: 'A growing train/val gap means the model predicts windows it has seen much better than fresh text. Duplicated documents cause exactly this: the model sees the same window many times per epoch without you noticing.' },
     { q: 'In module 03, what does `BPETokenizer.encode` do when the text contains the string `<|endoftext|>`?', options: ['Splits it into character tokens like any other text', 'Emits the single special id `tokenizer.eos`', 'Throws, because specials may not appear in text'], answer: 1,
       why: 'Specials are matched before pre-tokenisation and become one id each. This module writes `tokenizer.eos` between documents itself, so the boundary is always exactly one token.' },
-    { q: 'In module 07, `getBatch` returns `y` as `x` shifted right by one token because…', options: ['The causal transformer predicts every position at once, so the target at t is the token at t+1', 'The first token has no embedding', 'AdamW requires targets of the same length'], answer: 0,
+    { q: 'In module 07, `getBatch` returns `y` as `x` shifted left by one token (`y[t] = x[t+1]`) because…', options: ['The causal transformer predicts every position at once, so the target at t is the token at t+1', 'The first token has no embedding', 'AdamW requires targets of the same length'], answer: 0,
       why: 'One forward pass over a B×T window gives B·T predictions. A shard of packed tokens with `eos` separators is precisely the stream `getBatch` cuts windows from.' },
   ],
   review: [

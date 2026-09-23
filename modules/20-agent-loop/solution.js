@@ -81,6 +81,10 @@ export function validateArgs(schema, args) {
 export class ToolRegistry {
   constructor() {
     this.tools = new Map();
+    /** (name, args) => 'allow' | 'ask' | 'deny' (or a promise of one). null allows every call. */
+    this.policy = null;
+    /** (name, args) => true to approve an 'ask' decision (or a promise of true). null approves nothing. */
+    this.confirm = null;
   }
 
   /** Add a tool. `parameters` is a minimal JSON schema: { type:'object', properties, required }. */
@@ -100,9 +104,10 @@ export class ToolRegistry {
   }
 
   /**
-   * Run a tool and return its result as a string. Unknown tools, invalid arguments and handler
-   * exceptions all come back as 'Error: ...' strings instead of throwing: the model gets to read the
-   * mistake and try again, and one bad call cannot take the whole run down.
+   * Run a tool and return its result as a string. Unknown tools, invalid arguments, denied or
+   * unconfirmed calls and handler exceptions all come back as 'Error: ...' strings instead of
+   * throwing: the model gets to read the mistake and try again, and one bad call cannot take the
+   * whole run down.
    */
   async call(name, args = {}) {
     const tool = this.tools.get(name);
@@ -112,11 +117,41 @@ export class ToolRegistry {
     }
     const problem = validateArgs(tool.parameters, args);
     if (problem) return `Error: ${problem}`;
+    const decision = await this.decide(name, args);
+    if (decision !== 'allow') return decision;
     try {
       return resultToString(await tool.handler(args));
     } catch (err) {
       return `Error: ${err && err.message ? err.message : String(err)}`;
     }
+  }
+
+  /**
+   * The permission check, run after validation and before the handler. Returns 'allow', or the
+   * 'Error: ...' string to send back instead. It fails closed: a policy that throws or returns
+   * anything but 'allow' or 'ask' denies, and only a confirm callback resolving to true approves.
+   */
+  async decide(name, args) {
+    let decision = 'allow';
+    if (this.policy) {
+      try {
+        decision = await this.policy(name, args);
+      } catch {
+        decision = 'deny';
+      }
+    }
+    if (decision === 'allow') return 'allow';
+    if (decision === 'ask') {
+      let approved = false;
+      try {
+        approved = this.confirm ? (await this.confirm(name, args)) === true : false;
+      } catch {
+        approved = false;
+      }
+      if (approved) return 'allow';
+      return `Error: "${name}" needs confirmation from the user and was not approved, so it did not run`;
+    }
+    return `Error: permission denied: the policy does not allow "${name}"`;
   }
 }
 

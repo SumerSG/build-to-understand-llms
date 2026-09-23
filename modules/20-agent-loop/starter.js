@@ -87,6 +87,10 @@ export function validateArgs(schema, args) {
 export class ToolRegistry {
   constructor() {
     this.tools = new Map();
+    /** (name, args) => 'allow' | 'ask' | 'deny' (or a promise of one). null allows every call. */
+    this.policy = null;
+    /** (name, args) => true to approve an 'ask' decision (or a promise of true). null approves nothing. */
+    this.confirm = null;
   }
 
   /** Add a tool. `parameters` is a minimal JSON schema, or null for "no declared arguments". */
@@ -106,14 +110,20 @@ export class ToolRegistry {
   }
 
   /**
-   * Run a tool and return its result as a string. An unknown tool, invalid arguments and a handler
-   * that throws must all come back as an `Error: ...` string instead of throwing: the model gets to
-   * read the mistake and try again, and one bad call cannot take the whole run down.
+   * Run a tool and return its result as a string. An unknown tool, invalid arguments, a call the
+   * policy denies or nobody confirms, and a handler that throws must all come back as an
+   * `Error: ...` string instead of throwing: the model gets to read the mistake and try again, and
+   * one bad call cannot take the whole run down.
    */
   async call(name, args = {}) {
     // TODO: step 1 — unknown tool -> `Error: unknown tool "x". Available tools: ...`,
     // invalid arguments -> `Error: <what validateArgs said>`, otherwise run the handler
     // (it may be async) and stringify its return value with resultToString.
+    // TODO: step 1 (permissions) — between validation and the handler, ask `this.policy(name, args)`
+    // (await it; no policy means 'allow'). 'deny', a policy that throws, or any other value ->
+    // `Error: permission denied: the policy does not allow "<name>"`. 'ask' -> run only if
+    // `this.confirm(name, args)` resolves to exactly true; otherwise
+    // `Error: "<name>" needs confirmation from the user and was not approved, so it did not run`.
     return '';
   }
 }

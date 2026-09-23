@@ -163,7 +163,7 @@ y   = (row - mu) / sqrt(var + eps) * gamma + beta
     'Why must softmax subtract the maximum, and why does that not change the answer?',
   ],
   stretch: [
-    'Extend `matmul` to batched inputs `[B, n, k] × [B, k, m]`, which attention needs (module 05). `lib/ops.js` shows one way.',
+    'Extend `matmul` to batched inputs `[B, n, k] × [B, k, m]`, which attention needs (module 05). `lib/ops.js` shows one way. In PyTorch the same operation is `torch.bmm`, which on NVIDIA GPUs typically hands the work to a cuBLAS batched GEMM routine.',
     'Implement full NumPy broadcasting for `add`/`mul` using stride-0 tricks, then compare against `lib/ops.js` on random shapes.',
     'Block (tile) your matmul so each 32×32 tile of C is computed from tiles of A and B, and measure the GFLOP/s change; this is the first idea behind cuBLAS and the tiled kernels in module 23.',
     'Implement `layerNorm` without the second pass by using `E[x²] − E[x]²`, then find an input where that formula loses precision in float32 (Welford\'s algorithm is the fix).',
