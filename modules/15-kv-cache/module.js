@@ -84,6 +84,8 @@ Batch size 1 and float32 throughout. The cache grows by \`concat\`, which copies
       instructions: `
 Read the worked examples first. \`forward(model, ids)\` is the complete uncached model on raw tensors: embeddings, per layer \`ln1 → q,k,v → causal attention → proj\` and \`ln2 → MLP\` with residual adds, then the final LayerNorm and the tied head. It is your reference for everything that follows, and its helpers (\`projectQKV\`, \`mergeHeads\`, \`mlpForward\`, \`embedTokens\`, \`head\`) are yours to call.
 
+\`lib/infer.js\`, whose \`prefill\` module 14's \`generate\` called, is the reference answer for this whole module under the same function names (and the \`lib/infer.js\` section of \`docs/LIB_API.md\` summarises it). Build your own first and open it only to compare once your tests pass.
+
 Implement \`attendOne(q, k, v)\`: attention for the **newest position only**. \`q\` is \`[H, 1, dh]\`; \`k\` and \`v\` are \`[H, t, dh]\` and hold every position up to and including the current one. Return \`[H, 1, dh]\`:
 
 \`\`\`
@@ -150,6 +152,7 @@ The tests feed a sequence one token at a time and check that every step's logits
 \`generateGreedy(model, promptIds, maxNewTokens, { cached = true })\`: return an array of exactly \`maxNewTokens\` new ids (not including the prompt), always picking \`argmaxOf(logits)\`, which is provided.
 
 - **cached**: \`prefill\` once, then loop: argmax, push, \`forwardStep\` on the pushed id. Do not run a \`forwardStep\` after the final token: its logits would never be used, and at the cache limit it would throw for nothing.
+- **past the limit**: the cached path needs \`promptIds.length + maxNewTokens − 1 ≤ blockSize\` positions. Do not check for this or truncate the output: when the request asks for more, let the error \`forwardStep\` throws on a full cache propagate. The tests check the exact fit and expect a throw one token past it.
 - **uncached**: loop: \`forward\` over \`promptIds\` plus everything generated so far, take the last row (\`ops.slice(all, 0, T − 1, T).data\`), argmax, push.
 
 Do not mutate \`promptIds\`. The tests compare both paths against an independent greedy loop written with lib/infer.js, so they catch the case where your two paths agree with each other but not with the reference. They also count how many token positions each path pushes through the model: the cached path must embed each position once (prompt length + maxNewTokens − 1 in total), and the uncached path must recompute the whole sequence every step.
@@ -164,9 +167,9 @@ Do not mutate \`promptIds\`. The tests compare both paths against an independent
       id: 'cost',
       title: 'The cost model: FLOPs and bytes',
       instructions: `
-Three functions of a config, no model needed.
+Three functions of a config, no model needed. The letters map to config keys: \`V = vocabSize\`, \`C = nEmbd\`, \`L = nLayer\`, \`B = blockSize\`, and \`T = contextLen\` (the argument to \`flopsPerToken\`), which is a different number from \`blockSize\`.
 
-\`paramCount(config)\`: \`V·C + T·C\` for the token and position embeddings, \`L · (12C² + 13C)\` for the blocks (qkv \`3C²\`, proj \`C²\`, MLP \`8C²\`; \`9C\` of biases; \`4C\` of LayerNorm gains and shifts), plus \`2C\` for the final LayerNorm. The head is tied to \`wte\`. Must equal \`new GPT(config).numParams()\`.
+\`paramCount(config)\`: \`V·C + B·C\` for the token table \`wte\` and the position table \`wpe\` (\`blockSize\` rows), \`L · (12C² + 13C)\` for the blocks (qkv \`3C²\`, proj \`C²\`, MLP \`8C²\`; \`9C\` of biases; \`4C\` of LayerNorm gains and shifts), plus \`2C\` for the final LayerNorm. The head is tied to \`wte\`. Must equal \`new GPT(config).numParams()\`.
 
 \`flopsPerToken(config, contextLen, { cached = true })\`: cached is \`2 · paramCount + 4 · L · T · C\` (two FLOPs per parameter, plus the query-key scores and the weighted values, \`2·L·T·C\` each). Uncached is that times \`T\`, because the whole context is recomputed; this counts the full \`T × T\` score matrix that \`forward\` computes before masking, so a kernel that skips the masked half would do about half the attention FLOPs (the \`2N\` part does not change). The \`2N\` is the forward-pass rule of thumb from Kaplan et al. (2020), whose own context term counts only the query-key scores (\`2·L·T·C\`); here the weighted sum of values is counted too. Both count matmuls only.
 

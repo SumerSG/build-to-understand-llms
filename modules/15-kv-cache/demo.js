@@ -37,6 +37,17 @@ export default async function demo(m, lab) {
   lab.log(`Model: ${cfg.nLayer} layers, ${cfg.nHead} heads, ${cfg.nEmbd} wide, vocab ${cfg.vocabSize}, context ${cfg.blockSize}${trained ? ' (pre-trained checkpoint)' : ' (random weights)'}.`);
   lab.log(`Prompt "${PROMPT}" is ${promptIds.length} token(s); generating ${NEW} tokens greedily, twice.`);
 
+  // ---------- 0. warm-up: the first calls to any function pay for JIT compilation ----------
+  // Without this, that one-off cost lands in whichever phase runs first (the uncached loop, and the
+  // cached prefill, which is the first use of forwardStep) and makes a 2-token prefill look ~10x dearer
+  // per token than a decode step. In this toy they are the same work. Run both paths once, untimed.
+  {
+    const scratch = m.newCache(model);
+    let warm = m.prefill(model, scratch, promptIds);
+    for (let i = 0; i < 4 && scratch.length < cfg.blockSize; i++) warm = m.forwardStep(model, scratch, m.argmaxOf(warm));
+    m.forward(model, promptIds);
+  }
+
   // ---------- 1. uncached: recompute the whole sequence for every token ----------
   const uncachedMs = [];
   const uncachedIds = [];
@@ -120,5 +131,5 @@ export default async function demo(m, lab) {
   const weightBytes = m.paramCount(cfg) * 4;
 
   const speedup = uncachedTotal / cachedTotal;
-  lab.done(`Your cache reproduced full recomputation **token for token** (${NEW} of ${NEW} tokens identical). Uncached generation took **${uncachedTotal.toFixed(0)} ms** (${meanUncached.toFixed(2)} ms per token, rising with context); cached took **${cachedTotal.toFixed(0)} ms** (${prefillMs.toFixed(1)} ms prefill + ${meanCached.toFixed(2)} ms per token), a **${speedup.toFixed(1)}×** speedup. Your cost model says the last token cost ${fmtInt(flopsUncached.at(-1))} FLOPs uncached versus ${fmtInt(flopsCached.at(-1))} cached (**${flopRatio.toFixed(0)}×**). The full ${cfg.blockSize}-token cache of this model is ${fmtBytes(ourCache)} against ${fmtBytes(weightBytes)} of weights; a Llama-3-8B-shaped cache is ${fmtBytes(sizes[2][0] / contexts[0])} per token and **${fmtBytes(sizes[2][4])}** at 128k context.`);
+  lab.done(`Your cache reproduced full recomputation **token for token** (${NEW} of ${NEW} tokens identical). Uncached generation took **${uncachedTotal.toFixed(0)} ms** (${meanUncached.toFixed(2)} ms per token, rising with context); cached took **${cachedTotal.toFixed(0)} ms** (${prefillMs.toFixed(1)} ms prefill of ${promptIds.length} token(s), ${(prefillMs / promptIds.length).toFixed(2)} ms each, + ${meanCached.toFixed(2)} ms per decode step), a **${speedup.toFixed(1)}×** speedup. Your cost model says the last token cost ${fmtInt(flopsUncached.at(-1))} FLOPs uncached versus ${fmtInt(flopsCached.at(-1))} cached (**${flopRatio.toFixed(0)}×**). The full ${cfg.blockSize}-token cache of this model is ${fmtBytes(ourCache)} against ${fmtBytes(weightBytes)} of weights; a Llama-3-8B-shaped cache is ${fmtBytes(sizes[2][0] / contexts[0])} per token and **${fmtBytes(sizes[2][4])}** at 128k context.`);
 }

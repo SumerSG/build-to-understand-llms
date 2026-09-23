@@ -241,7 +241,7 @@ export const tests = [
     for (let i = 0; i < n; i++) expected += prompt.length + i;
     T.eq(counter.rows, expected, `the uncached path must call forward over prompt + generated-so-far once per new token: ${prompt.length} + ${prompt.length + 1} + … = ${expected} positions embedded in total`);
   } },
-  { step: 'prefill', name: 'the cached path stops at the cache limit and never runs more than one decode step per token', run(m, T) {
+  { step: 'prefill', name: 'the cached path fits exactly at the cache limit (no wasted step after the last token) and throws one token past it', run(m, T) {
     const model = testModel({ ...TINY, blockSize: 6 }, 10, 12);
     const out = m.generateGreedy(model, [1, 2, 3], 4, { cached: true });
     T.eq(out.length, 4, 'a 3-token prompt plus 4 new tokens: the 4th is chosen from the logits of position 5, the last slot, so no 7th position is needed and this must not throw (do not run a forwardStep after the final token)');
@@ -251,7 +251,7 @@ export const tests = [
 
   // ---------- step 5: the cost model ----------
   { step: 'cost', name: 'paramCount equals GPT.numParams() from lib/gpt.js for two configs', run(m, T) {
-    T.eq(m.paramCount(TINY), new GPT({ ...TINY, seed: 0 }).numParams(), 'V·C + T·C + L·(12C² + 13C) + 2C: embeddings, per-block weights, biases and LayerNorms, then the final LayerNorm (the head is tied to wte, so it is not counted twice)');
+    T.eq(m.paramCount(TINY), new GPT({ ...TINY, seed: 0 }).numParams(), 'V·C + B·C + L·(12C² + 13C) + 2C with B = blockSize (the wpe rows, not a context length): embeddings, per-block weights, biases and LayerNorms, then the final LayerNorm (the head is tied to wte, so it is not counted twice)');
     const bigger = { vocabSize: 256, blockSize: 64, nLayer: 2, nHead: 4, nEmbd: 64 };
     T.eq(m.paramCount(bigger), new GPT({ ...bigger, seed: 0 }).numParams(), 'the checkpoint config (256 vocab, 64 wide, 2 layers) must count correctly too');
   } },
