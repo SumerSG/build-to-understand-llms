@@ -7,6 +7,13 @@ function randomTensor(m, shape, seed) {
   return t;
 }
 
+// Row sums computed here rather than with the learner's sum(), so a softmax test never fails because of sum.
+function rowSums(t) {
+  const d = t.shape[t.shape.length - 1], out = [];
+  for (let r = 0; r < t.data.length; r += d) { let z = 0; for (let j = 0; j < d; j++) z += t.data[r + j]; out.push(z); }
+  return out;
+}
+
 export const tests = [
   { step: 'indexing', name: 'offset follows row-major order', run(m, T) {
     T.eq(m.offset([2, 3], [0, 0]), 0);
@@ -29,18 +36,24 @@ export const tests = [
     T.shape(t, [3, 2]);
     T.eq(m.toArray(t), [[1, 4], [2, 5], [3, 6]]);
     const r = randomTensor(m, [3, 5], 4);
+    // Expected values come from a fresh copy of the input, so a transpose that overwrites its argument
+    // is reported by the next test rather than showing up here as wrong index arithmetic.
+    const src = Array.from(randomTensor(m, [3, 5], 4).data);
     const rt = m.transpose(r);
     T.shape(rt, [5, 3]);
-    for (let i = 0; i < 3; i++) for (let j = 0; j < 5; j++) T.eq(rt.data[j * 3 + i], r.data[i * 5 + j], `out[${j}, ${i}] must equal a[${i}, ${j}]`);
+    for (let i = 0; i < 3; i++) for (let j = 0; j < 5; j++) T.eq(rt.data[j * 3 + i], src[i * 5 + j], `out[${j}, ${i}] must equal a[${i}, ${j}], which sits at flat offset ${i * 5 + j} of the [3,5] input and must land at offset ${j * 3 + i} of the [5,3] output`);
   } },
   { step: 'indexing', name: 'transposing twice returns the original and does not mutate the input', run(m, T) {
     const a = m.fromArray([[1, 2], [3, 4], [5, 6]]);
-    const before = Array.from(a.data);
+    const before = Array.from(a.data), dataBefore = a.data;
     const once = m.transpose(a);
+    T.ok(once !== a, 'transpose returned its input object: build and return a new { shape, data } object instead of assigning to a.shape or a.data');
+    T.eq(a.shape, [3, 2], 'transpose changed a.shape: the input must keep its shape [3,2]; put [m, n] on the new object you return');
+    T.ok(a.data === dataBefore && once.data !== a.data, 'transpose must write into a freshly allocated Float32Array, not replace or reuse a.data');
+    T.eq(Array.from(a.data), before, 'transpose changed the values in a.data: read from the input, write only into the new array');
     T.shape(once, [2, 3], 'a single transpose of [3,2] must have shape [2,3]');
     const tt = m.transpose(once);
     T.eq(m.toArray(tt), [[1, 2], [3, 4], [5, 6]]);
-    T.eq(Array.from(a.data), before, 'input must not be modified');
   } },
   { step: 'matmul', name: 'multiplies a 2x3 by a 3x2', run(m, T) {
     const c = m.matmul(m.fromArray([[1, 2, 3], [4, 5, 6]]), m.fromArray([[1, 0], [0, 1], [1, 1]]));
@@ -60,10 +73,18 @@ export const tests = [
     T.shape(c, [7, 4], '[7,5] x [5,4] must have shape [7,4]');
     T.close(Array.from(c.data), expect, 1e-4);
     T.eq(Array.from(a.data), Array.from(randomTensor(m, [7, 5], 1).data), 'matmul must not modify its inputs');
+    // A 32x32 multiply first (a typed-array loop takes well under a millisecond), so a very slow loop fails
+    // in about a second instead of running synchronously for minutes at 128x128.
+    const small = randomTensor(m, [32, 32], 5);
+    const s0 = performance.now();
+    m.matmul(small, small);
+    const smallMs = performance.now() - s0;
+    T.ok(smallMs < 250, `matmul took ${Math.round(smallMs)} ms at 32x32 (budget 250 ms, so 128x128 would take about ${Math.round(smallMs * 64 / 1000)} s); are you calling toArray, offset or allocating inside the loop? Index a.data and b.data directly`);
     const big = randomTensor(m, [128, 128], 3);
-    const t0 = Date.now();
+    const t0 = performance.now();
     m.matmul(big, big);
-    T.ok(Date.now() - t0 < 2000, `128x128 matmul took ${Date.now() - t0} ms; use typed arrays and a plain triple loop`);
+    const bigMs = performance.now() - t0;
+    T.ok(bigMs < 2000, `128x128 matmul took ${Math.round(bigMs)} ms (budget 2000 ms); use typed arrays and a plain triple loop`);
   } },
   { step: 'broadcast', name: 'adds same-shape tensors and scalars', run(m, T) {
     const a = m.fromArray([[1, 2], [3, 4]]);
@@ -90,9 +111,11 @@ export const tests = [
   } },
   { step: 'rowops', name: 'sum reduces the last axis', run(m, T) {
     const s = m.sum(m.fromArray([[1, 2, 3], [4, 5, 6]]));
-    T.shape(s, [2]);
+    const kind = s === undefined ? 'undefined' : ArrayBuffer.isView(s) ? s.constructor.name : Array.isArray(s) ? 'a plain array' : typeof s;
+    T.ok(s && typeof s === 'object' && Array.isArray(s.shape) && s.data, `sum must return a tensor { shape: a.shape.slice(0, -1), data } (unlike argmax, which returns a plain array); got ${kind}`);
+    T.shape(s, [2], 'summing a [2,3] tensor along the last axis leaves shape [2]');
     T.eq(m.toArray(s), [6, 15]);
-    T.eq(m.toArray(m.sum(m.fromArray([[[1, 1], [2, 2]], [[3, 3], [4, 4]]]))), [[2, 4], [6, 8]]);
+    T.eq(m.toArray(m.sum(m.fromArray([[[1, 1], [2, 2]], [[3, 3], [4, 4]]]))), [[2, 4], [6, 8]], 'a [2,2,2] tensor sums to shape [2,2]: every leading axis is kept, only the last is reduced');
   } },
   { step: 'rowops', name: 'argmax picks the largest entry per row (first on ties)', run(m, T) {
     T.eq(m.argmax(m.fromArray([[1, 5, 2], [7, 7, 0], [-1, -2, -3]])), [1, 0, 0]);
@@ -100,13 +123,15 @@ export const tests = [
   { step: 'rowops', name: 'softmax rows sum to one and match exp(x)/sum', run(m, T) {
     const p = m.softmax(m.fromArray([[1, 2, 3]]));
     T.close(m.toArray(p), [[0.09003, 0.24473, 0.66524]], 1e-4);
-    T.close(m.sum(p).data[0], 1, 1e-5);
+    T.close(rowSums(p), [1], 1e-5, 'the row must sum to 1');
   } },
   { step: 'rowops', name: 'softmax normalises each row on its own', run(m, T) {
     const p = m.softmax(m.fromArray([[1, 2, 3], [1, 1, 1], [0, 0, 5]]));
     T.shape(p, [3, 3]);
     T.close(m.toArray(p), [[0.09003, 0.24473, 0.66524], [1 / 3, 1 / 3, 1 / 3], [0.00664, 0.00664, 0.98672]], 1e-4, 'each row is a separate distribution: use that row\'s own max and sum, not the whole tensor\'s');
-    T.close(Array.from(m.sum(p).data), [1, 1, 1], 1e-5, 'every row must sum to 1');
+    T.close(rowSums(p), [1, 1, 1], 1e-5, 'every row must sum to 1');
+    const q = m.softmax(m.fromArray([[1000, 999], [-1000, -999]]));
+    T.close(m.toArray(q), [[0.73106, 0.26894], [0.26894, 0.73106]], 1e-4, 'shift each row by its own max: shifting the second row by the whole tensor\'s max (1000) gives exp(-2000) = 0 for both entries, and 0 / 0 = NaN');
   } },
   { step: 'rowops', name: 'softmax is stable for huge logits (no NaN)', run(m, T) {
     const p = m.softmax(m.fromArray([[1000, 1000, 999]]));
@@ -134,7 +159,12 @@ export const tests = [
   { step: 'layernorm', name: 'eps goes inside the square root and the eps argument is honoured', run(m, T) {
     const z = m.layerNorm(m.fromArray([[5, 5, 5]]), null, null, 1e-5);
     T.ok(!Number.isNaN(z.data[0]) && Math.abs(z.data[0]) < 1e-3, 'a constant row has zero variance: eps must prevent division by zero');
-    T.close(m.toArray(m.layerNorm(m.fromArray([[1, 2, 3]]), null, null, 1)), [[-0.77460, 0, 0.77460]], 1e-4, 'with eps = 1 the divisor is sqrt(2/3 + 1); a hard-coded 1e-5 ignores the argument');
     T.close(m.toArray(m.layerNorm(m.fromArray([[0, 0.001, 0.002]]))), [[-0.30619, 0, 0.30619]], 1e-3, 'for a row with variance 6.7e-7 the result is (x - mu) / sqrt(var + eps); sqrt(var) + eps gives about ±1.21 instead');
+    const y1 = Array.from(m.layerNorm(m.fromArray([[1, 2, 3]]), null, null, 1).data);
+    const near = (ys, v) => ys.length === 3 && Math.abs(ys[0] + v) < 1e-3 && Math.abs(ys[2] - v) < 1e-3;
+    const why = near(y1, 1 / (Math.sqrt(2 / 3) + 1)) ? 'eps must be added to the variance inside the square root: sqrt(var + eps), not sqrt(var) + eps'
+      : near(y1, 1 / Math.sqrt(2 / 3 + 1e-5)) ? 'the eps argument is ignored: this output is what eps = 1e-5 gives, so use the eps parameter rather than a hard-coded constant'
+      : 'with eps = 1 the divisor is sqrt(2/3 + 1)';
+    T.close(y1, [-0.77460, 0, 0.77460], 1e-4, why);
   } },
 ];

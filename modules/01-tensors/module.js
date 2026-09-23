@@ -40,11 +40,11 @@ Once you see that shape is just bookkeeping, several things that look like magic
 
 - **Transpose** is a statement about index arithmetic: element \`[i, j]\` becomes element \`[j, i]\`. Your version copies each number to the offset it has with the axes swapped. PyTorch does not even copy: \`x.T\` swaps the two strides and returns a *view* of the same memory, which is why a transposed tensor reports \`is_contiguous() == False\`.
 - **Reshape** of a contiguous tensor does not touch the data at all; it only changes the shape and recomputes the strides. That is why \`view\` is free in PyTorch, and why \`reshape\` has to fall back to a copy when the input is a non-contiguous view such as a transpose.
-- **Broadcasting** reads the smaller tensor with a stride of zero along the axis being repeated, so a bias vector of length \`d\` is "added to every row" by using \`j % d\` as its index.
+- **Broadcasting** reads the smaller tensor with a stride of zero along the axis being repeated, so a bias vector of length \`d\` is "added to every row" by reading it at \`i % d\`, where \`i\` is the flat offset into the larger tensor (the column of flat offset \`i\` is \`i % d\`).
 
 ## Matmul: the operation everything else is made of
 
-In a transformer, well over 90% of the arithmetic is matrix multiplication: the attention projections, the attention scores and the MLP are all matmuls, while softmax, LayerNorm and the activation touch each number only a handful of times. For \`A\` of shape \`[n, k]\` and \`B\` of shape \`[k, m]\`, the product \`C\` has shape \`[n, m]\` and the definition is a triple loop: \`C[i, j] = Σₚ A[i, p] · B[p, j]\`, summing over the shared index \`p\` from 0 to \`k − 1\`. The interesting part is the **order** of the loops. Written as \`i, j, p\` the inner loop reads \`B[p, j]\` down a column, jumping \`m\` floats through memory at every step. Written as \`i, p, j\`, the inner loop reads a contiguous row of \`B\` and writes a contiguous row of \`C\`, so every 64-byte cache line fetched is used in full. In C on matrices too big for the cache this reordering alone is commonly worth 2× or more; in JavaScript the picture depends on size. While \`B\` fits in the CPU's fast caches the two orders run within noise of each other (the \`i, j, p\` loop keeps its running sum in a register, which offsets its strided reads); once \`B\` outgrows them, \`i, p, j\` pulls ahead. On a small cloud VM we measured a tie at \`n = 64\`–\`256\` and \`i, p, j\` about 1.2–1.8× faster at \`n = 512\`. The goal demo times your loop against the \`i, j, p\` order at sizes up to 512 so you can see where the crossover falls on your machine. GPUs go much further (tiling into shared memory, tensor cores) and module 23 revisits this, but the idea starts here: **memory layout decides speed as much as arithmetic does.**
+In a transformer, well over 90% of the arithmetic is matrix multiplication: the attention projections, the attention scores and the MLP are all matmuls, while softmax, LayerNorm and the activation touch each number only a handful of times. For \`A\` of shape \`[n, k]\` and \`B\` of shape \`[k, m]\`, the product \`C\` has shape \`[n, m]\` and the definition is a triple loop: \`C[i, j] = Σₚ A[i, p] · B[p, j]\`, summing over the shared index \`p\` from 0 to \`k − 1\`. The interesting part is the **order** of the loops. Written as \`i, j, p\` the inner loop reads \`B[p, j]\` down a column, jumping \`m\` floats through memory at every step. Written as \`i, p, j\`, the inner loop reads a contiguous row of \`B\` and writes a contiguous row of \`C\`, so every 64-byte cache line fetched is used in full. In C on matrices too big for the cache this reordering alone is commonly worth 2× or more; in JavaScript the picture depends on size. While \`B\` fits in the CPU's fast caches the two orders run within noise of each other (the \`i, j, p\` loop keeps its running sum in a register, which offsets its strided reads); once \`B\` outgrows them, \`i, p, j\` pulls ahead. The goal demo times your loop against the \`i, j, p\` order at sizes up to 512 so you can see where the crossover falls on your machine. GPUs go much further (tiling into shared memory, tensor cores) and module 23 revisits this, but the idea starts here: **memory layout decides speed as much as arithmetic does.**
 
 :::predict
 Your matmul does \`2·n³\` floating-point operations for two \`n × n\` matrices (one multiply and one add per term of each sum). Roughly how many GFLOP/s (billions of floating-point operations per second) do you expect plain single-threaded JavaScript to reach? For scale, NVIDIA's H100 SXM datasheet lists approximately 989 TFLOP/s of dense bf16 tensor-core throughput, about 1,000,000 GFLOP/s.
@@ -54,7 +54,9 @@ Roughly 0.3–3 GFLOP/s for a straightforward typed-array loop, depending on the
 
 ## Softmax and why it needs care
 
-Softmax turns a row of scores \`x\` into probabilities: \`p_j = exp(x_j) / Σₖ exp(x_k)\`. In a GPT it appears once in every attention layer (over each query's row of scores, for every head) and once at the output (over the vocabulary, to turn logits into next-token probabilities). The naïve formula fails on real logits because \`exp(1000)\` overflows to Infinity and \`Infinity / Infinity\` is NaN. The fix is to subtract the row maximum first; the result is mathematically identical because the constant cancels in the ratio. Every production kernel does this.
+Softmax turns a row of scores \`x\` into probabilities: \`p_j = exp(x_j) / Σₖ exp(x_k)\`. In a GPT it appears once in every attention layer (over each query's row of scores, for every head) and once at the output (over the vocabulary, to turn logits into next-token probabilities). The naïve formula fails on real logits because \`exp(1000)\` overflows to Infinity and \`Infinity / Infinity\` is NaN. The fix is to subtract the row maximum first; the result is mathematically identical because the constant cancels in the ratio. Every production kernel does this. The shift must be each row's own maximum: shifting every row by the whole tensor's maximum can push a low row entirely below \`exp\`'s range, so its entries all become 0 and the row divides 0 by 0.
+
+Dividing the logits by a **temperature** \`T\` before softmax controls how peaked the result is: \`T < 1\` stretches the gaps between logits and concentrates the mass on the largest, \`T > 1\` shrinks them and flattens the distribution toward uniform. The goal demo shows this on one row; module 04 uses it when you sample text, and module 14 studies it with the other decoding controls.
 
 ## LayerNorm
 
@@ -73,7 +75,7 @@ Two functions.
 
 \`offset(shape, indices)\` returns a number: the flat offset of a multi-index. This is a completion problem: the starter already has the loop over axes and the running \`stride\`; you fill in its two-line body. The last axis has stride 1, and each earlier axis has a stride equal to the product of the sizes after it. The offset is the sum of \`index * stride\` over the axes.
 
-\`transpose(a)\`: for a 2-D tensor of shape \`[n, m]\` return a new tensor \`{ shape: [m, n], data }\` where \`out[j, i] = a[i, j]\`. Do not modify the input; allocate a fresh \`Float32Array\`. This one you write from scratch, using the offset rule for both shapes.
+\`transpose(a)\`: for a 2-D tensor of shape \`[n, m]\` return a new tensor \`{ shape: [m, n], data }\` where \`out[j, i] = a[i, j]\`. Do not modify the input: return a new object, do not assign to \`a.shape\` or \`a.data\`, and write into a freshly allocated \`Float32Array\` (a transpose cannot be done safely in place, because it overwrites values it has not read yet). This one you write from scratch, using the offset rule for both shapes.
 
 The worked examples above the TODO line (\`raw\`, \`fromArray\`, \`toArray\`) show how tensors are created and inspected. Use \`fromArray\` and \`toArray\` freely when you experiment with \`console.log\`.
 `,
@@ -90,9 +92,9 @@ The worked examples above the TODO line (\`raw\`, \`fromArray\`, \`toArray\`) sh
       instructions: `
 Implement \`matmul(a, b)\` for 2-D tensors: \`[n, k] × [k, m] → [n, m]\`, with \`C[i, j] = Σₚ A[i, p] · B[p, j]\`. Throw an \`Error\` if \`a.shape[1] !== b.shape[0]\`.
 
-Use the \`i, p, j\` loop order (outer over rows of A, then over the shared dimension, inner over columns of B) so the inner loop streams through contiguous memory. The test times a 128×128 multiply; a triple loop over typed arrays passes comfortably, but reading \`a.data\` through \`toArray\` inside the loop will not.
+Use the \`i, p, j\` loop order (outer over rows of A, then over the shared dimension, inner over columns of B) so the inner loop streams through contiguous memory. Return a new tensor \`{ shape: [n, m], data }\` and leave both inputs unchanged. The test times a 32×32 multiply (budget 250 ms) and then a 128×128 one (budget 2000 ms); a triple loop over typed arrays takes a few milliseconds, but reading \`a.data\` through \`toArray\` inside the loop blows the first budget.
 `,
-      predict: { question: 'The goal demo times your i-p-j matmul against an i-j-p loop. Which wins at n = 64, and which at n = 512?', answer: 'At n = 64 the two are within measurement noise (sometimes i-j-p is slightly ahead): a 16 KB matrix sits in the L1 cache, so strided reads are cheap and i-j-p keeps its sum in a register. At n = 512 each matrix is 1 MB, the column walk through B misses the cache on almost every step, and i-p-j is typically 1.2–2× faster in JavaScript (more in C).' },
+      predict: { question: 'The goal demo times your i-p-j matmul against an i-j-p loop. Which wins at n = 64, and which at n = 512?', answer: 'At n = 64 the two are within measurement noise (sometimes i-j-p is slightly ahead): a 16 KB matrix sits in the L1 cache, so strided reads are cheap and i-j-p keeps its sum in a register. At n = 512 each matrix is 1 MB, the column walk through B misses the cache on almost every step, and i-p-j pulls ahead. On a small cloud VM we measured a tie from n = 64 to 256 and i-p-j about 1.2–1.8× faster at n = 512 (more in C).' },
       hints: [
         'Start from a zero-filled `Float32Array(n * m)` and accumulate into it; typed arrays start at zero.',
         'Think of row i of C as a weighted sum of the rows of B: row p of B gets weight A[i, p]. So for each row i and each p in 0..k, read the weight A[i, p] once, then add weight times row p of B into row i of C, element by element.',
@@ -123,17 +125,17 @@ Any other shape must throw an \`Error\` (for example, a \`[3, 2]\` tensor onto a
       instructions: `
 Three functions that operate along the **last axis**, treating the tensor as \`rows × d\` where \`d = shape.at(-1)\`:
 
-- \`sum(a)\`: returns a tensor of shape \`a.shape.slice(0, -1)\`, each entry the sum of a row.
+- \`sum(a)\`: returns a tensor \`{ shape: a.shape.slice(0, -1), data }\` (not a bare \`Float32Array\` or array; contrast \`argmax\` below), each entry the sum of a row.
 - \`argmax(a)\`: a plain array of the index of the largest value in each row (first index on ties).
 - \`softmax(a)\`: same shape as \`a\`; each row becomes \`exp(x − max) / Σ exp(x − max)\`.
 
-The number of rows is \`a.data.length / d\`; row \`r\` occupies offsets \`r*d … r*d + d − 1\`. Each row is its own distribution, with its own maximum and its own sum. Softmax must not produce NaN for logits like \`[1000, 1000, 999]\` or \`[-1000, 0, 1000]\`.
+The number of rows is \`a.data.length / d\`; row \`r\` occupies offsets \`r*d … r*d + d − 1\`. Each row is its own distribution, with its own maximum and its own sum: shifting by the whole tensor's maximum makes a row far below it underflow to \`0 / 0 = NaN\`. Softmax must not produce NaN for logits like \`[1000, 1000, 999]\` or \`[-1000, 0, 1000]\`.
 `,
       predict: { question: 'What does `softmax([1000, 1000, 999])` return if you forget to subtract the max?', answer: '`[NaN, NaN, NaN]`: exp(1000) is Infinity, and Infinity / Infinity is NaN. With the max subtracted the exponents are 0, 0, −1 and the result is about [0.422, 0.422, 0.155].' },
       hints: [
-        'All three share the same skeleton: `for (r = 0; r < data.length; r += d) { … loop j in 0..d over data[r + j] … }`.',
+        'All three share the same skeleton: `for (let r = 0; r < rows; r++) { const base = r * d; … loop j in 0..d over data[base + j] … }`. sum and argmax store one result per row, at index r; softmax writes a whole row, at base + j.',
         'Softmax per row takes three passes over that row: find its max, write exp(x − max) into the output while accumulating the sum, then divide the row by the sum. Only the max works as the shift: it makes the largest exponent exactly 0, so nothing can overflow.',
-        'Inside the row loop: `let mx = -Infinity;` pass 1 updates `mx`; pass 2 sets `out[r + j] = Math.exp(/* shifted value */)` and adds it to `z`; pass 3 divides. Reset `mx` and `z` for every row.',
+        'Inside the row loop: `let mx = -Infinity;` pass 1 updates `mx`; pass 2 sets `out[base + j] = Math.exp(/* shifted value */)` and adds it to `z`; pass 3 divides. Reset `mx` and `z` for every row.',
       ],
     },
     {
