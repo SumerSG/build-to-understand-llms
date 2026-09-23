@@ -1,12 +1,12 @@
 # Build to Understand LLMs
 
 A build-it-yourself curriculum for the whole LLM stack, running entirely in your browser.
-Thirty-five self-contained projects: you write the code, the tests check it, and a goal demo
+Thirty-six self-contained projects: you write the code, the tests check it, and a goal demo
 draws what your code just did. Nothing counts as learned until it runs.
 
 | Track | You build |
 |---|---|
-| Foundations | a Zipf word counter (the lab loop), a tensor library, an autograd engine, a BPE tokenizer, a bigram language model |
+| Foundations | a warm-up in the JavaScript the lab uses (a letter counter), a Zipf word counter (the lab loop), a tensor library, an autograd engine, a BPE tokenizer, a bigram language model |
 | Transformer & pre-training | attention, a GPT, the training loop, a compute/scaling planner, a data pipeline, a mixture-of-experts layer, a tiny multimodal model |
 | Post-training | SFT with loss masking, LoRA adapters, knowledge distillation, reward models and DPO, GRPO with verifiable rewards, an eval harness |
 | Inference | sampling, a KV cache, continuous batching with paged attention, prefix/prompt caching, speculative decoding, test-time compute (voting, verifiers, reward-guided search), RoPE/GQA/MLA/sliding-window attention, long-context evaluation, quantisation |

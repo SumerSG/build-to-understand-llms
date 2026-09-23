@@ -12,11 +12,13 @@ export const TRACKS = [
 ];
 
 export const MODULES = [
-  { id: '00-hello-lab', track: 'foundations', title: "Zipf's law: learn the lab loop", minutes: 20, status: 'ready',
+  { id: '35-javascript', track: 'foundations', title: 'JavaScript for this lab', minutes: 90, status: 'ready',
+    goal: 'A letter counter built from ten small functions of your own: it counts and ranks the letters of a famous sentence, draws a bar chart and stores the numbers in a table. No programming experience needed.' },
+  { id: '00-hello-lab', track: 'foundations', title: "Zipf's law: learn the lab loop", minutes: 45, status: 'ready',
     goal: 'A word-frequency counter that plots Zipf\'s law on a passage of Alice\'s Adventures in Wonderland, built through the Recall → Concept → Build → Goal → Reflect loop.' },
-  { id: '01-tensors', track: 'foundations', title: 'Tensors from scratch', minutes: 90, status: 'ready',
+  { id: '01-tensors', track: 'foundations', title: 'Tensors from scratch', minutes: 150, status: 'ready',
     goal: 'A tiny tensor library (matmul, transpose, broadcasting, softmax, layernorm) whose outputs match the reference bit-for-bit within tolerance.' },
-  { id: '02-autograd', track: 'foundations', title: 'Autograd from scratch', minutes: 120, status: 'ready',
+  { id: '02-autograd', track: 'foundations', title: 'Autograd from scratch', minutes: 180, status: 'ready',
     goal: 'A reverse-mode automatic differentiation engine that passes numerical gradient checks and trains a linear model by gradient descent.' },
   { id: '03-tokenizer', track: 'foundations', title: 'A BPE tokenizer', minutes: 90, status: 'ready',
     goal: 'A byte-pair-encoding tokenizer trained on the corpus that round-trips text exactly and compresses it, with a plot of compression vs vocabulary size.' },
