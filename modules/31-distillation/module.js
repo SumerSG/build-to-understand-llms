@@ -4,7 +4,7 @@ export default {
   track: 'posttraining',
   minutes: 90,
   threshold: 'A teacher\'s full next-token distribution carries far more information per token than the single correct label, so a smaller student that matches it learns faster and ends closer to the teacher than one trained on the data alone.',
-  goal: 'A distillation trainer (temperature-softened targets, a T²-scaled KL loss, a mixed objective, sequence-level and on-policy data paths) that trains a 1-layer student to track the frozen checkpoint teacher faster than training from scratch, with held-out loss curves, top-1 agreement and sample generations for the three students.',
+  goal: 'A distillation trainer (temperature-softened targets, a T²-scaled KL loss, a mixed objective, a sequence-level data path) that trains a 1-layer student to track the frozen checkpoint teacher faster than training from scratch, with held-out loss curves, top-1 agreement and sample generations for the three students (scratch, logit KD, sequence-level KD). You also build the on-policy reverse-KL loss; the demo uses it to score each student on its own samples, and training with it is a stretch exercise.',
   prereqs: ['07-pretraining', '10-sft', '30-lora'],
   recall: [
     { q: 'In module 07, `sample` passed a `temperature` to `model.generate`, which divides the logits by it before the softmax. What does temperature 4 do to the distribution?', options: ['Sharpens it towards the argmax', 'Flattens it towards uniform while keeping the ranking', 'Changes which token is most likely'], answer: 1,
@@ -117,12 +117,12 @@ loss = T² · (1 / N) · Σ_positions Σ_v p · (log p − log q)
 
 The \`Σ p · log p\` part does not depend on the student, so compute it as a plain number and add it. It makes the loss exactly 0 when the student matches, which is what makes the value readable. The \`Σ p · log q\` part must be Tensor operations: \`studentLogits.scale(1 / T).logSoftmax()\`, multiplied by \`new Tensor(p)\`, summed.
 
-The tests check a 3-class example by hand (1.1504 at \`T = 1\`, 1.2806 at \`T = 2\`), that duplicating a position does not change the loss (mean, not sum), and that the gradient equals \`T · (q_T − p_T) / N\`.
+The tests check a 3-class example by hand: student logits \`[[0, 1, 2]]\`, teacher logits \`[[2, 1, 0]]\` give 1.1504 at \`T = 1\` and 1.2806 at \`T = 2\` (0.3202 if you forget the \`T²\`). They also check that duplicating a position does not change the loss (mean, not sum), and that the gradient equals \`T · (q_T − p_T) / N\`.
 `,
       predict: { question: 'At `T = 4`, how much smaller would the gradient be if you forgot the `T²`?', answer: '16 times smaller. The gradient of the plain KL is `(q_T − p_T) / T`; with the `T²` it becomes `T · (q_T − p_T)`. Without the factor, raising `T` quietly shifts the balance of the mixed loss towards the hard labels.' },
       hints: [
         'Split the KL into a constant part (`Σ p log p`, a number) and a part that depends on the student (`−Σ p log q`, a Tensor).',
-        'Soften both sides with the same `T`. Build `logq = studentLogits.scale(1 / T).logSoftmax()`, multiply by `new Tensor({ shape, data: p.data })`, `.sum()`, negate, add the constant, and scale by `T * T / N`.',
+        'Soften both sides with the same `T`. Only the cross term `−Σ p log q` needs a gradient, so it is the only part built from Tensor ops; `Σ p log p` is a plain number from the loop over `p.data`. Add them, then apply the `T²` and the `1 / N` last, to the combined scalar.',
         '`const logq = studentLogits.scale(1 / T).logSoftmax(); const cross = logq.mul(new Tensor({ shape: studentLogits.shape.slice(), data: p.data })).sum(); return /* combine cross, plogp and T * T / positions */;`',
       ],
     },
@@ -189,9 +189,9 @@ q = softmax(studentLogits) (Tensor, with gradient)     p = softmax(targetLogits)
 
 \`onPolicyLoss(student, teacher, promptIds, { maxNewTokens, temperature = 1, next })\`: both models are \`GPT\`s, \`promptIds\` is \`number[][]\` with every prompt the same length (throw otherwise).
 
-1. \`ids[i] = student.generate(promptIds[i], { maxNewTokens, temperature, next })\`. The **student** samples.
+1. \`ids[i] = student.generate(promptIds[i], { maxNewTokens, temperature, next })\`. The **student** samples. \`GPT.generate\` returns the prompt followed by the \`maxNewTokens\` new ids (unlike \`lib/sampling.js\` \`generate\` in step 4, which returns only the new text), so each \`ids[i]\` has length \`promptLen + maxNewTokens\`.
 2. \`x = ids.map(s => s.slice(0, -1))\`. Position \`t\` predicts token \`t + 1\`, so \`mask[i][t] = 1\` exactly when \`t >= promptLen − 1\` (the positions that predict a generated token).
-3. Teacher logits with \`teacherLogits(teacher, x)\` (under \`noGrad\`: the teacher stays frozen); student logits with \`student.forward(x)\`.
+3. Teacher logits with \`teacherLogits(teacher, x)\` (under \`noGrad\`: the teacher stays frozen); student logits with \`student.forward(x)\`. Each row of \`x\` is scored in one forward pass, so \`promptLen + maxNewTokens − 1\` must be at most both models' \`blockSize\`; \`generate\` itself slides its window and never complains, but \`forward\` throws on a longer sequence.
 4. Return \`{ loss: reverseKL(studentLogits, teacher's, mask), ids, mask }\`.
 `,
       predict: { question: 'The teacher splits 50/50 between two tokens; the student puts 96% on the first and 4% on the second. Which is larger, forward or reverse KL?', answer: 'Forward KL, `0.5·ln(0.5/0.96) + 0.5·ln(0.5/0.04)` ≈ 0.94 nats, is almost twice reverse KL, `0.96·ln(0.96/0.5) + 0.04·ln(0.04/0.5)` ≈ 0.53. Reverse KL weights each token by the student\'s probability, so the neglected second mode enters with weight 0.04; forward KL weights it by the teacher\'s 0.5 and charges `ln 12.5` for it.' },
