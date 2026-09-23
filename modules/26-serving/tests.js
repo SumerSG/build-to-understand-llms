@@ -23,6 +23,16 @@ function loaded(m, id, load, prefixes = []) {
 
 const CFG = (m) => m.DEFAULT_CONFIG;
 
+/** Reference ring lookup built from hash32 alone, so the expected value does not depend on the learner's ring. */
+function refHome(ids, vnodes, key) {
+  const pts = [];
+  for (const id of ids) for (let v = 0; v < vnodes; v++) pts.push({ hash: hash32(`${id}#${v}`), id });
+  pts.sort((a, b) => a.hash - b.hash);
+  const h = hash32(String(key));
+  const p = pts.find((x) => x.hash >= h);
+  return (p || pts[0]).id;
+}
+
 export const tests = [
   // ---------------- step 1: the replica cost model ----------------
   { step: 'cost', name: 'a request contributes its uncached prompt during prefill and 1 token while decoding', run(m, T) {
@@ -83,6 +93,22 @@ export const tests = [
     const modMoved = keys.filter((k) => hash32(k) % 8 !== hash32(k) % 7).length;
     T.ok(moved < 0.5 * modMoved, `the ring moved ${moved} keys where hash % n moves ${modMoved}; a ring must beat modulo by a wide margin`);
   } },
+  { step: 'routing', name: 'buildRing places vnodes points per id at hash32(`id#v`); pickOnRing takes the first point >= the key, wrapping', run(m, T) {
+    const ring = m.buildRing(['a', 'b'], { vnodes: 3 });
+    T.eq(ring.length, 6, '2 replicas x 3 virtual nodes = 6 points');
+    const want = [];
+    for (const id of ['a', 'b']) for (let v = 0; v < 3; v++) want.push({ hash: hash32(`${id}#${v}`), id });
+    want.sort((x, y) => x.hash - y.hash);
+    T.eq(ring.map((p) => [p.hash, p.id]), want.map((p) => [p.hash, p.id]), 'each point is { hash: hash32(`${id}#${v}`), id }, sorted by hash ascending; every router in the fleet must build the same ring');
+    T.throws(() => m.buildRing([], { vnodes: 3 }), 'a ring with no replicas cannot route anything and must throw');
+    const h = hash32('route-me');
+    T.eq(m.pickOnRing([{ hash: h - 1, id: 'x' }, { hash: h, id: 'y' }, { hash: h + 1, id: 'z' }], 'route-me'), 'y',
+      'a point whose hash EQUALS the key hash owns the key (>=, not >)');
+    T.eq(m.pickOnRing([{ hash: h + 5, id: 'x' }, { hash: h + 9, id: 'y' }], 'route-me'), 'x', 'the first point at or after the key hash, not the nearest or the last');
+    T.eq(m.pickOnRing([{ hash: h - 9, id: 'x' }, { hash: h - 5, id: 'y' }], 'route-me'), 'x',
+      'every point is below the key hash, so the key wraps around the circle to ring[0], not to the last point');
+    T.throws(() => m.pickOnRing([], 'route-me'), 'an empty ring must throw');
+  } },
   { step: 'routing', name: 'cache-aware routing follows the prefix until the holder is overloaded', run(m, T) {
     const ctx = { dispatched: 0, ring: m.buildRing([0, 1, 2], { vnodes: 64 }), cfg: CFG(m) };
     const warm = [loaded(m, 0, 100), loaded(m, 1, 180, ['sys-a']), loaded(m, 2, 100)];
@@ -94,6 +120,27 @@ export const tests = [
     const first = m.chooseReplica('cache-aware', cold, { prefix: 'never-seen' }, ctx);
     T.eq(m.chooseReplica('cache-aware', cold, { prefix: 'never-seen' }, { ...ctx, dispatched: 17 }), first,
       'an uncached prefix must go to its ring home every time, otherwise the second request cannot hit the first one\'s cache');
+    const twoWarm = [loaded(m, 0, 100, ['sys-b']), loaded(m, 1, 60, ['sys-b']), loaded(m, 2, 50)];
+    T.eq(m.chooseReplica('cache-aware', twoWarm, { prefix: 'sys-b' }, ctx), 1,
+      'replicas 0 (100 tokens) and 1 (60) both hold the prefix and both are inside the 1.5x band (mean 70): take the less loaded holder, not the first one found, and not the emptier replica 2 that would have to recompute it');
+  } },
+  { step: 'routing', name: 'a cold prefix goes to its ring home, not to the least-loaded replica, unless home is overloaded', run(m, T) {
+    const ids = [0, 1, 2, 3];
+    const ctx = { dispatched: 0, ring: m.buildRing(ids, { vnodes: 64 }), cfg: CFG(m) };
+    let checked = 0;
+    for (let k = 0; k < 40 && checked < 3; k++) {
+      const prefix = `cold-${k}`;
+      const home = refHome(ids, 64, prefix);
+      if (home === 0) continue;   // replica 0 is the least loaded below; we want the ring and least-loaded to disagree
+      checked++;
+      const within = ids.map((id) => loaded(m, id, id === 0 ? 20 : id === home ? 30 : 40));
+      T.eq(m.chooseReplica('cache-aware', within, { prefix }, ctx), home,
+        `nobody holds "${prefix}"; its ring home is replica ${home} with 30 tokens against a mean of 32.5, inside the band, so it must go home even though replica 0 is emptier — that is how the NEXT request with this prefix finds a warm cache`);
+      const hot = ids.map((id) => loaded(m, id, id === home ? 900 : 10));
+      T.eq(m.chooseReplica('cache-aware', hot, { prefix }, ctx), 0,
+        `the ring home (replica ${home}) owes 900 tokens against a mean of 232: the same overload guard applies, so fall back to least-loaded (index 0)`);
+    }
+    T.ok(checked === 3, 'fixture: expected at least three cold prefixes whose home is not replica 0');
   } },
 
   // ---------------- step 3: disaggregation ----------------
@@ -120,6 +167,22 @@ export const tests = [
     T.ok(b.decode >= 6, `40-token prompts with 600-token answers need decode machines; got ${b.prefill} prefill / ${b.decode} decode`);
     T.ok(b.prefill >= 1 && b.decode >= 1, 'neither pool may be empty: an empty pool serves nobody');
     T.throws(() => m.planPools(promptHeavy, 1, CFG(m)), 'you cannot disaggregate onto a single replica');
+  } },
+  { step: 'disagg', name: 'planPools prices each phase exactly as specified and rounds to the nearest machine', run(m, T) {
+    const cfg = { ...CFG(m), tPerToken: 1, tFixed: 32, maxBatch: 32 };   // decode token = 1 + 32/32 = 2 units
+    const reqs = [
+      { id: 0, arrival: 0, prefix: 'p', prefixLen: 500, promptLen: 1000, outputLen: 11 },
+      { id: 1, arrival: 0, prefix: 'p', prefixLen: 100, promptLen: 200, outputLen: 1 },
+    ];
+    const p = m.planPools(reqs, 4, cfg);
+    T.close(p.prefillWork, 1200, 1e-9, 'prefill work is promptLen x tPerToken summed over requests (1000 + 200); the planner does not know which requests will hit the cache');
+    T.close(p.decodeWork, 20, 1e-9, 'decode work is (outputLen - 1) x (tPerToken + tFixed / maxBatch): 10 tokens x 2 = 20, and a 1-token answer has no decode at all');
+    const unit = { ...CFG(m), tPerToken: 1, tFixed: 0, maxBatch: 1 };
+    const split = m.planPools([
+      { id: 0, arrival: 0, prefix: 'p', prefixLen: 0, promptLen: 65, outputLen: 1 },
+      { id: 1, arrival: 0, prefix: 'p', prefixLen: 0, promptLen: 0, outputLen: 36 },
+    ], 4, unit);
+    T.eq([split.prefill, split.decode], [3, 1], '65% of the work is prefill: 0.65 x 4 = 2.6 rounds to 3 prefill machines, not down to 2');
   } },
   { step: 'disagg', name: 'disaggregation removes the prefill stalls that colocation forces on decoding', run(m, T) {
     const work = m.makeWorkload({ n: 150, seconds: 20, seed: 4, nPrefixes: 6 });
@@ -149,12 +212,15 @@ export const tests = [
     T.eq(m.autoscaleTarget({ total: 8, raw: 2, window: [8, 7, 2, 2] }, cfg), 8, 'the window still contains a demand for 8, so hold at 8 — the load was there 20 seconds ago');
     T.eq(m.autoscaleTarget({ total: 8, raw: 2, window: [2, 2, 2, 2, 2, 2] }, cfg), 7, 'once the whole window agrees, shrink by scaleDownStep (1), not all the way to 2');
     T.eq(m.autoscaleTarget({ total: 4, raw: 4, window: [4, 4] }, cfg), 4, 'a matched target must not move the cluster at all');
+    T.eq(m.autoscaleTarget({ total: 8, raw: 2, window: [6, 2, 2] }, { ...cfg, scaleDownStep: 3 }), 6,
+      'a big scaleDownStep may not undershoot what the window still asks for: max(6, 8 - 3) = 6, not 5');
   } },
   { step: 'autoscale', name: 'gpuSeconds bills every replica from the moment it is created', run(m, T) {
     T.close(m.gpuSeconds([{ start: 0, end: 10 }, { start: 4, end: 10 }], 10), 16, 1e-9, 'two spans of 10 s and 6 s');
     T.close(m.gpuSeconds([{ start: 0, end: null }, { start: 90, end: null }], 100), 110, 1e-9, 'a replica still running at the end is billed up to endTime, including the seconds it spent loading weights');
     T.close(m.gpuSeconds([], 100), 0, 1e-9, 'no replicas, no bill');
     T.close(m.gpuSeconds([{ start: 5, end: 5 }], 100), 0, 1e-9, 'a zero-length span costs nothing');
+    T.close(m.gpuSeconds([{ start: 0, end: 10 }, { start: 20, end: 15 }], 100), 10, 1e-9, 'a span that ends before it starts is ignored, not billed as negative time');
   } },
   { step: 'autoscale', name: 'the autoscaler reacts to a burst within the cold start plus one tick', run(m, T) {
     const burst = [];
@@ -185,6 +251,19 @@ export const tests = [
     T.close(r.tpotP50, 0.075, 1e-6, 'TPOTs are 0.05, 0.2, 0.1, 0.01 -> median 0.075');
     T.close(r.makespan, 5, 1e-9, 'makespan runs from the first arrival to the last completion');
     T.eq(r.outputTokens, 144, 'every generated token counts towards throughput');
+    T.close(r.throughput, 144 / 5, 1e-9, 'throughput is output TOKENS per second of makespan (144 / 5), not requests per second');
+    T.close(r.tpotP95, 0.185, 1e-6, 'p95 TPOT interpolates between 0.1 and 0.2');
+  } },
+  { step: 'slo', name: 'one-token answers count for TTFT only, and an SLO is met AT its threshold', run(m, T) {
+    const recs = [
+      { id: 0, arrival: 0, firstToken: 0.5, end: 0.5, outputLen: 1 },
+      { id: 1, arrival: 0, firstToken: 0.2, end: 1.2, outputLen: 11 },
+    ];
+    const r = m.sloReport(recs, { ttft: 1, tpot: 0.05 });
+    T.close(r.tpotP50, 0.1, 1e-9, 'the one-token answer has no inter-token interval, so it must not add a TPOT of 0 to the list');
+    T.eq(r.met, 1, 'the one-token answer met its TTFT and has no TPOT to fail, so it counts; request 1 streams at 0.1 s/token and does not');
+    const edge = m.sloReport([{ id: 0, arrival: 0, firstToken: 1, end: 1.5, outputLen: 11 }], { ttft: 1, tpot: 0.05 });
+    T.eq(edge.met, 1, 'TTFT of exactly 1 s and TPOT of exactly 50 ms meet a 1 s / 50 ms SLO: the check is <=, not <');
   } },
   { step: 'slo', name: 'goodput counts only requests that meet BOTH SLOs', run(m, T) {
     const recs = [

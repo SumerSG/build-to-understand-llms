@@ -58,10 +58,10 @@ export default {
       why: 'One iteration is one step for the whole replica. The prefill occupies it, so every in-flight decode sees a 135 ms gap. That single fact is the argument for disaggregation (DistServe, Splitwise) and for chunked prefill.',
     },
     {
-      q: 'Goodput, as defined by DistServe (Zhong et al. 2024), is…',
-      options: ['Tokens per second', 'Requests per second that meet every latency SLO', 'GPU utilisation'],
+      q: 'Goodput, as this module\'s `sloReport` measures it, is…',
+      options: ['Tokens per second', 'Requests per second that met both the TTFT and the TPOT SLO', 'GPU utilisation'],
       answer: 1,
-      why: 'A cluster can have excellent throughput while half its users see a 3-second first token. Goodput refuses to count work that failed the contract, which is why it is the metric the whole module optimises.',
+      why: 'A cluster can have excellent throughput while half its users see a 3-second first token. Goodput refuses to count work that failed the contract. DistServe (Zhong et al. 2024) states it as the highest request rate at which a target fraction of requests meets both SLOs; the per-run version here is the same idea measured on one trace.',
     },
     {
       q: 'Why does the autoscaler in this module scale up immediately but scale down only when a whole window of ticks agrees?',
@@ -82,9 +82,9 @@ The cost model is module 16's, from module 23's roofline: an iteration costs \`t
 Prefix caches are **per replica**: a hit is worth the whole prefix, thousands of prefill tokens you never pay for, but only if the request lands where that prefix was served before, which round-robin rarely does.
 
 :::predict
-Eight replicas with four prefix slots each is 32 slots for 16 system prompts, whichever way you route. So why does affinity routing raise the hit rate?
+The goal demo runs 4 replicas with 4 prefix slots each: 16 slots for 16 system prompts, whichever way you route. So does affinity routing raise the hit rate, and if so, why?
 ---
-Capacity is not the constraint, *locality* is. Round-robin makes all 8 replicas cover all 16 prefixes in 4 slots each, so every LRU thrashes; affinity gives each replica 2-4 prefixes it can keep. In the goal demo that moves the hit rate from 45% to 75% and median TTFT from 0.149 s to 0.038 s.
+Yes, from 45% to 75%, and median TTFT falls from 0.149 s to 0.038 s. Capacity is identical, *locality* is not. Round-robin asks each of the 4 replicas to cover all 16 prefixes in 4 slots, so every LRU thrashes; affinity gives each replica roughly its own 4 prefixes, which fit.
 :::
 
 The SGLang router and the vLLM production-stack router therefore take the replica with the longest cached prefix match, unless it is much busier than the rest; pure affinity would make the popular prefix's replica everyone's queue, and \`overloadFactor\` = 1.5 is that escape valve.
@@ -98,16 +98,16 @@ Prefill is compute-bound, decode is memory-bound, and one queue makes each the o
 Disaggregation gives each phase its own pool: prefill in one, ship the KV cache, stream in the other. This is DistServe (Zhong et al. 2024), Splitwise (Patel et al. 2024) and Mooncake (Qin et al. 2024), which serves Kimi this way over RDMA with a fleet-wide KV store. The price is the transfer, priced by module 24's alpha-beta model: \`setup + tokens * bytesPerToken / bandwidth\`.
 
 :::predict
-A 4,000-token prompt on Llama-3-8B carries 4,000 x 128 KB = 512 MB of KV cache, about 20 ms over a 25 GB/s RDMA link. Is shipping it cheaper than recomputing it?
+A 4,000-token prompt on Llama-3-8B carries 4,000 x 131,072 bytes, approximately 524 MB of KV cache: about 21 ms over a 25 GB/s RDMA link. Is shipping it cheaper than recomputing it on the decode side?
 ---
-Much cheaper. Recomputing means prefilling 4,000 tokens again: \`2 * 8e9 * 4000\` = 64 TFLOP, about 160 ms at 40% of an H100's approximately 989 TFLOP/s bf16 peak. Transfer wins by roughly 8x, and both sides are linear in tokens, so the ratio holds.
+Much cheaper. Recomputing means prefilling 4,000 tokens again: \`2 * 8e9 * 4000\` = 64 TFLOP, about 160 ms at 40% of an H100's approximately 989 TFLOP/s dense bf16 peak (NVIDIA H100 datasheet), and 205 ms in this module's cost model (\`5 ms + 4000 * 50 us\`). Transfer wins by roughly 8-10x. Both costs grow with the prompt, and attention makes real prefill grow faster than linearly, so the gap only widens for longer prompts.
 :::
 
 ## Goodput, admission control and the bill
 
-Throughput hides failure: a cluster can move plenty of tokens per second while a third of its users wait three seconds for the first one. **Goodput** — requests per second meeting *every* SLO — refuses to count work that broke the contract, and it is what this module optimises (Zhong et al. 2024). Report it at p95, where users feel the tail. Past saturation the honest move is **admission control**: hold new requests rather than let everybody miss, which is what the driver's \`maxQueue\` backpressure does.
+Throughput hides failure: a cluster can move plenty of tokens per second while a third of its users wait three seconds for the first one. **Goodput** refuses to count work that broke the contract. DistServe (Zhong et al. 2024) defines it as the highest request rate a system can take while a target fraction of requests (for example 90%) meets both the TTFT and the TPOT SLO; this module measures the simpler run-level version that vLLM's benchmark script also reports: requests per second of makespan that met *both* SLOs. Report latencies at p95 or p99, where users feel the tail, never as a mean. Past saturation the honest move is **admission control**: reject or defer some requests early so the admitted ones still meet their SLO, instead of letting everybody miss. The driver's \`maxQueue\` is only half of that: it holds requests at the balancer so routing can use capacity that appears later, but it never rejects anyone, so a held request still counts as a miss.
 
-Capacity is itself a control problem with dead time: you scale on queue depth, but a replica needs approximately 30-60 s to warm up, so the loop needs asymmetric hysteresis — up at once, down only when a whole window agrees (Kubernetes HPA calls this downscale stabilisation). The end metric is not latency or GPU count but **dollars per million output tokens** = \`GPU-seconds / 3600 * price per GPU-hour / (tokens / 1e6)\`.
+Capacity is itself a control problem with dead time: you scale on queue depth, but a replica needs approximately 30-60 s to load weights and warm up even with the image already on the node (minutes if it must be pulled), so the loop needs asymmetric hysteresis — up at once, down only when a whole window agrees (Kubernetes HPA calls this downscale stabilisation). The end metric is not latency or GPU count but **dollars per million output tokens** = \`GPU-seconds / 3600 * price per GPU-hour / (tokens / 1e6)\`.
 
 When one fleet serves many models, LoRA adapters let hundreds of fine-tunes share one base model's weights, so a replica multiplexes them (S-LoRA, Punica) and the router must be adapter-aware too: an adapter miss costs a load, not a recompute.
 
@@ -137,7 +137,7 @@ The driver \`runCluster\` is written for you. It needs four numbers from you.
       hints: [
         'Every one of these is a loop that adds up `tokensThisIteration` or its parts. None is longer than four lines.',
         'For `remainingWork`, ask what the replica has left to compute for this request: prefill tokens only if `prefilled` is false, plus the output tokens not yet generated. A finished request owes 0.',
-        '`iterationSeconds`: `let tokens = 0; for (const s of batch) tokens += tokensThisIteration(s); return cfg.tFixed + cfg.tPerToken * tokens;` — and `replicaLoad` is the same shape over `r.queue` then `r.running`.',
+        '`iterationSeconds` is an accumulator: total the `tokensThisIteration` of every request in the batch, then return the fixed term plus the per-token term times that total. `remainingWork` is `(prefill part) + (outputLen - generated)`, where the prefill part mirrors the worked example. `replicaLoad` is the iterationSeconds loop run over two arrays with a different function inside.',
       ],
     },
     {
@@ -161,7 +161,7 @@ Throw on an empty candidate list and on an unknown policy name: a balancer that 
       hints: [
         'Compute the loads once into an array at the top and reuse it; both the mean and the argmin come from that array.',
         'The cache-aware policy is three ordered attempts with the same guard: a warm replica, then the ring home, then least-loaded. The guard is `load <= cfg.overloadFactor * mean`.',
-        'Ring lookup: `let lo = 0, hi = ring.length; while (lo < hi) { const mid = (lo + hi) >> 1; if (ring[mid].hash < h) lo = mid + 1; else hi = mid; } return ring[lo % ring.length].id;`',
+        '`pickOnRing` is a lower-bound binary search over `[lo, hi)`: if `ring[mid].hash` is below the key hash the answer lies right of `mid`, otherwise it is `mid` or left of it. When the loop ends `lo` can equal `ring.length` (every point is below the key): that is the wrap case. In `cache-aware`, the ring gives you an id, so turn it back into an index with `candidates.findIndex(...)` before applying the overload guard.',
       ],
     },
     {
@@ -194,7 +194,7 @@ Every \`cfg.scaleIntervalSeconds\` the driver takes a snapshot \`{ pendingTokens
 
 \`queueTarget(snap, cfg)\`: the raw signal. \`Math.ceil(pendingTokens / cfg.targetQueueTokens)\`, clamped into \`[cfg.minReplicas, cfg.maxReplicas]\`. Round up: a partial replica serves nobody.
 
-\`autoscaleTarget(snap, cfg)\` where \`snap = { total, raw, window }\` and \`window\` holds the raw targets of the last \`cfg.stabilizationTicks\` ticks, most recent last:
+\`autoscaleTarget(snap, cfg)\` where \`snap = { total, raw, window }\` and \`window\` holds the raw targets of the last \`cfg.stabilizationTicks\` ticks, most recent last (the driver seeds it with the starting replica count, so a new cluster cannot shrink on its very first tick):
 
 - if \`raw >= total\`, return \`raw\` — scale up immediately, a backlog is an emergency;
 - otherwise take the largest value in the window; if that is still \`>= total\`, hold at \`total\`;
@@ -220,7 +220,7 @@ The report is what the whole simulator exists to produce. \`percentile(values, p
 { n, ttftP50, ttftP95, tpotP50, tpotP95, met, attainment, goodput, throughput, outputTokens, makespan }
 \`\`\`
 
-\`met\` counts records meeting **both** SLOs, \`attainment\` is \`met / n\`, \`makespan\` is the last completion minus the first arrival, \`goodput\` is \`met / makespan\` requests per second, and \`throughput\` is \`outputTokens / makespan\`. Empty input returns zeros, never \`NaN\` — the demo calls this once per 10-second window and some windows are empty.
+\`met\` counts records meeting **both** SLOs, where meeting means \`ttft <= slo.ttft\` and \`tpot <= slo.tpot\` (a one-token answer only has to pass the TTFT check), \`attainment\` is \`met / n\`, \`makespan\` is the last completion minus the first arrival, \`goodput\` is \`met / makespan\` requests per second, and \`throughput\` is \`outputTokens / makespan\`. Empty input returns zeros, never \`NaN\` — the demo calls this once per 10-second window and some windows are empty.
 
 \`costPerMillionTokens(gpuSec, outputTokens, dollarsPerGpuHour)\`: \`(gpuSec / 3600) * dollarsPerGpuHour / (outputTokens / 1e6)\`. Throw on zero tokens rather than returning \`Infinity\`.
 `,
@@ -234,7 +234,7 @@ The report is what the whole simulator exists to produce. \`percentile(values, p
   reflection: [
     'Explain to a colleague why cache-aware routing raises the hit rate when it adds no cache memory at all, and what single number in your router stops it from overloading the popular replica.',
     'Your disaggregated run reached 100% SLO attainment on the same 4 GPUs that the round-robin run failed on. Walk through what a request does in each configuration, in order, and name the step where the colocated one loses.',
-    'The autoscaler cost more GPU-seconds than the fixed cluster and attained less. Under what traffic shape would that verdict flip, and which of its constants (cold start, tick interval, stabilisation window, target queue depth) would you change first?',
+    'In the demo the autoscaler cost roughly twice the GPU-seconds of the fixed 4-replica disaggregated cluster and attained less. Under what traffic shape would that verdict flip, and which of its constants (cold start, tick interval, stabilisation window, target queue depth) would you change first?',
   ],
   stretch: [
     'Add chunked prefill: cap a prefill at `maxBatchTokens` per iteration and let the remainder mix with decoding requests in the same batch. This is what vLLM does by default now, and it is the alternative to disaggregation — compare the two on the same trace.',

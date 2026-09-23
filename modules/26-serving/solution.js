@@ -350,7 +350,9 @@ export function runCluster(requests, opts = {}) {
   let promptTokens = 0, computedPromptTokens = 0, cachedTokens = 0, cacheHits = 0;
   let decodeTokens = 0, transferSecondsTotal = 0, handoffs = 0, peakReplicas = replicas.length;
   let nextScaleAt = t + cfg.scaleIntervalSeconds;
-  const rawWindow = [];
+  // Seed the stabilisation window with the starting size, so a freshly started cluster cannot shrink
+  // before a whole window of ticks has actually agreed that it should.
+  const rawWindow = new Array(cfg.stabilizationTicks).fill(replicas.length);
 
   const drop = (r, s) => {
     const i = r.running.indexOf(s);
