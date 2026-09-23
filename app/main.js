@@ -325,7 +325,7 @@ async function renderModulePage(id, phaseArg, seq) {
     if (seq !== renderSeq) return;
     failedLoads.add(id);
     renderSidebar(id);
-    $app.appendChild(h(`<div><h1>${esc(meta.title)}</h1><div class="card"><p>This module is not available in this build yet. Goal: ${esc(meta.goal)}</p><p class="muted small">${esc(err.message)}</p><p><a class="btn" href="#/">Back to the lab</a></p></div></div>`));
+    $app.appendChild(h(`<div class="mod-head" data-num="${id.slice(0, 2)}"><nav class="crumbs"><span>In progress</span></nav><h1>${esc(meta.title)}</h1><div class="goal-banner"><p class="goal">${esc(meta.goal)}</p><p class="threshold">This module is still being written. It will appear here once it passes its checks.</p></div><p><a class="btn" href="#/">Back to the lab</a></p><p class="muted small">Load error: ${esc(err.message)}</p></div>`));
     return;
   }
   if (seq !== renderSeq) return;   // the learner navigated on while this module was loading

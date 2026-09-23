@@ -18,6 +18,10 @@ jobs:
     if: github.ref == 'refs/heads/main' && github.event_name == 'push'
     needs: verify
     runs-on: ubuntu-latest
+    # queue deploys from back-to-back pushes instead of running two at once
+    concurrency:
+      group: pages
+      cancel-in-progress: false
     permissions:
       contents: read
       pages: write
