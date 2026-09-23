@@ -179,7 +179,7 @@ Two functions for the tool format \`<tool_call>name(argument)</tool_call>\`. Mod
       id: 'chat',
       title: 'The chat function',
       instructions: `
-Implement \`chat(state, userMessage, { maxNewTokens = 12, prefill = '', maxToolRounds = 2, next, temperature, topK, topP })\` → \`{ reply, stats }\`. \`state\` comes from the worked \`createChat({ model, tokenizer, system })\`: \`{ model, tokenizer, tools, history, session, stopIds }\`.
+Implement \`chat(state, userMessage, { maxNewTokens = 12, prefill = '', maxToolRounds = 2, next, temperature = 1, topK = 0, topP = 1 } = {})\` → \`{ reply, stats }\`. \`state\` comes from the worked \`createChat({ model, tokenizer, system })\`: \`{ model, tokenizer, tools, history, session, stopIds }\`.
 
 Push \`{ role: 'user', content: userMessage }\` onto \`state.history\`, then run **rounds**:
 
