@@ -155,10 +155,10 @@ export const tests = [
   // ---------- step 4: pipeline parallelism ----------
   {
     step: 'pp',
-    name: 'the bubble is (p-1)/m, not (p-1)/p',
+    name: 'the bubble ratio (idle time over useful time) is (p-1)/m, not (p-1)/p',
     run(m, T) {
       T.close(m.pipelineBubble(1, 16), 0, 1e-12, 'one stage is never idle: no bubble');
-      T.close(m.pipelineBubble(8, 8), 0.875, 1e-9, '(8-1)/8 = 0.875 — with as many micro-batches as stages, most of the step is idle');
+      T.close(m.pipelineBubble(8, 8), 0.875, 1e-9, '(8-1)/8 = 0.875 — with as many micro-batches as stages the bubble is almost as long as the useful work (7/15 ≈ 47% of the step idle)');
       T.close(m.pipelineBubble(16, 64), 0.234375, 1e-9, '(16-1)/64 = 0.234375: more micro-batches amortise the fill and drain');
       T.ok(m.pipelineBubble(16, 1024) < m.pipelineBubble(16, 64), 'the bubble must shrink as micro-batches are added; a value that ignores m is wrong');
       T.throws(() => m.pipelineBubble(4, 0), 'zero micro-batches is not a pipeline step and must throw, not divide by zero');
@@ -262,6 +262,72 @@ export const tests = [
       T.close(shard.breakdown.compute, pure.breakdown.compute, 1e-9, 'both layouts do the same arithmetic on the same 64 GPUs, so compute is identical');
       T.ok(shard.breakdown.tpComm > 0.05 * shard.breakdown.compute,
         'tensor-parallel all-reduces are not free: they should add several percent to a 70B step, not zero');
+    },
+  },
+  {
+    step: 'planner',
+    name: 'a pipelined, ZeRO-3 layout matches the formula term by term',
+    run(m, T) {
+      // Llama-3-70B on 64 GPUs as dp=4, tp=4, pp=4, ZeRO-3, one sequence per micro-batch.
+      // Every expected value below is written out from the constants, not from your helpers.
+      const M = m.LLAMA3_70B, gpu = m.H100, nv = m.NVLINK, ib = m.INFINIBAND;
+      const ring = (bytes, n, link) => 2 * (n - 1) * (link.latency + bytes / n / link.bandwidth);
+      const rel = (a, b, msg) => T.close(a / b, 1, 1e-6, `${msg} (expected ${b}, got ${a})`);
+      const p = m.plan({ model: M, gpus: 64, strategy: { dp: 4, tp: 4, pp: 4, zero: 3 } });
+      const mb = 512 / 4, microTokens = 8192, layersPerStage = 80 / 4, shardParams = 70e9 / 16;
+      const compute = (6 * 70e9 * 512 * 8192) / (gpu.flops * gpu.mfu) / 64;
+      const tpComm = mb * layersPerStage * 4 * ring(2 * microTokens * 8192, 4, nv);
+      T.eq(p.m, 128, '512 sequences over dp=4 replicas of one-sequence micro-batches = 128 micro-batches per pipeline');
+      rel(p.breakdown.compute, compute, 'compute is the whole batch\'s 6ND time divided by all 64 GPUs');
+      rel(p.breakdown.tpComm, tpComm, 'tpComm is m x layersPerStage (128 x 20, NOT 128 x 80: a GPU only runs its own stage\'s layers) tensor-parallel layers, each 4 all-reduces on NVLink');
+      rel(p.breakdown.bubble, (compute + tpComm) * 3 / 128,
+        'the bubble adds (p-1)/m of one stage\'s work: (compute + tpComm) x 3/128. If yours is 4x too small, you forgot that modelTime = (compute + tpComm) x pp');
+      rel(p.breakdown.ppComm, 2 * 3 * (ib.latency + (2 * microTokens * 8192) / ib.bandwidth),
+        'ppComm is 2(pp-1) sends of one bf16 [8192, 8192] activation; 64 GPUs span 8 nodes, so the pipeline crosses InfiniBand');
+      rel(p.breakdown.dpComm, ring(2 * shardParams * 1.5, 4, ib),
+        'dpComm all-reduces the gradient of this GPU\'s SHARD (70e9 / (tp x pp) parameters), x 1.5 for ZeRO-3, over dp=4 ranks; tp x dp = 16 > 8, so it crosses InfiniBand');
+      rel(p.stepTime, (compute + tpComm) * (1 + 3 / 128) + p.breakdown.ppComm + p.breakdown.dpExposed,
+        'stepTime = pipelineStep\'s step + ppComm + exposed dp comm');
+      rel(p.memory.activations, 4 * (34 * microTokens * 8192 * layersPerStage) / 4,
+        '1F1B keeps min(p, m) = 4 micro-batches, each 34 bytes x 8192 tokens x 8192 dModel x 20 layers (this stage only) / tp=4');
+      rel(p.memoryPerGpu, (16 * shardParams) / 4 + p.memory.activations, 'ZeRO-3 divides all 16 bytes of the shard by dp=4; add the activations');
+    },
+  },
+  {
+    step: 'planner',
+    name: 'collectives inside one node use NVLink, and ZeRO-3 moves 1.5x the gradient bytes',
+    run(m, T) {
+      const M = m.LLAMA3_8B, nv = m.NVLINK;
+      const ring = (bytes, n, link) => 2 * (n - 1) * (link.latency + bytes / n / link.bandwidth);
+      const rel = (a, b, msg) => T.close(a / b, 1, 1e-6, `${msg} (expected ${b}, got ${a})`);
+      // 8 GPUs = one node: dp=4 x tp=2 fits inside it, so the gradient all-reduce stays on NVLink.
+      const z2 = m.plan({ model: M, gpus: 8, strategy: { dp: 4, tp: 2, pp: 1, zero: 2 } });
+      const z3 = m.plan({ model: M, gpus: 8, strategy: { dp: 4, tp: 2, pp: 1, zero: 3 } });
+      rel(z2.breakdown.dpComm, ring(2 * 4e9, 4, nv), 'ZeRO-2 all-reduces the 2-byte gradient of 8e9/tp = 4e9 parameters over dp=4; tp x dp = 8 fits in one node, so it uses NVLink');
+      rel(z3.breakdown.dpComm, ring(2 * 4e9 * 1.5, 4, nv), 'ZeRO-3 all-gathers the parameters as well, so it moves ZERO3_COMM_FACTOR = 1.5x the bytes of stages 0-2');
+      // One node, pipelined: the stage boundaries are NVLink hops too.
+      const pp = m.plan({ model: M, gpus: 8, strategy: { dp: 1, tp: 2, pp: 4, zero: 0 } });
+      rel(pp.breakdown.ppComm, 2 * 3 * (nv.latency + (2 * 8192 * 4096) / nv.bandwidth),
+        'all 8 GPUs are in one node, so the 2(pp-1) = 6 activation sends use NVLink, not InfiniBand');
+      T.close(pp.breakdown.dpComm, 0, 1e-12, 'dp = 1 has no gradient all-reduce');
+    },
+  },
+  {
+    step: 'planner',
+    name: 'enumerateStrategies lists every legal layout, every ZeRO stage included',
+    run(m, T) {
+      const key = (s) => `${s.dp}/${s.tp}/${s.pp}/${s.zero}`;
+      const got = m.enumerateStrategies(m.LLAMA3_70B, 64).map(key).sort();
+      // tp in {1, 2, 4, 8}; pp must divide both 64/tp and 80 layers; dp always divides 512; times 4 ZeRO stages.
+      const want = [];
+      for (const tp of [1, 2, 4, 8]) for (const pp of [1, 2, 4, 8, 16]) {
+        if ((64 / tp) % pp !== 0) continue;
+        for (const zero of [0, 1, 2, 3]) want.push(key({ dp: 64 / (tp * pp), tp, pp, zero }));
+      }
+      T.eq(got.length, 76, `Llama-3-70B on 64 GPUs has 19 (dp, tp, pp) layouts x 4 ZeRO stages = 76; got ${got.length}`);
+      T.eq(got, want.sort(), 'each legal (dp, tp, pp, zero) exactly once: every tp up to 8, every pp dividing both 64/tp and 80, all four ZeRO stages');
+      const small = m.enumerateStrategies(m.LLAMA3_8B, 256);
+      T.ok(small.length > 0 && small.every((s) => 128 % s.dp === 0), 'a 128-sequence batch rules out dp = 256; only layouts whose dp divides the batch may be proposed');
     },
   },
   {

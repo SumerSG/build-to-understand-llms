@@ -47,15 +47,17 @@ export const BYTES = { params: 2, grads: 2, optimizer: 12, total: 16 };
 
 /**
  * Activation bytes kept for the backward pass, per token, per layer, per unit of dModel.
- * Korthikanti et al. 2022 give `s·b·h·(34 + 5·a·s/h)` bytes per transformer layer; the second term is
- * the materialised attention matrix, which FlashAttention removes, leaving the 34.
+ * Korthikanti et al. 2022 give `s·b·h·(34 + 5·a·s/h)` bytes per GPT-style transformer layer; the second
+ * term is the materialised attention matrix, which FlashAttention removes, leaving the 34. With tensor
+ * parallelism PLUS sequence parallelism all 34 bytes shrink by tp; with tensor parallelism alone only 24
+ * of them do. This module assumes sequence parallelism is on, so the planner divides all 34 by tp.
  */
 export const ACT_BYTES_PER_TOKEN_LAYER_DIM = 34;
 
 /**
  * ZeRO-3 (and FSDP) moves 1.5× the bytes of a plain data-parallel all-reduce: a reduce-scatter of the
  * gradients plus an all-gather of the parameters in each of forward and backward (Rajbhandari et al. 2020,
- * table 1). Stages 0–2 move exactly the all-reduce volume.
+ * section 7). Stages 0–2 move exactly the all-reduce volume.
  */
 export const ZERO3_COMM_FACTOR = 1.5;
 
@@ -149,7 +151,7 @@ export function tpLayerComm({ dModel, tokens }, tp, link) {
 
 // ---------- step 4: pipeline parallelism ----------
 
-/** Fraction of a pipeline step that the stages spend idle filling and draining. Throw if p or m is below 1. */
+/** Bubble ratio of a pipeline step: idle time filling and draining divided by a stage's useful work. Throw if p or m is below 1. */
 export function pipelineBubble(p, m) {
   // TODO: step 4
   return 0;
