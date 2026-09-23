@@ -5,7 +5,7 @@ export default {
   minutes: 105,
   threshold: 'A cluster is not a pile of GPUs but a bandwidth hierarchy — memory, then NVLink, then the network — and the fastest parallel layout is the one that puts the chattiest communication on the fastest link.',
   goal: 'A topology-aware placement planner (NVLink inside a node, InfiniBand across nodes, alpha–beta collective cost model, MoE all-to-all) that picks the fastest parallel layout.',
-  prereqs: ['23-gpu-roofline', '24-parallelism'],
+  prereqs: ['28-moe', '23-gpu-roofline', '24-parallelism'],
   recall: [
     {
       q: 'Module 24 priced a ring all-reduce of `B` bytes over `n` GPUs. How many bytes does each GPU send?',
@@ -75,16 +75,19 @@ export default {
 
 Buy 128 H100s and you do not get 128 equal peers. You get 16 boxes. Inside one box — an NVIDIA HGX or DGX H100 baseboard — eight SXM modules hang off four NVSwitches, and any GPU can reach any other at approximately 900 GB/s bidirectional, so roughly 450 GB/s in each direction (NVIDIA's H100 datasheet). The box also holds eight ConnectX-7 InfiniBand NDR network cards, one per GPU, each carrying 400 Gb/s, which is 50 GB/s (NVIDIA's DGX H100 and ConnectX-7 datasheets). For comparison, the PCIe Gen5 x16 slot the GPU sits in carries approximately 64 GB/s each way, so NVLink is roughly 7× PCIe. Those cards are how the box talks to the other fifteen.
 
-Write the four numbers in a column and the shape of every decision in this module appears:
+Write the four numbers in a column, with one newer rung for comparison, and the shape of every decision in this module appears:
 
 | rung | approximate one-way bandwidth | how far |
 |------|------------------------------|---------|
 | HBM3 on the package | 3,350 GB/s | inside one GPU |
 | NVLink 4 through NVSwitch | 450 GB/s | inside one node (8 GPUs) |
+| NVLink 5 through NVLink Switch (GB200 NVL72, not in our model) | 900 GB/s (1.8 TB/s bidirectional) | inside one 72-GPU rack |
 | InfiniBand NDR 400, one leaf hop | 50 GB/s | inside one pod |
 | the same port through a spine we make 2:1 oversubscribed | 25 GB/s | anywhere |
 
-The first three rungs are each roughly an order of magnitude apart (3,350 → 450 → 50); the last one is our modelling choice, not a datasheet number. Large training fabrics are often built non-blocking, but real ones still lose bandwidth to congestion once traffic leaves a leaf switch, and halving it makes the planner's choices visible. Fabrics are built **rail-optimised**: GPU *k* of every node connects to leaf switch *k* (NVIDIA's DGX SuperPOD reference architecture groups 32 nodes per such unit), so a collective in which every rank talks to the same slot on other nodes stays on one rail and does not need the spine. Our model collapses that into two inter-node tiers, "same pod" and "anywhere".
+The three H100 rungs are each roughly an order of magnitude apart (3,350 → 450 → 50); the spine row is our modelling choice, not a datasheet number. Large training fabrics are often built non-blocking, but real ones still lose bandwidth to congestion once traffic leaves a leaf switch, and halving it makes the planner's choices visible. Fabrics are built **rail-optimised**: GPU *k* of every node connects to leaf switch *k* (NVIDIA's DGX SuperPOD reference architecture groups 32 nodes per such unit), so a collective in which every rank talks to the same slot on other nodes stays on one rail and does not need the spine. Our model collapses that into two inter-node tiers, "same pod" and "anywhere".
+
+The ladder is not frozen at H100. NVIDIA lists its Blackwell GPUs (B200 and GB200, shipping in volume from 2025) at approximately 2.25 to 2.5 PFLOP/s dense bf16 and 8 TB/s of HBM3e each, a bit more than double the H100 on both counts, so module 23's ridge point barely moves: \`2.25e15 / 8e12 ≈ 281\` FLOP/byte against 295. The bigger change is the NVLink rung. A GB200 NVL72 rack joins 72 GPUs through NVLink Switch trays at approximately 1.8 TB/s bidirectional per GPU (NVIDIA's GB200 NVL72 page), so the fast domain becomes a rack instead of a box. Every constant in your code stays H100; the method carries over unchanged.
 
 :::predict
 An all-reduce of a 16 GB gradient buffer over 128 GPUs. Schedule A rings through all 128 ranks on the inter-node link. Schedule B reduce-scatters inside each node over NVLink, all-reduces the resulting chunks across the 16 nodes, then all-gathers inside each node. How much faster is B?
@@ -94,7 +97,7 @@ About 6× with this module's constants (213 ms against 1,276 ms). In B each GPU 
 
 ## Why tensor parallelism is eight wide
 
-Megatron-LM communicates four all-reduces of the full \`[tokens, dModel]\` activation per transformer layer. For a 70B model that is 320 all-reduces per micro-batch. Data parallelism communicates one gradient all-reduce per *step*, and pipeline parallelism one activation per stage boundary. So the chattiest axis must get the fastest link, and the fastest link stops at the edge of the box: **tp = 8**.
+Megatron-LM communicates four all-reduces of the full \`[tokens, dModel]\` activation per transformer layer. For a 70B model that is 320 all-reduces per micro-batch. Data parallelism communicates one gradient all-reduce per *step*, and pipeline parallelism one activation per stage boundary. So the chattiest axis must get the fastest link, and the fastest link stops at the edge of the NVLink domain, 8 GPUs on an HGX H100 node, so **tp = 8** here. A GB200 NVL72 rack stretches that domain to 72 GPUs, and NVIDIA's own NVL72 write-ups spend much of the extra room on wide expert parallelism for serving mixtures of experts rather than on wider tensor parallelism: a tensor-parallel all-reduce moves about the same bytes per GPU whatever \`tp\` is, while each GPU's share of the matmuls shrinks as \`1/tp\`.
 
 That is not a rule you memorise — it falls out of the arithmetic. In the demo your planner will find that tp = 16 uses *less* memory per GPU and is still about a third slower, purely because a group of 16 consecutive ranks straddles two nodes.
 
@@ -102,7 +105,7 @@ Rank order is what makes this work. Megatron-LM numbers ranks with tensor parall
 
 ## Mixtures of experts move tokens, not gradients
 
-A mixture of experts replaces the dense MLP with \`E\` experts and routes each token to \`k\` of them. DeepSeek-V3 (671B total parameters, 37B activated, 256 routed experts, top-8, hidden size 7168) spreads the experts across nodes, so every MoE layer needs two **all-to-all** exchanges: dispatch the tokens and combine the results.
+Module 28 built the router and the experts; here they live on different GPUs. A mixture of experts replaces the dense MLP with \`E\` experts and routes each token to \`k\` of them. DeepSeek-V3 (671B total parameters, 37B activated, 256 routed experts, top-8, hidden size 7168) spreads the experts across nodes, so every MoE layer needs two **all-to-all** exchanges: dispatch the tokens and combine the results.
 
 The naive volume is \`tokens · k · hidden · bytes\`, twice. DeepSeek-V3's trick is to send **one copy per destination node** and fan it out over NVLink inside that node, and then to cap the router at four nodes per token ("node-limited routing"). With 8 nodes of experts, top-8 routing touches approximately \`8·(1 − (7/8)^8) = 5.25\` distinct nodes; the cap takes that to 4.
 

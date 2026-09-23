@@ -42,12 +42,20 @@ export default async function demo(m, lab) {
   });
   const at128 = m.hierarchicalAllReduce(gradBytes, range(128), topo);
   const speedup = flat[sizes.indexOf(128)] / hier[sizes.indexOf(128)];
+  // Bytes one GPU sends in each phase. At 128 GPUs all three phases exist and phases[1] is the
+  // cross-node ring: 2(nodes−1)/nodes of the chunk. The in-node halves are g−1 steps of one chunk.
+  // A flat ring sends 2(n−1)/n of the whole buffer.
+  const sentPerGpu = (p, i) => (i === 1
+    ? (2 * (at128.nodes - 1) / at128.nodes) * p.bytes
+    : (at128.gpusPerNode - 1) * p.bytes);
+  const crossSent = sentPerGpu(at128.phases[1], 1);
+  const flatSent = (2 * (128 - 1) / 128) * gradBytes;
   lab.table({
     title: 'Where the 16 GB goes on 128 GPUs (16 nodes) under the hierarchical schedule',
-    columns: ['phase', 'bytes on the wire', 'link', 'ms'],
-    rows: at128.phases.map((p) => [p.name, gb(p.bytes), p.link.name, +(p.time * 1e3).toFixed(2)]),
+    columns: ['phase', `chunk (buffer / ${at128.gpusPerNode})`, 'sent per GPU', 'link', 'ms'],
+    rows: at128.phases.map((p, i) => [p.name, gb(p.bytes), gb(sentPerGpu(p, i)), p.link.name, +(p.time * 1e3).toFixed(2)]),
   });
-  lab.log(`Hierarchical is ${speedup.toFixed(2)}x faster at 128 GPUs: the spine carries ${gb(at128.phases[1].bytes)} instead of ${gb(gradBytes)}.`);
+  lab.log(`Hierarchical is ${speedup.toFixed(2)}x faster at 128 GPUs: the cross-node phase works on a ${gb(at128.phases[1].bytes)} shard instead of the full ${gb(gradBytes)}, so each GPU sends ${gb(crossSent)} over its own network port, where the flat ring has every GPU send ${gb(flatSent)} around a ring paced by its slowest hop.`);
 
   // ---------- 3. plan the 70B ----------
   lab.progress(0.5, 'ranking layouts');
@@ -145,10 +153,10 @@ Planned **${model.name}** (${fmt(model.params)} parameters, ${model.layers} laye
 
 **Why not wider tensor parallelism:** \`tp=16\` needs only ${GB(tp16.memory.total)} GB per GPU against ${GB(tp8.memory.total)} GB, yet its ${model.layers * 4} all-reduces per micro-batch add up to **${S(tp16.tpComm)} s** per step instead of **${S(tp8.tpComm)} s** — the group straddles two nodes, so the same bytes move at approximately ${(topo.links.pod.bandwidth / 1e9).toFixed(0)} GB/s instead of ${(topo.links.node.bandwidth / 1e9).toFixed(0)} GB/s. Net result: ${((tp16.stepTime / tp8.stepTime - 1) * 100).toFixed(0)}% slower. Pure data parallelism (\`tp=1\`) would take ${S(pureDp.stepTime)} s${pureDp.stepTime < best.stepTime ? ', faster than the winner,' : ''} but wants ${GB(pureDp.memory.total)} GB per GPU and ${pureDp.fits ? 'still fits' : 'does not fit'}.
 
-**On the wire:** a flat 16 GB all-reduce over 128 GPUs takes ${flat[sizes.indexOf(128)].toFixed(0)} ms; your two-level schedule does it in ${hier[sizes.indexOf(128)].toFixed(0)} ms, **${speedup.toFixed(2)}x** faster, because the spine carries ${gb(at128.phases[1].bytes)} rather than ${gb(gradBytes)}.
+**On the wire:** a flat 16 GB all-reduce over 128 GPUs takes ${flat[sizes.indexOf(128)].toFixed(0)} ms; your two-level schedule does it in ${hier[sizes.indexOf(128)].toFixed(0)} ms, **${speedup.toFixed(2)}x** faster, because the cross-node phase works on a ${gb(at128.phases[1].bytes)} shard instead of the full ${gb(gradBytes)}: each GPU sends ${gb(crossSent)} over its own network port, where the flat ring has every GPU send ${gb(flatSent)} at the pace of its slowest hop.
 
 **Mixture of experts:** spreading ${moe.name}'s experts over 8 nodes costs ${free[epNodes.indexOf(8)].toFixed(2)} ms of all-to-all per layer; node-limited routing to ${moe.maxNodes} nodes brings that to ${limited[epNodes.indexOf(8)].toFixed(2)} ms, a ${((1 - limited[epNodes.indexOf(8)] / free[epNodes.indexOf(8)]) * 100).toFixed(0)}% cut, without changing which experts the token uses.
 
-**Reliability:** at 16,384 GPUs this model predicts **${perDay[i16k].toFixed(1)} interruptions a day** (the Llama 3 paper reports 419 unexpected interruptions in 54 days, about 7.8 a day, roughly 78% of them hardware). Young's rule then says checkpoint every **${intervals[i16k].toFixed(0)} minutes**, which costs **${wasted[i16k].toFixed(1)}%** of wall clock. At ${gpus} GPUs the same job would lose only ${wasted[0].toFixed(2)}%.
+**Reliability:** at 16,384 GPUs this model predicts **${perDay[i16k].toFixed(1)} interruptions a day** (the Llama 3 paper reports 466 interruptions in a 54-day snapshot, 47 planned and 419 unexpected, about 7.8 unexpected a day, with roughly 78% of the unexpected ones attributed to hardware). Young's rule then says checkpoint every **${intervals[i16k].toFixed(0)} minutes**, which costs **${wasted[i16k].toFixed(1)}%** of wall clock. At ${gpus} GPUs the same job would lose only ${wasted[0].toFixed(2)}%.
 `);
 }
