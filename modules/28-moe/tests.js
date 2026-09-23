@@ -147,7 +147,7 @@ export const tests = [
     T.close(m.routingFractions([[0], [0], [1], [3]], 4), [0.5, 0.25, 0, 0.25], 1e-9, 'top-1: 2 of 4 tokens went to expert 0');
     T.close(m.routingFractions([[0, 1], [0, 2], [0, 1]], 3), [0.5, 1 / 3, 1 / 6], 1e-9, 'top-2: divide by N·k = 6 assignments so the fractions sum to 1');
   } },
-  { step: 'balance', name: 'loss is E · Σ f_i · P_i: 1 when balanced, E when collapsed, exact on a hand example', run(m, T) {
+  { step: 'balance', name: 'loss is E · Σ f_i · P_i: 1 when balanced, E when collapsed (k = 1), exact on a hand example', run(m, T) {
     const E = 4;
     const uniform = new Tensor(ops.full([8, E], 1 / E));
     const balanced = [[0], [1], [2], [3], [0], [1], [2], [3]];
@@ -156,7 +156,7 @@ export const tests = [
     T.close(l1.item(), 1, 1e-5, 'perfect balance (f_i = P_i = 1/E) must give exactly 1; a missing factor E gives 1/E');
     const collapsedP = ops.zeros([8, E]);
     for (let t = 0; t < 8; t++) collapsedP.data[t * E] = 1;
-    T.close(m.loadBalanceLoss(new Tensor(collapsedP), balanced.map(() => [0])).item(), E, 1e-5, 'everything on expert 0 with probability 1 must give E, the maximum');
+    T.close(m.loadBalanceLoss(new Tensor(collapsedP), balanced.map(() => [0])).item(), E, 1e-5, 'with k = 1, everything on expert 0 with probability 1 must give E, the maximum (with top-k the ceiling is E/k)');
     const P = new Tensor(ops.fromArray([[0.7, 0.1, 0.1, 0.1], [0.4, 0.4, 0.1, 0.1]]));
     // f = [0.5, 0.25, 0, 0.25] over 4 assignments, P = mean rows = [0.55, 0.25, 0.1, 0.1]
     // loss = 4 · (0.5·0.55 + 0.25·0.25 + 0 + 0.25·0.1) = 1.45

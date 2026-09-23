@@ -20,7 +20,7 @@ export default {
     { q: 'Mixtral 8x7B has 8 experts per layer and routes each token to 2. Approximately how many parameters does one token use?', options: ['About 47B, all of them', 'About 13B', 'About 14B = 2 × 7B'], answer: 1,
       why: 'Mistral reports approximately 47B total and 13B active. Only the expert MLPs are replicated; attention, embeddings and norms are shared, so neither total (not 8 × 7 = 56B) nor active (not 2 × 7 = 14B) is a simple multiple.' },
     { q: 'The Switch load-balancing loss E · Σ f_i · P_i equals 1 when…', options: ['One expert takes every token', 'Tokens and router probability are spread evenly, f_i = P_i = 1/E', 'The router is untrained'], answer: 1,
-      why: 'E · E · (1/E)(1/E) = 1. With every token and all the probability on one expert it rises to E. The loss is minimised by spreading, which is the point.' },
+      why: 'E · E · (1/E)(1/E) = 1. With top-1 routing, every token and all the probability on one expert push it up to E; with top-k the ceiling is E/k, because one expert can take at most 1/k of the N·k assignments. The loss is minimised by spreading, which is the point.' },
     { q: 'You raise the capacity factor from 1.0 to 2.0. What happens?', options: ['Fewer tokens are dropped, but each expert reserves twice the slots (memory and padded compute)', 'More tokens are dropped', 'The router learns faster'], answer: 0,
       why: 'Capacity = ceil(factor · N · k / E). A larger buffer absorbs imbalance but costs memory and wasted compute on padding in fixed-shape kernels. Switch Transformer used factors around 1.0–1.25.' },
     { q: 'With k = 1 and gates renormalised over the chosen expert, what gradient does the language-model loss send to the router?', options: ['The same as with k = 2', 'None: the single gate is always exactly 1', 'A doubled gradient'], answer: 1,
@@ -56,9 +56,9 @@ Running experts token by token costs \`N · k\` tiny matrix products for \`N\` t
 Whichever expert happens to get more tokens early trains faster, gets better, and attracts more tokens. Left alone the router **collapses** onto a few experts; the rest are dead weight. Switch Transformer adds an auxiliary loss, \`aux = E · Σ_i f_i · P_i\`, where \`f_i\` is the fraction of routing assignments that went to expert \`i\` and \`P_i\` is the mean router probability for expert \`i\` over the batch. \`f\` is a count and has no gradient; the gradient flows through \`P\` and pushes probability away from the overloaded experts. It joins the language-model loss with a small coefficient (Switch used 0.01).
 
 :::predict
-With \`E = 4\`, what is \`aux\` when routing is perfectly balanced, and what is it when every token goes to expert 0 with probability 1?
+With \`E = 4\` and \`k = 1\`, what is \`aux\` when routing is perfectly balanced, and what is it when every token goes to expert 0 with probability 1?
 ---
-Balanced: \`f_i = P_i = 1/4\`, so \`4 · 4 · (1/16) = 1\`. Collapsed: \`f_0 = P_0 = 1\`, so \`4 · 1 = 4 = E\`. In practice the loss sits between 1 and \`E\`; the demo shows yours staying near 1 with the loss on, and climbing without it.
+Balanced: \`f_i = P_i = 1/4\`, so \`4 · 4 · (1/16) = 1\`. Collapsed: \`f_0 = P_0 = 1\`, so \`4 · 1 = 4 = E\`. With top-\`k\` and \`f\` normalised by \`N · k\`, a token picks an expert at most once, so one expert can take at most \`1/k\` of the assignments and the ceiling is \`E/k\`: 2 for the demo's 4 experts with top-2. In practice the loss sits between 1 and that ceiling; the demo shows yours staying near 1 with the loss on, and climbing without it.
 :::
 
 DeepSeek-V3 instead uses **auxiliary-loss-free** balancing: a per-expert bias, added only to the scores used for selection, is lowered after each step for overloaded experts and raised for idle ones. (It keeps a much smaller sequence-level balance loss as a safety net.)
@@ -142,14 +142,14 @@ Dividing \`f\` by \`N · k\` (not \`N\`) is our convention so that a perfectly b
       id: 'capacity',
       title: 'Capacity factor and dropped tokens',
       instructions: `
-\`expertCapacity(nTokens, nExperts, k, factor)\` returns \`ceil(factor · nTokens · k / nExperts)\`: the balanced share of the \`N · k\` assignments, times the capacity factor, rounded **up**.
+\`expertCapacity(nTokens, nExperts, k, factor)\` returns \`ceil(factor · nTokens · k / nExperts)\`: the balanced share of the \`N · k\` assignments, times the capacity factor, rounded **up**. A factor of \`E\` gives \`N · k\` slots per expert, which can never overflow, because a token picks each expert at most once and so no expert receives more than \`N\` assignments.
 
 \`applyCapacity(lists, capacity)\` returns \`{ kept, dropped }\`. \`kept[e]\` is the first \`capacity\` entries of \`lists[e]\` (earlier tokens have priority, as in Switch Transformer). \`dropped\` is the total number of assignments cut off. Do not modify \`lists\`: the layer still reports the pre-capacity counts.
 
 A dropped assignment simply produces no output from that expert. \`dispatchCombine\` already handles that, because the token is no longer in the expert's list.
 `,
       hints: [
-        'The maximum any one expert can receive is N (a token picks an expert at most once), so a factor of E, giving N·k slots, can never overflow.',
+        'Capacity is a per-expert slot count, and applying it is a per-list truncation. Copy each list rather than cutting it in place (`slice` copies, `splice` mutates), and count how many entries each truncation removed.',
         'Capacity is one `Math.ceil`. For applyCapacity, `map` over the lists with `slice(0, capacity)` (which copies) and add `max(0, length − capacity)` to a counter.',
         '`const kept = lists.map((rows) => { dropped += /* overflow of this list */; return rows.slice(0, capacity); });`',
       ],
