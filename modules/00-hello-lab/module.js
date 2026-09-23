@@ -154,7 +154,7 @@ Also implement \`zipfLogError(actual, predicted)\` (two arrays of positive numbe
   ],
   stretch: [
     'Run your counter on a much larger text (a whole novel) and fit the log–log slope as the demo does. Does it move from the passage\'s ≈ −0.7 towards −1? Piantadosi (2014, "Zipf\'s word frequency law in natural language: a critical review and future directions") explains why ranking and counting words on the same sample distorts the curve, and splits the corpus in two to avoid it.',
-    'Count *character bigrams* instead of words. Do they obey Zipf too? This is the first step towards the BPE tokenizer in module 03.',
+    'Count *character bigrams* instead of words. Do they obey Zipf too? This is the first step towards the BPE tokenizer in module 03: GPT-2\'s byte-level BPE (which OpenAI\'s tiktoken library runs as its `gpt2` encoding) chose its first merge from counts of adjacent pairs like these, taken over bytes rather than characters and only inside pre-tokens (roughly, words), then re-counted pairs of the merged symbols before each later merge.',
     'GPT-2\'s tokenizer has 50,257 entries; Llama 3\'s has 128,256. On a large text, use your `topK` to measure what fraction of all word occurrences the top 1,000 words cover, and how many distinct words it would take to cover 99%. That gap is the case for subword tokens.',
   ],
   timeouts: { tests: 15000, demo: 30000 },

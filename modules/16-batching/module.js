@@ -63,7 +63,7 @@ You watch four numbers, not one: **TTFT** (time to first token, dominated by que
 
 ## What this simulator is not
 
-You are building the scheduler, not the kernels. The cost model is linear in batched tokens, so attention's quadratic cost in context length, FlashAttention tiling and CPU overhead never appear; a real iteration also gets slower as sequences lengthen. Arrivals are synthetic, not production traffic, and your simulator knows each output length in advance — a real scheduler cannot, which is why length prediction is an open research topic. Sharing here matches whole prompts by key; real prefix caching walks a radix tree over token ids (SGLang's RadixAttention) and evicts it LRU, which is module 17. And a real engine runs on many GPUs with tensor parallelism (module 24), which changes \`tFixed\` but no idea in this module.
+You are building the scheduler, not the kernels. The cost model is linear in batched tokens, so attention's quadratic cost in context length, FlashAttention tiling and CPU overhead never appear; a real iteration also gets slower as sequences lengthen. Arrivals are synthetic, not production traffic, and your simulator knows each output length in advance — a real scheduler cannot, which is why length prediction is an open research topic. Sharing here matches whole prompts by key; real prefix caching finds the longest shared prefix, with a radix tree over token ids in SGLang's RadixAttention or a table of chained block hashes in vLLM, and evicts LRU, which is module 17. And a real engine runs on many GPUs with tensor parallelism (module 24), which changes \`tFixed\` but no idea in this module.
 `,
   steps: [
     {
@@ -182,7 +182,7 @@ With \`numBlocks\` large this must reproduce \`runContinuous\` exactly, iteratio
       id: 'prefix',
       title: 'Prefix sharing with copy-on-write',
       instructions: `
-Two requests with the identical prompt compute the identical keys and values for it. Storing both is pure waste.
+Two requests with the identical prompt compute the identical keys and values for it. Storing both is pure waste. This step shares only exact-match whole prompts; module 17 later turns it into a radix tree over blocks of tokens with eviction, so requests that share only a prefix can share it too. That is close to SGLang's RadixAttention; vLLM gets the same longest-prefix match from a hash table of chained block hashes.
 
 First finish \`BlockAllocator.retain(blocks)\`: add one to each block's reference count, throwing if a block is not currently allocated. Your \`free\` from step 4 already returns a block only when its count reaches 0, so the two methods together are the whole mechanism.
 

@@ -27,7 +27,7 @@ export default {
       why: 'Hewitt (2021) showed that random new rows sit far from the trained distribution and get anomalous logits, and recommended initialising them at the average of the existing embeddings. Hugging Face\'s `resize_token_embeddings` does a close variant by default (`mean_resizing=True`: new rows are sampled from a normal with the old rows\' mean and covariance).' },
     { q: 'After `shift`, the mask is `mask.slice(1)`. Why not `mask.slice(0, -1)`?', options: ['Either works; they have the same length', 'The mask says which targets count, and the targets are `y = ids.slice(1)`', 'Because the first token is always a marker'], answer: 1,
       why: 'Both slices have the same length, which is exactly why this off-by-one is easy to miss. Aligned with `x`, the mask would be 1 where the INPUT is a response token, so the first counted prediction is the second response token (made from the first), and the most important one, the first response token predicted from `<|assistant|>`, is silently dropped.' },
-    { q: 'SFT runs use a learning rate well below the pre-training peak (Llama 2: approximately 3e-4 for pre-training, 2e-5 for SFT) because…', options: ['The SFT dataset is small, so the loss is cheap to compute', 'The weights already encode the language; large steps on a narrow dataset overwrite that knowledge (catastrophic forgetting)', 'AdamW is unstable at high learning rates'], answer: 1,
+    { q: 'SFT runs use a learning rate well below the pre-training peak (Llama 2 7B: approximately 3e-4 for pre-training, 2e-5 for SFT) because…', options: ['The SFT dataset is small, so the loss is cheap to compute', 'The weights already encode the language; large steps on a narrow dataset overwrite that knowledge (catastrophic forgetting)', 'AdamW is unstable at high learning rates'], answer: 1,
       why: 'Fine-tuning moves an already good model a short distance. A small learning rate and few epochs keep the base capabilities while the format is learned.' },
   ],
   concept: `
@@ -73,7 +73,7 @@ About a quarter (626 / 2,432 ≈ 26%). The rest are prompt tokens, markers, sepa
 
 ## Learning rate, forgetting, and LoRA
 
-SFT uses a learning rate roughly ten times below the pre-training peak (Llama 2, Touvron et al. 2023: approximately 3e-4 for pre-training, 2e-5 for SFT) and one to three epochs. Larger steps on a narrow dataset overwrite what pre-training learned, which is called **catastrophic forgetting**; you can measure it as the base corpus's perplexity rising during SFT. Mixing a fraction of pre-training data into the SFT batches is the usual antidote.
+SFT uses a learning rate about an order of magnitude below the pre-training peak (Llama 2 7B, Touvron et al. 2023: approximately 3e-4 for pre-training, 2e-5 for SFT) and one to three epochs. Larger steps on a narrow dataset overwrite what pre-training learned, which is called **catastrophic forgetting**; you can measure it as the base corpus's perplexity rising during SFT. Mixing a fraction of pre-training data into the fine-tuning batches is a common antidote.
 
 **LoRA** (Hu et al. 2021) freezes every weight \`W\` of shape \`[d, k]\` and trains a low-rank update, using \`W + B·A\` with \`B\` of shape \`[d, r]\` (initialised to zero, so training starts from the base model) and \`A\` of shape \`[r, k]\`, \`r\` typically 8–64. Only \`A\` and \`B\` receive gradients and AdamW moments: full fine-tuning of a 7B model keeps two fp32 moments per parameter, approximately 7e9 × 8 bytes = 56 GB of optimizer state, while LoRA's moments take from tens of megabytes to about a gigabyte depending on the rank and which matrices are adapted. Combined with a frozen base stored in 4 bits, that is how QLoRA (Dettmers et al. 2023) fits a 65B fine-tune on one 48 GB GPU.
 
@@ -198,8 +198,8 @@ No warmup or cosine schedule here, to keep the loop minimal: the run is 150 step
   ],
   stretch: [
     'Build a block-diagonal attention mask so that packed examples cannot attend across their `eos` boundaries (what FlashAttention\'s `varlen` kernels and Hugging Face `padding_free` batching do), and measure whether the masked loss after 150 steps changes.',
-    'Implement LoRA on the attention `qkv` and `proj` weights: freeze the base, train `W + B·A` with rank 4, and compare the number of trained parameters and optimizer bytes with full fine-tuning (Hu et al. 2021; the `peft` library; QLoRA).',
-    'Measure catastrophic forgetting: compute the checkpoint\'s loss on a slice of `CORPUS` before and after SFT, then mix one pre-training window into every SFT batch (as Llama 2 and Tülu recipes do) and measure again.',
+    'Module 30 later builds LoRA in full. As a preview, freeze everything except the final LayerNorm (`lnF`) and the head (tied to `wte`, so this also trains the token embeddings), and compare the number of trained parameters and the loss with full fine-tuning.',
+    'Measure catastrophic forgetting: compute the checkpoint\'s loss on a slice of `CORPUS` before and after SFT, then mix one pre-training window into every SFT batch (InstructGPT\'s PPO-ptx mixed pre-training gradients into RL for the same reason; Ouyang et al. 2022) and measure again.',
     'Extend `tokenizeExample` to multi-turn conversations where every assistant turn is masked in and every user turn masked out, matching TRL\'s `assistant_only_loss` on the Llama 3 template.',
   ],
   timeouts: { tests: 20000, demo: 120000 },

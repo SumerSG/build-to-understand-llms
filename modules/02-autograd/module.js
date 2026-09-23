@@ -132,7 +132,7 @@ Fill in the three closures. Each receives \`g\`, a raw tensor \`{ shape, data }\
 1. leading dimensions the input never had (\`gradShape\` is longer than \`targetShape\`): sum over axis 0 until the ranks match;
 2. dimensions the input had as size 1 that were stretched: sum over that axis with \`keepDims = true\` so the size-1 dimension stays.
 
-\`ops.sum(t, axis, keepDims)\` from module 01 does the summing; wrap \`grad\` as \`{ shape: gradShape, data: grad }\` first. \`add\` and \`sub\` already call \`unbroadcast\`, which is why their tests only start passing now.
+\`ops.sum(t, axis, keepDims)\` from lib/ops.js (the axis-aware version of module 01's \`sum\`) does the summing; wrap \`grad\` as \`{ shape: gradShape, data: grad }\` first. \`add\` and \`sub\` already call \`unbroadcast\`, which is why their tests only start passing now.
 
 Then finish \`mul\`: the gradient for the second operand is \`g · this\` (because \`d(a·b)/db = a\`), unbroadcast to \`o.shape\`, and only when \`o\` is a Tensor. Now \`x.mul(x)\` sends two contributions into the same \`x.grad\`.
 `,
@@ -201,7 +201,7 @@ This is the entire training loop of every later module, with a GPT in place of \
 `,
       predict: { question: 'You forget the two zeroGrad calls in the loop. What happens to the loss over 200 steps?', answer: 'It never converges, but it does not blow up either. The update at step t is the sum of all t gradients so far, which is momentum with no friction: w and b accelerate toward the minimum, overshoot, and swing back and forth forever. With lr = 0.1 on 32 points in [−1, 1] the loss keeps oscillating between about 0.3 and 7 for all 200 steps (with zeroGrad it falls below 0.001). Only when lr × curvature exceeds 4 does each swing grow and end in Infinity.' },
       hints: [
-        'sgdStep is two nested loops and a minus sign: the gradient points uphill, so subtract it. trainLinear is the five-line loop from the concept section: forward, record, zero, backward, step.',
+        'sgdStep is two nested loops and a minus sign: the gradient points uphill, so subtract it. trainLinear is a five-line loop: forward, record, zero, backward, step.',
         'sgdStep: for each parameter whose grad is not null, subtract learning rate times gradient from every element of its data. trainLinear: wrap xs and ys as [N, 1] column tensors, create w as a [1, 1] zero parameter and b as a [1] zero parameter. Each step, build the prediction (X times w, plus b), the difference from Y, and the mean of its square; record the loss number; clear both gradients; run backward; take the SGD step; record w and b. Return the final numbers with the three histories.',
         '```js\nfor (let step = 0; step < steps; step++) {\n  const pred = X.matmul(w).add(b);      // [N, 1]; b is broadcast over the rows\n  const diff = pred.sub(Y);\n  const loss = /* … mean squared error, built from diff … */;\n  losses.push(loss.item());\n  w.zeroGrad(); b.zeroGrad();\n  loss.backward();\n  sgdStep([w, b], lr);\n  ws.push(w.data[0]); bs.push(b.data[0]);\n}\n```',
       ],
