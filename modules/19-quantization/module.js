@@ -136,7 +136,9 @@ Throw if \`cols % groupSize !== 0\`. For each row and each group of \`groupSize\
 
 Either way \`q = clamp(round(x / scale) + zero, qmin, qmax)\` (the zero point is itself an integer code, so round it), and \`scale\` falls back to 1 when the group is constant. Return the same struct as step 2 with the given \`groupSize\`.
 
-The tests check that error falls strictly as the group shrinks on a matrix with outliers, and that an all-positive group in \`[2, 3]\` is more than 4x more accurate asymmetrically than symmetrically. Your \`dequantize\` from step 2 should already handle both.
+Asymmetric codes are unsigned, \`[0, 2^bits − 1]\`, and the \`Int8Array\` store holds only \`[−128, 127]\`: at 8 bits a code of 200 would silently wrap to −56. Throw if \`symmetric\` is false and \`bits > 7\`. The fallback scale of 1 is a toy rule: it is exact for an all-zero group, but an asymmetric group that is constant at 0.3 gets \`zero = round(−0.3) = 0\` and comes back as 0. Real libraries store such a group exactly; the tests do not exercise it.
+
+The tests check that error falls strictly as the group shrinks on a matrix with outliers, that an all-positive group in \`[2, 3]\` is more than 4x more accurate asymmetrically than symmetrically, and that asymmetric 8-bit throws. Your \`dequantize\` from step 2 should already handle both.
 `,
       predict: { question: 'Each row of a [16, 256] matrix holds weights from N(0, 0.02) plus four outliers of ±0.5 (25x the typical weight) in different places. Going from groupSize 256 (one scale per row) to 16, does the symmetric int4 MSE drop by about 2x, about 4x, or more than 10x?', answer: 'About 4x (3.9x on a seeded sample). With one scale per row the step is 0.5 / 7 ≈ 0.07, so nearly every small weight rounds to 0 and the MSE is close to the weights\' own variance. With groups of 16, the 4 groups that hold an outlier (a quarter of the row) still lose nearly all their small weights; only the other 12 get a fine grid. The groups that contain an outlier set the floor, which is why production recipes pair small groups with outlier handling.' },
       hints: [
@@ -151,7 +153,7 @@ The tests check that error falls strictly as the group shrinks on a matrix with 
       instructions: `
 Write \`quantizeWeight(w, opts)\` and \`quantizedMatmul(x, qw)\`.
 
-A linear layer in this lab computes \`y = x · W\` with \`W\` of shape \`[K, N]\` (\`K\` input channels, \`N\` output channels). A decode kernel wants each output channel's weights contiguous, with groups along \`K\`, so \`quantizeWeight\` transposes \`W\` to \`[N, K]\` (\`ops.transpose\`) and calls \`quantizeGroups\` on that. This is the layout GPTQ, AWQ and vLLM's Marlin kernel use.
+A linear layer in this lab computes \`y = x · W\` with \`W\` of shape \`[K, N]\` (\`K\` input channels, \`N\` output channels). A decode kernel wants each output channel's weights contiguous, with groups along \`K\`, so \`quantizeWeight\` transposes \`W\` to \`[N, K]\` (\`ops.transpose\`) and calls \`quantizeGroups\` on that. This is the layout GPTQ, AWQ and vLLM's Marlin kernel use. \`opts\` passes straight through, so per-channel int8 is \`quantizeWeight(w, { bits: 8, groupSize: K })\`; with no options you get \`quantizeGroups\`'s default, int4 g64, which throws unless \`K\` is divisible by 64.
 
 \`quantizedMatmul(x, qw)\` takes \`x\` as raw \`[T, K]\` and returns raw \`[T, N]\`. For each \`t\` and each output channel \`n\`, walk the groups of row \`n\`: accumulate \`Σ x[t, k] · (q[n, k] − zero)\` over the group's \`K\` indices, multiply that partial sum by the group's scale, and add it to the output. The float weight is never materialised; one scale multiply per group is what a fused GPU kernel does in registers. Throw if \`x.shape[1] !== qw.shape[1]\`.
 
@@ -191,7 +193,10 @@ Write \`fpRound(x, fmt)\`, \`mxQuantize(x, { block = 32, elem = 'e2m1' })\` and 
 \`fmt\` is \`{ exp, man, bias, max, saturate }\`: \`exp\` exponent bits, \`man\` mantissa bits, \`bias\` the exponent offset (default \`2^(exp−1) − 1\`), \`max\` the largest finite value (default \`(2 − 2^−man) · 2^(2^exp − 2 − bias)\`, the IEEE rule that reserves the top exponent for infinity and NaN) and \`saturate\`, whether overflow clamps to \`±max\` instead of returning \`±Infinity\`. The exported \`FORMATS\` holds bf16, fp16, fp8 E4M3 and E5M2, and FP4 E2M1. E4M3 and E2M1 have no infinities, so they set \`max\` (448 and 6) and saturate. With \`a = |x|\`:
 
 \`\`\`
-e   = max(floor(log2 a), 1 − bias)     below 2^(1−bias) the format is subnormal: the spacing stops shrinking
+e   = floor(log2 a)                    the binade of a: 2^e ≤ a < 2^(e+1)
+if 2^e > a: e = e − 1                  Math.log2 can round up to an integer just below a power of two,
+if 2^(e+1) ≤ a: e = e + 1              so check the binade and correct by one
+e   = max(e, 1 − bias)                 below 2^(1−bias) the format is subnormal: the spacing stops shrinking
 ulp = 2^(e − man)                      the spacing of representable values near a
 r   = roundHalfEven(a / ulp) · ulp
 if r > max: r = saturate ? max : Infinity
@@ -200,7 +205,7 @@ return sign(x) · r                     (0 and NaN come back unchanged)
 
 A tie goes to the even multiple of \`ulp\`, the one whose last mantissa bit is 0. At 1.0 bf16's \`ulp\` is \`2^−7\`, so \`1 + 2^−8\` sits exactly halfway between 1 and \`1 + 2^−7\` and rounds to 1. \`Math.round\` sends every tie up, which is wrong here.
 
-\`mxQuantize\` follows the OCP MX specification v1.0 (2023). For each block of \`block\` consecutive values (the last may be shorter), let \`amax\` be the largest \`|x|\`. The block's scale is the power of two \`2^(floor(log2 amax) − emax)\`, where \`emax = floor(log2 FORMATS[elem].max)\` is the exponent of the element format's largest power of two (2 for E2M1, whose largest is 4). An all-zero block gets scale 1. Each element is \`fpRound(x / scale, FORMATS[elem])\`. Return \`{ elems: Float32Array, scales: Float32Array, block }\`.
+\`mxQuantize\` follows the OCP MX specification v1.0 (2023). For each block of \`block\` consecutive values (the last may be shorter), let \`amax\` be the largest \`|x|\`. The block's scale is the power of two \`2^(floor(log2 amax) − emax)\`, with \`floor(log2 amax)\` corrected exactly as in \`fpRound\` (a small helper serves both), where \`emax = floor(log2 FORMATS[elem].max)\` is the exponent of the element format's largest power of two (2 for E2M1, whose largest is 4). An all-zero block gets scale 1. Each element is \`fpRound(x / scale, FORMATS[elem])\`. Return \`{ elems: Float32Array, scales: Float32Array, block }\`.
 
 \`nvfp4Quantize(x)\` uses blocks of 16 and two levels of scale. \`tensorScale = max|x| / (6 · 448)\` (1 if \`x\` is all zero). Each block's scale is \`s = fpRound(amax / 6 / tensorScale, FORMATS.e4m3)\`, and each element is \`fpRound(x / (s · tensorScale), FORMATS.e2m1)\`, or 0 if \`s\` is 0. Return \`{ elems, scales, tensorScale, block: 16 }\`. Dividing by \`6 · 448\` gives the block that holds the tensor's largest value a scale of exactly 448, the top of E4M3's range. The worked \`dequantizeBlocks\` turns either result back into floats.
 

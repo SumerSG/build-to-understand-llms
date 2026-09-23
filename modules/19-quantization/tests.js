@@ -147,6 +147,12 @@ export const tests = [
     T.eq(Array.from(st.q), [0, 3, 7, 15], 'codes are round(x / scale) + zero: -0.46 -> -2 + 2 = 0, 0.2 -> 1 + 2 = 3, 1 -> 5 + 2 = 7, 2.54 -> 13 + 2 = 15');
     T.ok(eA.mse * 4 < eS.mse, `symmetric wastes the negative half of the range on all-positive values: expected asymmetric MSE < 1/4 of symmetric (got ${eA.mse.toExponential(2)} vs ${eS.mse.toExponential(2)})`);
   } },
+  { step: 'groups', name: 'asymmetric 8-bit throws: unsigned codes up to 255 do not fit the Int8Array store', run(m, T) {
+    const w = ops.fromArray([[0, 0.1, 0.2, 1]]);
+    T.throws(() => m.quantizeGroups(w, { bits: 8, groupSize: 4, symmetric: false }), 'asymmetric 8-bit codes run 0..255, but an Int8Array wraps 200 to -56 and dequantize returns garbage; throw when symmetric is false and bits > 7');
+    const ok = m.quantizeGroups(w, { bits: 7, groupSize: 4, symmetric: false });
+    T.ok(Array.from(ok.q).every((v) => v >= 0 && v <= 127), `asymmetric 7-bit codes lie in [0, 127] and fit; got ${Array.from(ok.q)}`);
+  } },
 
   // ---------- step 4: quantised matmul ----------
   { step: 'qmatmul', name: 'quantizeWeight stores W [K, N] as [N, K] with groups along K', run(m, T) {

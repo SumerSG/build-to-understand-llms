@@ -113,6 +113,7 @@ export function dequantize(qw) {
  * and give each group its own scale. Symmetric: scale = max|group| / qmax, zero = 0, zeros = null.
  * Asymmetric: scale = (max − min) / (qmax − qmin), zero = round(−min / scale), and every code is
  * round(x / scale) + zero clamped to [qmin, qmax]; zeros holds one zero point per group.
+ * Asymmetric codes are unsigned and must fit the Int8Array: throw if symmetric is false and bits > 7.
  */
 export function quantizeGroups(w, { bits = 4, groupSize = 64, symmetric = true } = {}) {
   // TODO: step 3

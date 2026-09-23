@@ -120,6 +120,7 @@ export function dequantize(qw) {
 export function quantizeGroups(w, { bits = 4, groupSize = 64, symmetric = true } = {}) {
   const [rows, cols] = w.shape;
   if (cols % groupSize !== 0) throw new Error(`quantizeGroups: cols ${cols} not divisible by groupSize ${groupSize}`);
+  if (!symmetric && bits > 7) throw new Error(`quantizeGroups: asymmetric ${bits}-bit codes run to ${2 ** bits - 1} and do not fit the Int8Array store; use bits <= 7`);
   const { qmin, qmax } = qrange(bits, symmetric);
   const nGroups = cols / groupSize;
   const q = new Int8Array(rows * cols);
