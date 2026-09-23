@@ -51,7 +51,7 @@ None. Each pair of both vectors rotates by an extra \`1000 · θ_i\`, and the an
 
 ## GQA and MQA: fewer KV heads
 
-Shazeer (2019) proposed **multi-query attention** (MQA) because decoding is bound by reading the cache: all query heads share one key and one value head. **Grouped-query attention** (Ainslie et al. 2023) is the middle ground: \`H\` query heads in groups of \`H / H_kv\`, each group sharing one KV head. \`H_kv = H\` is plain multi-head attention; \`H_kv = 1\` is MQA. Llama 2 70B and every Llama 3 model use 8 KV heads, which cuts Llama-3-8B's cache to \`2 · 32 · 8 · 128 · 2\` bytes, approximately 128 KiB per token.
+Shazeer (2019) proposed **multi-query attention** (MQA) because decoding is bound by reading the cache: all query heads share one key and one value head. **Grouped-query attention** (Ainslie et al. 2023) is the middle ground: \`H\` query heads in groups of \`H / H_kv\`, each group sharing one KV head. \`H_kv = H\` is plain multi-head attention; \`H_kv = 1\` is MQA. Llama 2 70B and every Llama 3 model use 8 KV heads, which cuts Llama-3-8B's cache to \`2 · 32 · 8 · 128 · 2\` bytes, exactly 128 KiB (131,072 bytes) per token.
 
 :::predict
 Llama-3-70B has 80 layers, 64 query heads, 8 KV heads and \`dh = 128\`. How much KV cache does one bf16 token take?
@@ -97,7 +97,7 @@ The loop skeleton is in the starter; you fill in \`ropeFrequencies\` and the two
 
 The tests check the property that makes RoPE worth having: \`applyRope(q, [m]) · applyRope(k, [n])\` depends only on \`m − n\`.
 `,
-      predict: { question: 'A key sits at position 3 and the query at position 7. Which frequency pair contributes a score term that changes the most if you move the key to position 4?', answer: 'Pair 0, the fastest: its angle difference moves by θ_0 = 1 radian, while the last pair (θ ≈ 3e−4 for dh = 16) barely moves. Fast pairs resolve nearby positions; slow pairs carry long-range position information.' },
+      predict: { question: 'With dh = 16 and base 10000, a key sits at position 3 and the query at position 7. If you move the key to position 4, which frequency pair\'s relative rotation angle changes the most, and which the least?', answer: 'Pair 0, the fastest: its angle difference moves by θ_0 = 1 radian, while the last pair (θ_7 = 10000^(−14/16) ≈ 3e−4) barely moves. How much each pair\'s score term changes also depends on the lengths of that pair in q and k, but the angle is what position controls. Fast pairs resolve nearby positions; slow pairs carry long-range position information.' },
       hints: [
         'A rotation by angle a sends (1, 0) to (cos a, sin a) and (0, 1) to (−sin a, cos a). Everything else follows by linearity.',
         'Frequencies: loop i from 0 to dh/2 − 1 and use `base ** (-2 * i / dh)`. In applyRope, compute the angle once per pair, take its cos and sin, read the two old values into locals BEFORE writing either output.',
@@ -110,7 +110,7 @@ The tests check the property that makes RoPE worth having: \`applyRope(q, [m]) �
       instructions: `
 \`kvHeadFor(h, nHead, nKVHead)\`: the KV head query head \`h\` reads. Consecutive groups of \`nHead / nKVHead\` query heads share one: \`h // (nHead / nKVHead)\`. Throw if \`nHead\` is not a multiple of \`nKVHead\`.
 
-\`gqaAttention(q, k, v, { causal })\`: \`q\` is \`[H, Tq, dh]\`, \`k\` and \`v\` are \`[H_kv, Tk, dh]\`. Same arithmetic and position rules as the worked \`mha\` (query \`i\` sits at position \`Tk − Tq + i\`), except that query head \`h\` reads KV head \`kvHeadFor(h, H, H_kv)\`. Start by copying \`mha\`; the change is in how you compute the key and value offsets.
+\`gqaAttention(q, k, v, { causal })\`: \`q\` is \`[H, Tq, dh]\`, \`k\` and \`v\` are \`[H_kv, Tk, dh]\`. Same arithmetic and position rules as the worked \`mha\` (query \`i\` sits at position \`Tk − Tq + i\`), except that query head \`h\` reads KV head \`kvHeadFor(h, H, H_kv)\`. Start by copying \`mha\`, then make two changes: replace its equal-head check (\`k\` and \`v\` now have \`H_kv\` heads, so keep only a check that \`H\` is a multiple of \`H_kv\`, which \`kvHeadFor\` does for you), and change how you compute the key and value offsets.
 
 \`kvBytesPerToken({ nLayer, nKVHead, headDim, bytesPerElement = 2 })\`: \`2 · nLayer · nKVHead · headDim · bytesPerElement\`.
 
@@ -162,7 +162,7 @@ The tests stream tokens through the ring, attend each one with \`mha\` over \`ke
       hints: [
         'Only one number changes in the attention loops: the first key a query may see. The ring is the same idea in memory: position p always lives at p % W.',
         'In the attention, `first = Math.max(0, pos - window + 1)` and every `j` loop runs from `first` to `pos`. In the ring, `append` computes `slot = count % W` and copies dh floats per head to `(h * W + slot) * dh`; the gather reads slot `(start + t) % W` for t in 0…length−1 with `start = count − length`.',
-        'Gather: `for (h…) for (t…) { const src = (h * W + (/* slot of the t-th oldest token */)) * dh; out.set(buf.subarray(src, src + dh), (h * n + t) * dh); }` then `return { shape: [H, n, dh], data: out }`.',
+        'Gather: `for (h…) for (t…) { const src = (h * W + (/* slot of the t-th oldest token */)) * dh; out.set(buf.subarray(src, src + dh), (h * n + t) * dh); }` with `const n = this.length, start = this.count - n;` and `out = new Float32Array(H * n * dh)` set up first, then `return { shape: [H, n, dh], data: out }`.',
       ],
     },
     {

@@ -95,11 +95,11 @@ export const tests = [
     const ref2 = m.mha(q, expandHeads(k2, 4, group), expandHeads(v2, 4, group));
     T.close(Array.from(g.data), Array.from(ref2.data), 1e-5, 'query heads 0,1 must read KV head 0 and heads 2,3 KV head 1 (Llama\'s repeat_kv); interleaving 0,1,0,1 is a different model');
   } },
-  { step: 'gqa', name: 'a decode query (Tq = 1) against Tk cached keys matches the last row of the full pass', run(m, T) {
+  { step: 'gqa', name: 'the full H_kv = 2 pass and a decode query (Tq = 1) both match grouped MHA', run(m, T) {
     const q = rand(T, [4, 5, 8], 30), k = rand(T, [2, 5, 8], 31), v = rand(T, [2, 5, 8], 32);
     const full = m.gqaAttention(q, k, v);
     const group = (h) => Math.floor(h / 2);
-    T.close(Array.from(full.data), Array.from(m.mha(q, expandHeads(k, 4, group), expandHeads(v, 4, group)).data), 1e-5, 'the full pass must equal MHA with each KV head copied to its group of 2 query heads');
+    T.close(Array.from(full.data), Array.from(m.mha(q, expandHeads(k, 4, group), expandHeads(v, 4, group)).data), 1e-5, 'the full H_kv = 2 pass (all 5 queries) must equal MHA with each KV head copied to its group of 2 query heads (heads 0,1 → KV 0, heads 2,3 → KV 1); fix this before the decode check below');
     const lastQ = { shape: [4, 1, 8], data: new Float32Array(32) };
     for (let h = 0; h < 4; h++) lastQ.data.set(q.data.subarray((h * 5 + 4) * 8, (h * 5 + 5) * 8), h * 8);
     const step = m.gqaAttention(lastQ, k, v);
@@ -109,7 +109,7 @@ export const tests = [
     const full2 = m.gqaAttention(q, k2, v);
     T.close(row(full2, 0, 8), row(full, 0, 8), 1e-6, 'causal: changing the key at position 4 must not change the output at position 0');
   } },
-  { step: 'gqa', name: 'KV bytes per token: Llama-3-8B at approximately 128 KiB', run(m, T) {
+  { step: 'gqa', name: 'KV bytes per token: Llama-3-8B at exactly 128 KiB', run(m, T) {
     T.eq(m.kvBytesPerToken({ nLayer: 32, nKVHead: 8, headDim: 128, bytesPerElement: 2 }), 131072, '2 (K and V) · 32 layers · 8 KV heads · 128 dims · 2 bytes (bf16) = 131,072 bytes');
     T.eq(m.kvBytesPerToken({ nLayer: 32, nKVHead: 32, headDim: 128 }), 524288, 'Llama-2-7B has 32 KV heads (plain MHA): 4x more per token. bytesPerElement defaults to 2');
   } },
@@ -145,6 +145,7 @@ export const tests = [
     for (let t = 0; t < 7; t++) {
       const out = m.mlaDecodeStep(ops.slice(x, 0, t, t + 1), cache, w, { nHead: 4 });
       T.shape(out, [4, 1, 4], 'one decode step returns [H, 1, dh]');
+      T.shape(cache.c, [t + 1, 6], `after ${t + 1} decode step(s) cache.c must hold ${t + 1} latents of 6 floats; if it did not grow, assign the concatenated tensor back to cache.c (a local variable is lost when the call returns)`);
       for (let h = 0; h < 4; h++) T.close(row(out, h, 4), row(full, h * 7 + t, 4), 1e-4, `step ${t}, head ${h}: decoding from cached latents must reproduce the full pass`);
     }
     T.shape(cache.c, [7, 6], 'after 7 tokens the cache is 7 latents of 6 floats: no per-head keys or values are stored');
@@ -266,6 +267,10 @@ export const tests = [
     T.eq(jamba.fixedBytes, 28 * 32 * 128 * 128 * 2, '…and 28 recurrent layers of state');
   } },
   { step: 'budget', name: 'every cache grows linearly with context except the sliding window', run(m, T) {
+    const names = (m.cacheBudget(LLAMA3_8B, 2048) || []).map((r) => r && r.variant);
+    for (const vname of ['MHA', 'GQA', 'MQA', 'MLA', 'SWA', 'HYBRID']) {
+      T.ok(names.includes(vname), `no row with variant '${vname}' (got variants [${names.map((n) => JSON.stringify(n)).join(', ')}]); rows are looked up by name, upper-case, in the order MHA, GQA, MQA, MLA, SWA, HYBRID`);
+    }
     const short = Object.fromEntries(m.cacheBudget(LLAMA3_8B, 2048).map((r) => [r.variant, r.totalBytes]));
     const long = Object.fromEntries(m.cacheBudget(LLAMA3_8B, 65536).map((r) => [r.variant, r.totalBytes]));
     T.eq(short.SWA, short.GQA, 'below the window, sliding-window attention caches exactly what GQA caches');
