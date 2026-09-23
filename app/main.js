@@ -20,6 +20,7 @@ const PHASES = [
 const DEFAULT_TIMEOUTS = { tests: 20000, demo: 120000 };
 const LOG_DOM_MAX = 2000;          // console lines kept in the DOM per run
 const cache = new Map();           // module id -> { def, starter }
+const READY = MODULES.filter((m) => m.status === 'ready');   // planned modules are shown but not counted
 const failedLoads = new Set();     // module ids whose module.js could not be imported (shown as planned)
 
 let renderSeq = 0;                 // bumped on every route(); async renders bail out when superseded
@@ -139,8 +140,8 @@ function renderSidebar(activeId = null) {
   const done = MODULES.filter((m) => isComplete(m.id)).length;
   const parts = [`<div class="brand"><a href="#/">Build to Understand<span class="sub">the LLM stack, from scratch</span></a></div>`,
     `<button class="btn btn-small sidebar-toggle" id="sidebar-close" type="button">Close</button>`,
-    `<div class="progress-bar" title="${done} of ${MODULES.length} modules complete"><i style="width:${(100 * done) / MODULES.length}%"></i></div>`,
-    `<div class="small muted">${done} / ${MODULES.length} modules complete</div>`];
+    `<div class="progress-bar" title="${done} of ${READY.length} modules complete"><i style="width:${(100 * done) / READY.length}%"></i></div>`,
+    `<div class="small muted">${done} / ${READY.length} modules complete</div>`];
   for (const t of TRACKS) {
     const mods = MODULES.filter((m) => m.track === t.id);
     parts.push(`<div class="nav-track"><div class="nav-track-title">${esc(t.title)}</div>${mods.map((m) => {
@@ -316,7 +317,7 @@ async function renderModulePage(id, phaseArg, seq) {
   $app.innerHTML = '';
   $app.appendChild(sidebarButton());
   if (meta.status !== 'ready') {
-    $app.appendChild(h(`<div><h1>${esc(meta.title)}</h1><p class="muted">This module is planned but not yet written. Goal: ${esc(meta.goal)}</p></div>`));
+    $app.appendChild(h(`<div class="mod-head" data-num="${id.slice(0, 2)}"><nav class="crumbs"><span>Planned</span></nav><h1>${esc(meta.title)}</h1><div class="goal-banner"><p class="goal">${esc(meta.goal)}</p><p class="threshold">This module is planned and not yet written. Its design is in <code>docs/CURRICULUM_BRIEFS.md</code> and the shared pieces it needs are in <code>docs/ROADMAP.md</code>.</p></div></div>`));
     return;
   }
   let entry;

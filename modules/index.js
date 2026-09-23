@@ -8,6 +8,7 @@ export const TRACKS = [
   { id: 'harness', title: 'Harnesses & agents', blurb: 'The code around the model: tool loops, context management, constrained decoding.' },
   { id: 'systems', title: 'Systems & data centers', blurb: 'Where it physically runs: GPUs, parallelism, nodes and interconnects, serving clusters.' },
   { id: 'capstone', title: 'Capstone', blurb: 'Assemble everything into a chat you can talk to.' },
+  { id: 'datacenter', title: 'Deep dive: the data center (planned)', blurb: 'Program the collectives yourself, watch contention on a simulated fabric, and run a cluster for goodput. Planned: see docs/ROADMAP.md.' },
 ];
 
 export const MODULES = [
@@ -80,6 +81,16 @@ export const MODULES = [
   { id: '27-capstone', track: 'capstone', title: 'Capstone: chat with your own model', minutes: 120, status: 'ready',
     goal: 'Tokenizer + model + KV cache + sampler + harness wired together into a chat that runs in the page on a model trained in this lab.' },
 ];
+
+// Planned modules: registered so the path is visible; skipped by the verifier until status becomes 'ready'.
+MODULES.push(
+  { id: '40-collectives', track: 'datacenter', title: 'Collectives from scratch', minutes: 105, status: 'planned',
+    goal: 'Ring, tree, hierarchical all-reduce and all-to-all written as message passing between simulated GPUs, verified for correctness and timed on simulated links.' },
+  { id: '41-network-fabric', track: 'datacenter', title: 'The data-center fabric', minutes: 120, status: 'planned',
+    goal: 'A flow-level fabric simulator (fat-tree, rail-optimized, torus; ECMP; max-min fair sharing; one-switch incast) that runs your collectives and shows where contention sets the pace.' },
+  { id: '42-cluster-ops', track: 'datacenter', title: 'Operating an AI cluster', minutes: 105, status: 'planned',
+    goal: 'A cluster scheduler with topology-aware gang placement, failures, checkpoint restart and power caps, measured by goodput.' },
+);
 
 export function moduleById(id) {
   return MODULES.find((m) => m.id === id) || null;

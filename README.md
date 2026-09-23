@@ -14,6 +14,9 @@ draws what your code just did. Nothing counts as learned until it runs.
 | Systems & data centers | roofline analysis, data/tensor/pipeline parallelism simulators, node & interconnect placement, a serving cluster with disaggregated prefill/decode |
 | Capstone | a chat with a model trained in this lab |
 
+Planned next: a data-center deep dive (programming the collectives, a simulated network fabric, and
+cluster operations). The design is in [docs/ROADMAP.md](docs/ROADMAP.md).
+
 ## Run it
 
 No build step and no npm dependencies: the only external asset is CodeMirror 5, loaded from a CDN for the
