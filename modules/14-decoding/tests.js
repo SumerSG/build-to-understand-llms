@@ -124,6 +124,7 @@ export const tests = [
     T.close(m.repetitionPenalty(logits, [0, 1], 1), [2, -2, 1, 0.5], 1e-6, 'penalty 1 is "off"');
     T.close(m.repetitionPenalty(logits, [], 2), [2, -2, 1, 0.5], 1e-6, 'nothing seen, nothing penalised');
     T.close(m.repetitionPenalty(logits, [99, -1], 2), [2, -2, 1, 0.5], 1e-6, 'ids outside the vocabulary are ignored');
+    T.close(m.repetitionPenalty(logits, null, 2), [2, -2, 1, 0.5], 1e-6, 'prevIds = null means no history: return a copy (processLogits passes null by default, so an unguarded loop over prevIds breaks every step-5 test)');
     T.close(logits, [2, -2, 1, 0.5], 1e-6, 'input must not be modified');
   } },
   { step: 'penalties', name: 'frequencyPresencePenalty subtracts frequency × count plus presence once per seen id', run(m, T) {
@@ -133,6 +134,7 @@ export const tests = [
     T.close(m.frequencyPresencePenalty(logits, [0, 0, 0, 2], { frequency: 1 }), [-2, 1, 0, 1], 1e-6, 'frequency alone scales with the count');
     T.close(m.frequencyPresencePenalty(logits, [0, 0, 0, 2], { presence: 2 }), [-1, 1, -1, 1], 1e-6, 'presence alone is a flat cost for having appeared');
     T.close(m.frequencyPresencePenalty(logits, [0, 0], {}), [1, 1, 1, 1], 1e-6, 'both zero is "off"');
+    T.close(m.frequencyPresencePenalty(logits, null, { frequency: 1, presence: 1 }), [1, 1, 1, 1], 1e-6, 'prevIds = null means no history: return a copy (processLogits passes null by default, so an unguarded loop over prevIds breaks every step-5 test)');
     T.eq(logits, [1, 1, 1, 1], 'input must not be modified');
   } },
 

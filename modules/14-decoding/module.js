@@ -4,7 +4,7 @@ export default {
   track: 'inference',
   minutes: 75,
   threshold: 'The model outputs a distribution, not a token; decoding is a separate, controllable policy over that distribution, and every knob is a different way of cutting off its tail.',
-  goal: 'A logit-processor pipeline (temperature, top-k, top-p, min-p, repetition and frequency/presence penalties) plus a seeded sampler and a `generate` loop with stop sequences, whose sampled frequencies match the maths and which decodes the pre-trained checkpoint under four settings in the goal demo.',
+  goal: 'A logit-processor pipeline (temperature, top-k, top-p, min-p, repetition and frequency/presence penalties) plus a seeded sampler and a `generate` loop with stop sequences, whose sampled frequencies match the maths and which decodes the pre-trained checkpoint under five policies in the goal demo: greedy, greedy with a repetition penalty, t = 1, t = 0.7 with top-p 0.9, and t = 1.5 with min-p 0.1.',
   prereqs: ['01-tensors', '03-tokenizer', '04-bigram', '06-transformer'],
   recall: [
     { q: 'In module 01 you subtracted the row maximum inside softmax. What does adding the same constant to every logit do to the softmax output?', options: ['Nothing: softmax is shift-invariant', 'It scales every probability by exp(c)', 'It sharpens the distribution'], answer: 0,
@@ -93,6 +93,8 @@ Two functions. The worked examples above the TODO line (\`copyLogits\`, \`softma
 \`greedy(logits)\`: the index of the largest logit, first index on ties. It must work on all-negative logits, so do not start the search from a running maximum of 0.
 
 Why a separate function for something \`argmax\` already does: greedy is the policy every other setting is compared against in the demo, and it is what \`temperature: 0\` must reduce to.
+
+\`lib/sampling.js\` is the course's reference version of this module, which later modules import. Build yours before you open it. Its \`generate\` returns only the text; the one you write in step 6 returns \`{ text, ids, finishReason }\`, and the tests check that shape.
 `,
       predict: { question: 'What is `softmaxLogits(applyTemperature([2, 1, 0, -1], 1e6))`?', answer: 'About `[0.25, 0.25, 0.25, 0.25]`: dividing by a huge t makes every logit ≈ 0, and softmax of equal logits is uniform. The tests check both limits.' },
       hints: [
@@ -145,10 +147,12 @@ Three processors, each a few lines.
 \`repetitionPenalty(logits, prevIds, penalty)\`: for every distinct id in \`prevIds\` (use a \`Set\`; ids outside the vocabulary are ignored), divide the logit by \`penalty\` if it is positive and multiply it by \`penalty\` if it is negative. Both cases push the token towards \`-Infinity\`; a plain subtraction or a plain division gets one sign wrong. \`penalty = 1\` is off. CTRL (Keskar et al. 2019) introduced the penalty as a plain division; the sign rule is how \`repetition_penalty\` is implemented in HF and vLLM, and it is what the test checks.
 
 \`frequencyPresencePenalty(logits, prevIds, { frequency, presence })\`: count how many times each id occurs in \`prevIds\`, then subtract \`frequency × count + presence\` from each seen id's logit. Presence is paid once per distinct id, frequency once per occurrence. These are the OpenAI API's \`frequency_penalty\` and \`presence_penalty\`.
+
+Both penalties must accept \`prevIds = null\` (or an empty array) and treat it as "no history": return a copy. \`processLogits\` in step 5 defaults \`prevIds\` to \`null\` and passes it straight to both, so an unguarded \`for (const id of prevIds)\` fails there with "prevIds is not iterable"; a test here checks the null case directly.
 `,
       hints: [
         'All three are elementwise edits of a copy. Min-p works in probability space (you need the softmax and its maximum); the two penalties work on logits and only touch ids that appear in prevIds.',
-        'For the additive penalties, build a `Map` from id to count in one pass over prevIds, then one pass over the map: `out[id] -= frequency * n + presence`.',
+        'For the additive penalties, return a copy early when prevIds is null or both weights are 0; otherwise build a `Map` from id to count in one pass over prevIds, then one pass over the map: `out[id] -= frequency * n + presence`.',
         'Repetition penalty core: `const out = copyLogits(logits); for (const id of new Set(prevIds)) { if (id < 0 || id >= out.length) continue; out[id] = /* positive ? divide : multiply */; } return out;`',
       ],
     },
@@ -184,7 +188,7 @@ Implement \`generate(model, tokenizer, prompt, opts)\` on top of \`lib/infer.js\
 
 The loop:
 
-1. \`promptIds = tokenizer.encode(prompt)\`. If empty, use \`[tokenizer.eos]\` (throw if the tokenizer has no eos). Keep only the newest \`model.config.blockSize\` ids: the context window is fixed.
+1. \`promptIds = tokenizer.encode(prompt)\`. If empty, use \`[tokenizer.eos]\`; throw if there is no eos, which means \`tokenizer.eos\` is missing (\`CharTokenizer\` has none) or negative (\`BPETokenizer\` sets it to \`-1\` when it has no special tokens), so test \`!(tokenizer.eos >= 0)\`. Keep only the newest \`model.config.blockSize\` ids: the context window is fixed.
 2. \`cache = newCache(model)\`; \`logits = prefill(model, cache, promptIds)\`.
 3. While fewer than \`maxNewTokens\` ids have been generated: \`id = sample(logits, { ...samplingOpts, prevIds: promptIds.concat(ids), next })\`. If \`stopAtEos\` and \`id === tokenizer.eos\`, finish with \`'eos'\` without pushing it. Push the id and decode the generated ids to \`text\`. If any stop string occurs in \`text\`, cut \`text\` at the earliest occurrence and finish with \`'stop'\` (the \`ids\` keep everything sampled). If the cache is full (\`cache.length >= blockSize\`), finish with \`'length'\`. Otherwise \`logits = forwardStep(model, cache, id)\`.
 

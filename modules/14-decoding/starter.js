@@ -97,6 +97,7 @@ export function minPFilter(logits, p) {
 /**
  * CTRL-style repetition penalty: for each id in prevIds, divide its logit by `penalty` if the logit is
  * positive, multiply it by `penalty` if negative (both move it towards -Infinity). penalty = 1: no change.
+ * prevIds may be null (no history): return a copy.
  */
 export function repetitionPenalty(logits, prevIds, penalty) {
   // TODO: step 4
@@ -105,7 +106,7 @@ export function repetitionPenalty(logits, prevIds, penalty) {
 
 /**
  * OpenAI-style additive penalties: subtract `frequency` times the number of times an id appears in
- * prevIds, plus `presence` once if it appears at all.
+ * prevIds, plus `presence` once if it appears at all. prevIds may be null (no history): return a copy.
  */
 export function frequencyPresencePenalty(logits, prevIds, { frequency = 0, presence = 0 } = {}) {
   // TODO: step 4
