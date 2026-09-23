@@ -67,7 +67,7 @@ Perplexity on a long book barely changes if the model ignores everything more th
 
 ## What a long prompt costs
 
-Every token of a long prompt is prefilled (module 23 calls this the compute-bound phase), and every token's keys and values sit in the KV cache (module 15). Summing module 15's per-token cost over positions 1 to T gives prefill FLOPs \`2·N·T + 2·L·C·T·(T+1)\`, where \`N\` is the parameter count, \`L\` the number of layers and \`C\` the model width. The first term is linear in T, the second quadratic, so attention becomes most of the work at long lengths. For Llama-3-8B, 128k tokens is approximately 6.6 PFLOPs, about 13 s on one H100 at 50% of the roughly 989 TFLOP/s dense bf16 in NVIDIA's datasheet, and 16 GiB of cache. Prefix caching (module 17) is how providers avoid paying that twice for the same document.
+Every token of a long prompt goes through prefill, the phase module 15 calls compute-bound (module 23 later draws it on the roofline), and every token's keys and values sit in the KV cache. Summing module 15's per-token cost over positions 1 to T gives prefill FLOPs \`2·N·T + 2·L·C·T·(T+1)\`, where \`N\` is the parameter count, \`L\` the number of layers and \`C\` the model width. The first term is linear in T, the second quadratic, so attention becomes most of the work at long lengths. For Llama-3-8B, 128k tokens is approximately 6.6 PFLOPs, about 13 s on one H100 at 50% of the roughly 989 TFLOP/s dense bf16 in NVIDIA's datasheet, and 16 GiB of cache. Prefix caching (module 17) is how providers avoid paying that twice for the same document.
 
 ## Where the toy differs from production
 
@@ -172,7 +172,7 @@ Cost functions for a config \`{ params, layers, dModel, nKvHeads, headDim }\` (\
   reflection: [
     'Explain to a colleague why "this model has a 128k context window" and "this model can use 128k tokens" are different claims, using the numbers your demo produced for the three task kinds.',
     'Your multi-value task showed almost no middle drop, while the single needle showed a large one. What about the task design causes that, and what does it tell you about reading a single depth curve?',
-    'A team wants to put a 100k-token manual in every request instead of building retrieval (module 21). Using your cost model and your effective-context measurement, argue both sides.',
+    'A team wants to put a 100k-token manual in every request instead of building retrieval (module 21 builds it later in the path). Using your cost model and your effective-context measurement, argue both sides.',
   ],
   stretch: [
     'Add RULER\'s variable-tracking task (Hsieh et al. 2024): plant a chain `X1 = 4821`, `X2 = X1`, `X3 = X2` … at scattered depths and ask which variables equal 4821. It needs multi-hop retrieval, and effective context drops further.',
