@@ -204,7 +204,7 @@ export class BlockAllocator {
   }
 }
 
-/** Wasted slots in the last block of each sequence: { tokens, slots, wasted, fraction }. */
+/** Wasted slots in the last block of each sequence: { tokens, slots, wasted, fraction = wasted / slots }. */
 export function internalFragmentation(lengths, blockSize) {
   // TODO: step 4
   return { tokens: 0, slots: 0, wasted: 0, fraction: 0 };
@@ -230,7 +230,8 @@ export function runPaged(requests, cfg = DEFAULT_CONFIG) {
 /**
  * Allocate a block table for a prompt of nTokens, sharing the full blocks of an identical prompt
  * that is already in `cache` (a Map from prompt key to that prompt's full blocks).
- * Returns { blocks, sharedBlocks, newBlocks }, or null if the new blocks do not fit.
+ * Returns { blocks, sharedBlocks, newBlocks } (blocks is the block table, shared ids first; sharedBlocks
+ * and newBlocks are counts), or null if the new blocks do not fit.
  */
 export function allocateShared(alloc, cache, key, nTokens) {
   // TODO: step 6

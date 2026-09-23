@@ -270,6 +270,8 @@ export const tests = [
     const a = new m.BlockAllocator({ numBlocks: 100, blockSize: 16 });
     const cache = new Map();
     const first = m.allocateShared(a, cache, 'sys', 40);
+    T.ok(typeof first.sharedBlocks === 'number' && typeof first.newBlocks === 'number',
+      `sharedBlocks and newBlocks are counts of blocks, not arrays of ids (blocks is the table); got ${JSON.stringify(first.sharedBlocks)} and ${JSON.stringify(first.newBlocks)}`);
     T.eq(first.sharedBlocks, 0, 'nothing to share the first time');
     T.eq(first.newBlocks, 3, '40 tokens need 3 blocks');
     T.eq(a.freeCount, 97);
