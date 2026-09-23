@@ -93,7 +93,7 @@ Replace the placeholder \`PRETOKEN_RE\` so that \`pretokenize(text)\` (already w
 
 1. a run of ASCII letters, with an optional single leading space (\`"Hello"\`, \`" world"\`);
 2. a run of digits, with an optional leading space (\`" 12"\`);
-3. a run of any other non-whitespace characters, with an optional leading space (\`"!"\`, \`"--"\`);
+3. a run of characters that are neither whitespace, ASCII letters nor digits (punctuation and symbols), with an optional leading space (\`"!"\`, \`"--"\`), so \`"!abc"\` is two pre-tokens, not one;
 4. a run of whitespace (\`"\\n\\n"\`, \`"  "\`).
 
 The regex needs the \`g\` flag so \`match\` returns every hit. The pre-tokens must concatenate back to the input exactly, because decoding can only be lossless if pre-tokenisation is.

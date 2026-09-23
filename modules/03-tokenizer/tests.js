@@ -88,7 +88,13 @@ export const tests = [
     const words = m.pretokenize(CATS).map((p) => [...p]);
     const best = m.bestPair(m.countPairs(words));
     T.eq(m.countPairs(words).get(m.pairKey(...tok.merges[0])), best.count, 'the first merge must be a most-frequent pair of the initial character pairs');
-    T.eq(tok.decode(tok.encode(CATS)), CATS, 'the training text must round-trip exactly');
+    let replay = m.pretokenize(CATS).map((p) => [...p]);
+    for (const [a, b] of tok.merges) {
+      const counts = m.countPairs(replay);
+      const seen = counts.get(m.pairKey(a, b)) ?? 0;
+      T.eq(seen, m.bestPair(counts).count, `replaying the merges in order on the pre-tokens, merge [${JSON.stringify(a)}, ${JSON.stringify(b)}] must be a most-frequent pair at the moment it is learned, but it occurs ${seen} times there`);
+      replay = replay.map((w) => m.mergePair(w, a, b));
+    }
     const ab = m.BPETokenizer.train('a b a b a b', { vocabSize: 20 });
     T.eq(ab.merges[0], [' ', 'b'], '(␣,b) occurs 3 times inside pre-tokens; (a,␣) also occurs 3 times but crosses a pre-token boundary and must not be counted');
   } },
@@ -96,7 +102,9 @@ export const tests = [
     const tok = m.BPETokenizer.train('abab abab abab', { vocabSize: 20 });
     T.eq(tok.merges, [['a', 'b'], ['ab', 'ab'], [' ', 'abab']],
       '(a,b) occurs twice inside every "abab": after merge 0 each word must be [ab, ab] (not [ab, a, b]), so (ab,ab)=3 is next, then (␣,abab)=2');
-    T.eq(tok.encode('abab abab'), [tok.stoi.get('abab'), tok.stoi.get(' abab')], 'the training segmentation is one token per word');
+    const replayWord = (word) => tok.merges.reduce((w, [a, b]) => m.mergePair(w, a, b), [...word]);
+    T.eq(replayWord(' abab'), [' abab'], 'applying the learned merges in order with mergePair must turn the training word " abab" into one symbol');
+    T.ok(tok.vocab.includes('abab') && tok.vocab.includes(' abab'), 'the vocabulary must contain the merged symbols "abab" and " abab"');
   } },
 
   // ---------- step 4: encode and decode ----------
@@ -114,6 +122,10 @@ export const tests = [
     T.eq(tok.encode('low lower'), [id('low'), id(' lowe'), id('r')], '"low" is one symbol; " lower" becomes " lowe" + "r" because (␣low,e) was learned and (␣lowe,r) was not');
     T.eq(tok.decode([id('low'), id(' lowe'), id('r')]), 'low lower', 'decode concatenates the symbols');
     T.eq(tok.decode(tok.encode(LOW)), LOW, 'encode then decode must give back the text exactly');
+    const cats = m.BPETokenizer.train(CATS, { vocabSize: 24 });
+    T.eq(cats.decode(cats.encode(CATS)), CATS, 'the training text must round-trip exactly');
+    const ab = m.BPETokenizer.train('abab abab abab', { vocabSize: 20 });
+    T.eq(ab.encode('abab abab').map((i) => ab.vocab[i]), ['abab', ' abab'], 'the training segmentation is one token per word: encode must reproduce it');
     T.eq(tok.encode(''), [], 'empty text encodes to no ids');
   } },
   { step: 'codec', name: 'special tokens are matched first and become one id; unknown characters get unkId', run(m, T) {
