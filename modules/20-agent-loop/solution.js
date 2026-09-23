@@ -10,8 +10,9 @@ export const CLOSE_TAG = '</tool_call>';
 
 /**
  * Per-message overhead in tokens: every message carries its role and framing tokens on the wire,
- * not just its text. OpenAI's cookbook counts approximately 4 such tokens per chat message; the
- * exact number depends on the chat template, so treat it as an order-of-magnitude constant.
+ * not just its text. OpenAI's token-counting cookbook uses 3 per message for current chat models
+ * (4 for the earliest gpt-3.5-turbo); the exact number depends on the chat template, so treat 4 as
+ * an order-of-magnitude constant.
  */
 export const TOKENS_PER_MESSAGE = 4;
 

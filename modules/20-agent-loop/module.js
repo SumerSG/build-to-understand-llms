@@ -18,7 +18,7 @@ export default {
       why: 'Every tool result you append is KV cache the server holds for the rest of the run; that is the memory cost behind the token budget you are about to write.' },
     { q: 'In module 13, why did the eval harness report a confidence interval rather than a single accuracy number?',
       options: ['Because a bootstrap is faster to compute', 'Because a score on a finite sample has sampling error', 'Because judges disagree with each other'], answer: 1,
-      why: 'You will measure agent success rates the same way: "4 of 5 runs finished" is not evidence of a 80% success rate.' },
+      why: 'You will measure agent success rates the same way: "4 of 5 runs finished" is not evidence of an 80% success rate.' },
     { q: 'What does `JSON.parse("{name: \'x\'}")` do in JavaScript?',
       options: ['Returns `{ name: "x" }`', 'Throws a SyntaxError', 'Returns `null`'], answer: 1,
       why: 'JSON requires quoted keys. Models emit malformed JSON often enough that your parser must treat a throw as normal, not exceptional.' },
@@ -33,9 +33,9 @@ export default {
     { q: 'Why does the harness parse tool calls only out of assistant messages?',
       options: ['Tool results are always JSON', 'So that text arriving from a tool cannot drive the loop', 'Because tool messages have no role field'], answer: 1,
       why: 'Tool output is untrusted data. Parsing it would let any web page or file say `<tool_call>{"name":"delete_all"}</tool_call>` and be obeyed.' },
-    { q: 'Your agent runs 8 turns and each tool returns about 2,000 tokens. Roughly how many tokens does the provider process over the run?',
+    { q: 'Your agent calls one tool on each of its first 8 turns (about 2,000 tokens per result) and answers on turn 9. Roughly how many tool-result tokens does the provider read across the 9 model calls?',
       options: ['About 16,000', 'About 70,000', 'About 2,000'], answer: 1,
-      why: 'The whole transcript is re-read every turn: the cost is the sum of the growing prefix, roughly N²/2 · R ≈ 32 · 2,000. Truncation and prefix caching both attack this term.' },
+      why: 'Call k re-reads the k − 1 results already in the transcript, so the total is (0 + 1 + … + 8) · 2,000 = 36 · 2,000 = 72,000: `N(N+1)/2 · R` for N results of R tokens, which grows as N². Truncation shrinks R; prefix caching makes the re-read cheap.' },
     { q: 'Where should "this agent may not delete files" be enforced?',
       options: ['In the system prompt', 'In the tool registry and its handlers', 'In the model weights'], answer: 1,
       why: 'A prompt is a request; the registry is the only place a capability can actually be withheld.' },
@@ -82,18 +82,18 @@ Two agent products built on the same weights differ almost entirely in harness: 
 Two properties deserve early attention. **Idempotency:** a retried \`save_receipt\` must not write two receipts, so either make the handler idempotent or make the model pass a key. **Side effects:** validate arguments *before* the handler runs, since a rejected call that already deleted a file is not a rejected call.
 
 :::predict
-Your agent runs 8 turns and each tool returns about 2,000 tokens. Roughly how many tokens does the provider process across the whole run?
+Your agent calls one tool on each of its first 8 turns, each result is about 2,000 tokens, and turn 9 gives the answer. Roughly how many tool-result tokens does the provider read across those 9 model calls?
 ---
-About 70,000, not 16,000: the entire transcript is re-read on every turn, so the cost is the sum of a growing prefix, roughly \`N²/2 · R\`. Truncation shrinks \`R\`, sub-agents shrink \`N\` for the parent, and prefix caching (module 17) makes the re-read cheap — but only because the transcript is append-only.
+About 70,000, not 16,000: the model is stateless, so call \`k\` re-reads the \`k − 1\` results already in the transcript. The total is \`(0 + 1 + … + 8) · 2,000 = 36 · 2,000 = 72,000\`, or \`N(N+1)/2 · R\` for \`N\` results of \`R\` tokens: quadratic in the number of tool calls. Truncation shrinks \`R\`, sub-agents shrink \`N\` for the parent, and prefix caching (module 17) makes the re-read cheap — but only because the transcript is append-only.
 :::
 
 ## Tool results are data, never instructions
 
-A tool result is text from a web page, a file, a database row or another user. If your loop parsed tool calls out of tool messages, anyone who can write text you later read could drive your agent. Your loop parses assistant messages only, which closes that door — but not the one that matters most: the *model* still reads the poisoned text and may decide on its own to call the destructive tool. This is prompt injection, and the reason it stays dangerous is the combination often called the lethal trifecta: access to private data, exposure to untrusted content, and a way to send data out. The mitigations are structural, not textual — a registry that does not contain the dangerous tool, a handler that requires confirmation, a sandbox with no network.
+A tool result is text from a web page, a file, a database row or another user. If your loop parsed tool calls out of tool messages, anyone who can write text you later read could drive your agent. Your loop parses assistant messages only, which closes that door — but not the one that matters most: the *model* still reads the poisoned text and may decide on its own to call the destructive tool. This is prompt injection, and the reason it stays dangerous is the combination Simon Willison named the "lethal trifecta" (2025): access to private data, exposure to untrusted content, and a way to send data out. The mitigations are structural, not textual — a registry that does not contain the dangerous tool, a handler that requires confirmation, a sandbox with no network.
 
 ## Where this toy differs from production
 
-Ours is one synchronous scripted model, one process, and a string-length truncation. Real harnesses stream tokens and start tools before generation finishes, run calls in parallel, retry provider errors with exponential backoff, execute tools in sandboxes with their own timeouts, count real tokens with the tokenizer instead of \`length / 4\`, compact or summarise the transcript instead of only truncating (module 21), and persist the message array so a run can be resumed. None of that changes the shape of the loop you are about to write.
+Ours is one synchronous scripted model, one process, and a string-length truncation. Real harnesses stream tokens and start tools before generation finishes, run calls in parallel, retry provider errors with exponential backoff, execute tools in sandboxes with their own timeouts, count real tokens with the tokenizer instead of \`length / 4\`, cap wall-clock time and dollars as well as tokens, compact or summarise the transcript instead of only truncating (module 21), and persist the message array so a run can be resumed. None of that changes the shape of the loop you are about to write.
 `,
   steps: [
     {
@@ -102,7 +102,7 @@ Ours is one synchronous scripted model, one process, and a string-length truncat
       instructions: `
 The registry is the list of things your agent is allowed to do. \`register\`, \`schemas\` and \`has\` are written for you; you write the two pieces that decide what actually runs.
 
-\`validateArgs(schema, args)\` returns an error **string** describing the first problem, or \`null\` when the arguments are acceptable. \`schema\` is a minimal JSON schema: \`{ type: 'object', properties: { item: { type: 'string', enum: [...] } }, required: ['item'] }\`. A tool with no schema accepts anything; \`args\` must be a plain object (not an array, not \`null\`); every name in \`required\` must be present; every argument named in \`properties\` must pass \`checkType\`, which is already written; arguments the schema does not mention are ignored, because models add stray fields and the call is still runnable.
+\`validateArgs(schema, args)\` returns an error **string** describing the first problem, or \`null\` when the arguments are acceptable. \`schema\` is a minimal JSON schema: \`{ type: 'object', properties: { item: { type: 'string', enum: [...] } }, required: ['item'] }\`. A tool with no schema accepts anything; \`args\` must be a plain object (not an array, not \`null\`); every name in \`required\` must be present (\`0\`, \`''\` and \`false\` are present values: compare with \`undefined\`); every argument named in \`properties\` must pass \`checkType\`, which is already written; arguments the schema does not mention are ignored, because models add stray fields and the call is still runnable.
 
 \`ToolRegistry.call(name, args)\` is \`async\` and **always resolves to a string**: \`Error: unknown tool "x". Available tools: a, b\` for a name that is not registered, \`Error: <what validateArgs said>\` for bad arguments, and otherwise \`resultToString(await handler(args))\` — with the handler wrapped in \`try/catch\` so an exception becomes \`Error: <message>\`.
 
@@ -111,8 +111,8 @@ Validation must happen **before** the handler runs. A tool that has already dele
       predict: { question: 'A model calls your `lookup_price` tool with `{ item: 7 }` when the schema says `item` is a string. What is the most useful thing to send back?', answer: 'A string the model can act on: `Error: argument "item" must be a string, got number`. Throwing ends the run; returning an empty result leaves the model guessing; naming the argument and the expected type usually gets a correct call on the very next turn.' },
       hints: [
         'Both functions return strings instead of throwing. Ask yourself, for every failure: what would let the model fix this on its next turn without a human?',
-        '`validateArgs`: reject a non-object `args` first, then loop over `schema.required ?? []` and return as soon as one is `undefined`, then loop over `Object.entries(args)`, look each name up in `schema.properties ?? {}`, skip the unknown ones, and return `checkType(name, spec, value)` when it is not null. `call`: look the tool up in `this.tools`, return the unknown-tool string, then the validation string, then `try { return resultToString(await tool.handler(args)); } catch (err) { return \`Error: ${err.message}\`; }`.',
-        'The unknown-tool message is built from the keys you have: `` const known = [...this.tools.keys()].join(", ") || "none"; return `Error: unknown tool "${name}". Available tools: ${known}`; ``',
+        '`validateArgs` is three checks in order, each returning at the first problem: is `args` a plain object at all; is every required name present (a value of `0` or `false` is present — compare with `undefined`); does every argument the schema describes pass `checkType`. `call` is also three checks in order: does the tool exist, are the arguments valid, and only then run the handler, inside a `try` that turns an exception into text. The handler may be `async`, so the value you stringify must be awaited.',
+        'Partial skeleton for `call` (the validation branch and the handler branch are yours): `` const tool = this.tools.get(name); if (!tool) { const known = [...this.tools.keys()].join(", ") || "none"; return `Error: unknown tool "${name}". Available tools: ${known}`; } `` — then `validateArgs(tool.parameters, args)`, then `try { … await tool.handler(args) … } catch (err) { … }`.',
       ],
     },
     {
@@ -147,13 +147,13 @@ Three small functions that decide how much of the world is allowed into the cont
 
 \`estimateTokens(text)\`: \`Math.ceil(text.length / 4)\`, and \`0\` for anything that is not a string. English under a GPT-2 or Llama-style BPE averages roughly 4 characters per token; this is a back-of-the-envelope figure, not a tokenizer.
 
-\`contextTokens(messages)\`: for each message, \`TOKENS_PER_MESSAGE\` (the role framing, approximately 4 tokens per message by OpenAI's cookbook count) plus its \`content\` plus its \`name\` when it has one — a tool message carries the tool name into the context too.
+\`contextTokens(messages)\`: for each message, \`TOKENS_PER_MESSAGE\` (the role framing: OpenAI's token-counting cookbook uses 3 per message for current chat models and 4 for the earliest gpt-3.5-turbo; the exact number depends on the chat template, so we use 4) plus its \`content\` plus its \`name\` when it has one — a tool message carries the tool name into the context too.
 `,
       predict: { question: 'A tool returns 8,000 characters and you cap results at 500. How many tokens does that message now cost, and what did you just lose?', answer: 'Roughly 500/4 + 4 ≈ 129 tokens instead of about 2,004 — a 15× saving. What you lost is the other 7,500 characters: if the answer was in them, the model will either say so (because of the marker) or, worse, answer from the fragment it saw. Module 21 replaces blind truncation with summarisation and retrieval for exactly this reason.' },
       hints: [
         'Write the boundary cases down before the code: `truncate("abcdef", 6)` is not truncated, `truncate("abcdef", 4)` drops 2 characters.',
-        '`truncate`: `if (!(limit > 0) || s.length <= limit) return s;` handles Infinity, 0 and the equal case in one condition, because `Infinity > 0` is true but `s.length <= Infinity` is too. Then build the suffix from `s.length - limit`.',
-        '`contextTokens` is a single fold: `for (const msg of messages ?? []) total += TOKENS_PER_MESSAGE + estimateTokens(msg.content) + estimateTokens(msg.name);` — `estimateTokens(undefined)` must already return 0 for that to be safe.',
+        '`truncate` has one early return that covers every "leave it alone" case: a limit that is not a positive number (0, negative, NaN) or text that already fits. `Infinity` needs no special case, because every length fits under it. `contextTokens` is a sum over messages of three terms, and it is only safe if `estimateTokens` already returns 0 for a missing field.',
+        '`if (!(limit > 0) || s.length <= limit) return s;` then keep `s.slice(0, limit)` and append the marker built from `s.length - limit`. For `contextTokens`: `for (const msg of messages ?? []) total += TOKENS_PER_MESSAGE + /* content */ + /* name */;`',
       ],
     },
     {
@@ -166,19 +166,19 @@ Start from \`messages.slice()\` — never mutate the caller's array — and then
 
 1. \`contextTokens(transcript) > maxTokens\` → stop with \`'budget'\`;
 2. \`turns >= maxTurns\` → stop with \`'max_turns'\`;
-3. otherwise count the turn and \`await model(transcript, tools ? tools.schemas() : [])\`;
+3. otherwise count the turn and \`await model(transcript, tools ? tools.schemas() : [])\` — the growing copy, so the model sees its earlier tool results, and the schemas, so it knows what it may call;
 4. append \`{ role: 'assistant', content: text }\`;
 5. \`parseToolCalls(text)\`: no calls → stop with \`'final'\`;
-6. for each call, \`await tools.call(name, args)\`, \`truncate\` it to \`maxToolChars\`, and append \`{ role: 'tool', name, content }\`.
+6. for **every** call in the reply, in order, \`await tools.call(name, args)\`, \`truncate\` it to \`maxToolChars\`, and append \`{ role: 'tool', name, content }\`.
 
-A model that throws ends the run with \`stopReason: 'error'\` and the message in \`error\`, appending nothing. A tool that fails is not an error — \`tools.call\` already turned it into a readable string. Every return carries \`tokens: contextTokens(transcript)\`.
+Parse calls out of the assistant reply only, never out of tool results. A model that throws ends the run with \`stopReason: 'error'\` and the message in \`error\`, appending nothing. A tool that fails is not an error — \`tools.call\` already turned it into a readable string. Every return carries \`tokens: contextTokens(transcript)\`.
 
 Emit one event per thing that happens when \`onEvent\` is given: \`{type:'turn', turn}\`, \`{type:'assistant', turn, content}\`, \`{type:'tool_call', turn, name, args}\`, \`{type:'tool_result', turn, name, content}\`, \`{type:'stop', turn, stopReason, tokens}\`, \`{type:'error', turn, error}\`. Step 5 consumes them.
 `,
       hints: [
         'Write it as `for (;;)` with the two limit checks at the top, rather than a `while (turns < maxTurns)` whose exit you then have to disambiguate. Every exit path needs the same three fields, which is a good sign a small local helper should build the return value.',
-        'A local `const stop = (reason, extra = {}) => { const tokens = contextTokens(transcript); emit({ type: "stop", turn: turns, stopReason: reason, tokens }); return { messages: transcript, turns, stopReason: reason, tokens, ...extra }; };` removes the repetition, and `const emit = (e) => { if (onEvent) onEvent(e); };` keeps the `onEvent` check in one place.',
-        'The model call is the only `try/catch` in the loop: `try { text = await model(transcript, tools ? tools.schemas() : []); } catch (err) { ... return { messages: transcript, turns, stopReason: "error", tokens: contextTokens(transcript), error: message }; }`. Note the tool loop is a plain `for … of` with no `try` at all — `tools.call` never throws.',
+        'Order inside each iteration: budget check, turn check, increment `turns`, call the model on the copy you are growing (not the caller\'s array), append its text, parse, stop if nothing was asked for, otherwise run every call in order and append one tool message each. Only the model call needs a `try/catch`: `tools.call` never throws. Two tiny local helpers — one that calls `onEvent` if it exists, one that builds the stop result and emits the stop event — remove most of the repetition.',
+        'Skeleton: `const transcript = messages.slice(); let turns = 0; const stop = (reason) => { /* emit stop, return { messages: transcript, turns, stopReason: reason, tokens: contextTokens(transcript) } */ }; for (;;) { if (contextTokens(transcript) > maxTokens) return stop("budget"); if (turns >= maxTurns) return stop("max_turns"); turns++; let text; try { text = await model(transcript, tools ? tools.schemas() : []); } catch (err) { /* return with stopReason "error" */ } /* append, parse, run calls */ }`',
       ],
     },
     {
@@ -195,7 +195,7 @@ These two are what the goal demo renders, and \`toolErrors / toolCalls\` is the 
 `,
       hints: [
         'Both are folds over an array. Neither needs the loop, the registry or the parser — write them against a hand-made array of three messages and a hand-made array of events.',
-        'The preview is `text.replace(/\\s+/g, " ").trim()`, then `flat.length <= width ? flat : flat.slice(0, width - 1) + "…"` so that the ellipsis counts towards `width`. For the summary, a `switch` or an `if/else if` chain on `e.type` keeps every case in view.',
+        'For the preview: collapse whitespace, trim, and if the result is longer than `width`, keep one character fewer than `width` so the ellipsis itself fits inside the width. For the summary, one branch per event type: `turn` updates the turn count, `assistant` and `tool_result` add characters, `tool_call` bumps two counters, `stop` and `error` set the reason.',
         'Per-tool counts with a plain object: `summary.byTool[e.name] = (summary.byTool[e.name] ?? 0) + 1;` and `turns` with `Math.max(summary.turns, e.turn)` rather than a counter, so the fold stays order-independent.',
       ],
     },
