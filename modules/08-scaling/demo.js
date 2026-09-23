@@ -84,7 +84,7 @@ export default async function demo(m, lab) {
   const equivalent = m.planRun({ params: llama.optimal.N, tokens: llama.optimal.D, gpus: 16384, mfu: 0.4, pricePerGpuHour: PRICE });
   lab.table({
     title: 'Llama-3 8B on 15T tokens versus the compute-optimal model at the same predicted loss',
-    columns: ['', 'N', 'D', 'training FLOPs', 'FLOPs per served token', 'H100-days on 16384 GPUs'],
+    columns: ['', 'N', 'D', 'training FLOPs', 'FLOPs per served token', 'wall-clock days on 16,384 H100s'],
     rows: [
       ['as trained', '8.00B', '15.00T', llama.trainingFlops.toExponential(2), m.inferenceFlops(8e9).toExponential(2),
         (plans[2].seconds / 86400).toFixed(2)],
@@ -97,7 +97,7 @@ export default async function demo(m, lab) {
 
   const h100Days = plans[3].seconds / 86400;
   const overtrainFactor = llama.trainingFlops / llama.optimal.flops;
-  lab.done(`Your planner priced four real runs. **Llama-3 405B** (405B parameters, 15.6T tokens) is **${plans[3].flops.toExponential(2)} FLOPs**: about **${h100Days.toFixed(1)} H100-days** of wall-clock on 16,384 H100s at 40% MFU, **${Math.round(plans[3].gpuHours).toLocaleString('en-US')} H100-hours**, roughly **$${(plans[3].dollars / 1e6).toFixed(0)}M** at the assumed $${PRICE}/GPU-hour — and its ${m.formatBytes(plans[3].memory.total)} of weights, gradients and AdamW state needs at least **${plans[3].minGpusForState} GPUs** just to be held, which is why module 24 exists.
+  lab.done(`Your planner priced four real runs. **Llama-3 405B** (405B parameters, 15.6T tokens) is **${plans[3].flops.toExponential(2)} FLOPs**: about **${h100Days.toFixed(1)} days** of wall-clock on 16,384 H100s at 40% MFU, **${Math.round(plans[3].gpuHours).toLocaleString('en-US')} H100-hours**, roughly **$${(plans[3].dollars / 1e6).toFixed(0)}M** at the assumed $${PRICE}/GPU-hour — and its ${m.formatBytes(plans[3].memory.total)} of weights, gradients and AdamW state needs at least **${plans[3].minGpusForState} GPUs** just to be held, which is why module 24 exists.
 
-At a fixed budget the loss is U-shaped in N: for C = 1e23 FLOPs the fit puts the minimum at **${(optima[1].N / 1e9).toFixed(2)}B parameters** and **${(optima[1].D / 1e12).toFixed(2)}T tokens**, about **${optima[1].tokensPerParam.toFixed(0)} tokens per parameter**. Llama-3 8B used **${plans[2].tokensPerParam.toFixed(0)}** — over-trained, spending **${overtrainFactor.toFixed(1)}x** the training compute of the ${(llama.optimal.N / 1e9).toFixed(0)}B-parameter model that the same fit says reaches the same loss. That buys **${llama.savingPerInferenceToken.toExponential(2)} FLOPs saved per served token**, so the trade pays for itself after **${llama.breakEvenInferenceTokens.toExponential(2)} inference tokens** — a number a production endpoint passes in weeks.`);
+At a fixed budget the loss is U-shaped in N: for C = 1e23 FLOPs the Besiroglu et al. 2024 re-fit (\`CHINCHILLA_REFIT\`) puts the minimum at **${(optima[1].N / 1e9).toFixed(2)}B parameters** and **${(optima[1].D / 1e12).toFixed(2)}T tokens**, about **${optima[1].tokensPerParam.toFixed(0)} tokens per parameter**. Llama-3 8B used **${plans[2].tokensPerParam.toFixed(0)}** — over-trained, spending **${overtrainFactor.toFixed(1)}x** the training compute of the ${(llama.optimal.N / 1e9).toFixed(0)}B-parameter model that the re-fit says reaches the same loss. (The paper's printed constants put that model nearer 26B and the factor nearer 2x, but the break-even lands near 1e13 tokens either way.) That buys **${llama.savingPerInferenceToken.toExponential(2)} FLOPs saved per served token**, so the trade pays for itself after **${llama.breakEvenInferenceTokens.toExponential(2)} inference tokens** — a number a production endpoint passes in weeks.`);
 }

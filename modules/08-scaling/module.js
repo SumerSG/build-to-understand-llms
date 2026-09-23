@@ -65,7 +65,7 @@ Kaplan et al. 2020 fit loss against \`N\` and \`D\` and concluded that when comp
 
 \`L(N, D) = E + A / N^alpha + B / D^beta\`
 
-\`E\` is the irreducible loss of the data itself, \`A/N^alpha\` is what you lose by being small, \`B/D^beta\` is what you lose by not reading enough. Minimise it subject to \`6ND = C\` and the answer is closed-form. (Besiroglu et al. 2024 could not reproduce the constants printed in the paper from its own data and published a re-fit; you will implement both and watch them disagree.)
+\`E\` is the irreducible loss of the data itself, \`A/N^alpha\` is what you lose by being small, \`B/D^beta\` is what you lose by not reading enough. Minimise it subject to \`6ND = C\` and the answer is closed-form. One catch: the constants printed in the paper do not reproduce its own 20:1 rule. Plugged into that closed form they give about 78 tokens per parameter at 1e23 FLOPs and about 93 at Gopher's budget. Besiroglu et al. 2024 could not reproduce those constants from the paper's own data and published a re-fit, which gives about 19. You will implement both and watch them disagree; the demo uses the re-fit.
 
 :::predict
 If 20 tokens per parameter is optimal, why did Meta train an 8B model on approximately 15 trillion tokens — 1875 tokens per parameter?
@@ -144,6 +144,10 @@ This model assumes perfect linear scaling. Real clusters do not scale linearly; 
 You may instead search \`N\` numerically (ternary search on the log of \`N\`, or a fine grid then a refinement) — the tests only require you to land within 3% of the true minimiser and to spend the budget exactly. Either way, \`6 · N · D\` must equal \`C\`, and \`loss\` must be \`scalingLoss(N, D, fit)\` at the point you return.
 
 Sanity check while you work: for a symmetric fit (\`A = B\`, \`alpha = beta\`) the optimum must split the budget evenly, \`N = D = sqrt(C / 6)\`.
+
+Throw an \`Error\` if \`C\` is not positive, as \`trainingFlops\` does.
+
+Numbers to check against: at \`C = 1e23\`, \`CHINCHILLA\` (the paper's printed constants, and the default) gives about 14.6B parameters and 78 tokens per parameter; \`CHINCHILLA_REFIT\` gives about 29.5B parameters and 19 tokens per parameter. If you get 78 with the default fit, your closed form is right. The printed constants are what disagree with the paper's 20:1 rule.
 `,
       hints: [
         'The constraint removes one variable. Write the loss as a function of N alone, with D replaced by C / (6N), and look at where its slope is zero.',
@@ -172,6 +176,8 @@ Three functions that answer one question: is it worth over-training a small mode
 - \`lifetimeFlops\` and \`lifetimeFlopsOptimal\` — training plus \`2 · N · inferenceTokens\` for each.
 
 Run it on Llama-3-8B (\`N = 8e9\`, \`D = 15e12\`) and you get the argument Meta made out loud in the Llama 3 report: the extra training compute is recovered after roughly 1e13 served tokens.
+
+The fit changes the size of the optimal model but not that conclusion. With the default \`CHINCHILLA\` constants the equal-loss optimum is about 26B parameters, Llama-3-8B spends about 2.0x its training compute, and break-even is near 9.9e12 tokens. With \`CHINCHILLA_REFIT\`, which the tests and the demo use here, the optimum is about 34B parameters, the factor is about 5.5x, and break-even is near 1.1e13.
 `,
       predict: { question: 'Is an over-trained 8B model ever the wrong choice? When?', answer: 'When you serve few tokens. With `inferenceTokens = 0` the over-trained run is strictly worse — it spent more compute for the same loss. The trade only pays past the break-even point, which is why research checkpoints and production endpoints are trained differently.' },
       hints: [
