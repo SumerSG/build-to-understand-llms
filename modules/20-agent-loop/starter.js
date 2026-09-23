@@ -185,8 +185,11 @@ export function contextTokens(messages) {
  *
  * A model that throws stops the run with 'error' and the message in `error`. A tool that fails is
  * NOT an error: `tools.call` already turned it into a string the model can read.
+ * With `tools` null, each call's result is 'Error: no tools are available in this run'.
  * Do not mutate the caller's `messages` array. Call `onEvent` (when given) with
  * `{type:'turn'|'assistant'|'tool_call'|'tool_result'|'stop'|'error', turn, ...}` — step 5 reads it.
+ * Emit 'turn' after incrementing `turns`; every other exit emits one 'stop', a model error emits
+ * one 'error' and no 'stop'.
  */
 export async function runAgentLoop({
   model,
@@ -206,8 +209,8 @@ export async function runAgentLoop({
 /**
  * One row per message, ready for a table: `[label, characters, preview]`.
  * `label` is the role, or `tool:<name>` for a tool message. `characters` is the raw length of the
- * content. `preview` collapses all whitespace to single spaces and is cut to `width` characters,
- * ending in '…' when it was cut.
+ * content. `preview` collapses all whitespace to single spaces and is cut, when longer than
+ * `width`, to its first `width - 1` characters plus '…', so the whole preview is `width` characters.
  */
 export function renderTranscript(messages, { width = 60 } = {}) {
   // TODO: step 5
@@ -216,7 +219,8 @@ export function renderTranscript(messages, { width = 60 } = {}) {
 
 /**
  * Fold an onEvent trace into `{ turns, assistantChars, toolCalls, toolErrors, toolChars, byTool,
- * stopReason }`. `turns` is the highest turn number seen; `byTool` counts calls per tool name;
+ * stopReason }`. `turns` is the highest `turn` among
+ * `{type:'turn'}` events only (other events' `turn` fields do not count); `byTool` counts calls per tool name;
  * `toolErrors` counts results that start with 'Error:'; `stopReason` comes from the stop event
  * (an 'error' event means the stop reason is 'error').
  */

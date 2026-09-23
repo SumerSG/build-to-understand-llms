@@ -461,7 +461,7 @@ export const tests = [
         { type: 'tool_result', turn: 2, name: 'save_receipt', content: 'ok' },
         { type: 'stop', turn: 3, stopReason: 'final' },
       ]);
-      T.eq(s.turns, 2, 'the number of turns is the highest turn number seen, not the number of events');
+      T.eq(s.turns, 2, 'turns is the highest turn value among type:"turn" events only; the stop event here carries turn 3, but its turn field labels an event rather than counting a turn taken, so taking the max over every event gives 3');
       T.eq(s.toolCalls, 3, 'three tool_call events, two of them in the same turn');
       T.eq(s.byTool, { lookup_price: 2, save_receipt: 1 }, 'per-tool counts are how you find the tool an agent overuses');
       T.eq(s.toolErrors, 1, 'a result starting with "Error:" is a failed call; "12345" and "ok" are not');
