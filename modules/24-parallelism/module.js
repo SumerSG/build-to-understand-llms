@@ -134,7 +134,7 @@ Both are one line. The point is which quantity goes inside \`commTime\`: the chu
 
 - \`compute\` is \`computeTime(params, tokensPerGpu, gpu)\` — one replica's share of the arithmetic.
 - \`comm\` is a ring all-reduce of the gradient. Gradients are bf16, so the buffer is \`BYTES.grads * params\` bytes, all-reduced over \`dp\` ranks on \`link\`.
-- \`exposed\` is the part of \`comm\` that the learner cannot hide: the all-reduce may run in the background during at most \`overlap * compute\` seconds of the step, so \`exposed = comm − min(comm, overlap * compute)\`. Taking the \`min\` matters — without it a fast all-reduce would produce a negative, and a step shorter than the arithmetic it performs.
+- \`exposed\` is the part of \`comm\` that the training step cannot hide behind compute: the all-reduce may run in the background during at most \`overlap * compute\` seconds of the step, so \`exposed = comm − min(comm, overlap * compute)\`. Taking the \`min\` matters — without it a fast all-reduce would produce a negative, and a step shorter than the arithmetic it performs.
 - \`step\` is \`compute + exposed\`.
 
 \`dpEfficiency(cfg, dp)\` then reports \`compute / step\` for a config \`cfg\` that has every field except \`dp\`. It is 1.0 when the all-reduce is fully hidden and falls towards 0 as gradients start to dominate.
@@ -160,7 +160,7 @@ Both are one line. The point is which quantity goes inside \`commTime\`: the chu
 
 Each entry is \`{ name, split, shape }\`. A **column** split divides the output dimension (the second axis), a **row** split divides the input dimension (the first). Throw an \`Error\` if \`tp < 1\` or if \`dModel\` or \`dFF\` is not divisible by \`tp\`. A test checks that the four shards add up to exactly \`1/tp\` of the layer's weights — no replication, nothing lost.
 
-\`tpLayerComm({ dModel, tokens }, tp, link)\` returns \`{ allReduces, bytesPerAllReduce, time }\` for one layer on a micro-batch of \`tokens\` tokens. There are 4 all-reduces when \`tp > 1\` (two forward, two backward) and 0 when \`tp === 1\`. Each carries the **whole** bf16 \`[tokens, dModel]\` activation — it is a sum over ranks, so the payload does not shrink with \`tp\`. Price it with your \`ringAllReduceTime\`.
+\`tpLayerComm({ dModel, tokens }, tp, link)\` returns \`{ allReduces, bytesPerAllReduce, time }\` for one layer on a micro-batch of \`tokens\` tokens. There are 4 all-reduces when \`tp > 1\` (two forward, two backward) and 0 when \`tp === 1\`. Each carries the **whole** bf16 \`[tokens, dModel]\` activation — it is a sum over ranks, so the payload does not shrink with \`tp\`. Price it with your \`ringAllReduceTime\`. Report \`bytesPerAllReduce\` as that activation size for every \`tp\`, including \`tp === 1\`, where \`allReduces\` is 0 and \`time\` is 0.
 `,
       predict: {
         question: 'Why does the column-then-row pairing avoid a communication between the two matmuls of the MLP?',
@@ -238,19 +238,19 @@ dpLink          = tp * dp <= gpusPerNode ? intraNode : interNode
 ppLink          = gpus   <= gpusPerNode ? intraNode : interNode
 \`\`\`
 
-**Time.** \`compute\` is the whole batch's \`computeTime\` divided by \`gpus\`. \`tpComm\` is \`m * layersPerStage\` calls to \`tpLayerComm\` on \`intraNode\` (the planner keeps tensor parallelism inside the NVLink domain, one 8-GPU node here). Feed \`(compute + tpComm) * pp\` into \`pipelineStep\` as \`modelTime\`, with \`activationBytesPerMicroBatch = ACT_BYTES_PER_TOKEN_LAYER_DIM * microTokens * model.dModel * layersPerStage / tp\` (dividing all of it by \`tp\` assumes sequence parallelism, as the concept explains). Add \`ppComm\`, which is \`2(pp − 1)\` boundary crossings of one bf16 \`[microTokens, dModel]\` activation on \`ppLink\` (0 when \`pp === 1\`) — only the fill and drain sends sit on the critical path; the steady-state sends are assumed to overlap with compute — and the exposed part of \`dpComm\`, a ring all-reduce of \`BYTES.grads * shardParams\` bytes — multiplied by \`ZERO3_COMM_FACTOR\` when \`zero === 3\` — over \`dp\` ranks on \`dpLink\`, hidden by up to \`hardware.overlap * compute\`.
+**Time.** \`compute\` is the whole batch's \`computeTime\` divided by \`gpus\`. \`tpComm = m * layersPerStage * tpLayerComm({ dModel, tokens: microTokens }, tp, intraNode).time\` (the planner keeps tensor parallelism inside the NVLink domain, one 8-GPU node here). Feed \`(compute + tpComm) * pp\` into \`pipelineStep\` as \`modelTime\`, with \`activationBytesPerMicroBatch = ACT_BYTES_PER_TOKEN_LAYER_DIM * microTokens * model.dModel * layersPerStage / tp\` (dividing all of it by \`tp\` assumes sequence parallelism, as the concept explains). Add \`ppComm = 2 * (pp − 1) * commTime(BYTES.params * microTokens * dModel, ppLink)\`: \`2(pp − 1)\` boundary crossings of one bf16 \`[microTokens, dModel]\` activation (0 when \`pp === 1\`) — only the fill and drain sends sit on the critical path; the steady-state sends are assumed to overlap with compute — and the exposed part of \`dpComm\`, a ring all-reduce of \`BYTES.grads * shardParams\` bytes — multiplied by \`ZERO3_COMM_FACTOR\` when \`zero === 3\` — over \`dp\` ranks on \`dpLink\`, hidden by up to \`hardware.overlap * compute\`.
 
 **Memory.** \`zeroMemoryPerGpu(shardParams, dp, zero).total\` plus \`pipelineStep\`'s \`activationBytes1F1B\`.
 
 Return \`{ dp, tp, pp, zero, m, stepTime, memoryPerGpu, fits, tokensPerSec, breakdown, memory }\` with \`fits = memoryPerGpu <= hardware.gpu.memory\`, \`tokensPerSec = tokens / stepTime\`, \`breakdown = { compute, tpComm, bubble, ppComm, dpComm, dpExposed }\` (where \`bubble\` is the seconds the bubble adds, not the fraction), and \`memory = { params, grads, optimizer, activations }\`.
 
-\`enumerateStrategies(model, gpus, hardware)\` returns every legal \`{ dp, tp, pp, zero }\`: \`tp\` from 1 to \`min(gpus, gpusPerNode)\` dividing \`gpus\`, \`dModel\` and \`dFF\`; \`pp\` dividing \`gpus/tp\` and \`model.layers\`; \`dp = gpus/(tp·pp)\` dividing \`model.batchSeqs\`; all four \`zero\` stages.
+\`enumerateStrategies(model, gpus, hardware)\` returns every legal \`{ dp, tp, pp, zero }\`, in any order: \`tp\` from 1 to \`min(gpus, gpusPerNode)\` dividing \`gpus\`, \`dModel\` and \`dFF\`; \`pp\` dividing \`gpus/tp\` and \`model.layers\`; \`dp = gpus/(tp·pp)\` dividing \`model.batchSeqs\`; all four \`zero\` stages.
 
 \`bestPlan({ model, gpus, hardware, memoryCap = hardware.gpu.memory })\` returns the plan with the smallest \`stepTime\` among those with \`memoryPerGpu <= memoryCap\`, breaking ties towards less memory, or \`null\` if none fits.
 `,
       predict: {
         question: 'For Llama-3-70B on 64 H100s, which layout do you expect to be fastest: pure data parallelism (dp=64), or something with tensor parallelism? And which do you expect to fit in 80 GB?',
-        answer: 'Pure data parallelism is the fastest — it has no tensor-parallel all-reduces and its single gradient all-reduce hides behind a 70-second step — but it needs about 200 GB per GPU, almost all of it activations, and does not fit. The planner ends up at tp=4, which quarters the activation memory to about 63 GB and costs roughly 7% more step time. Tensor parallelism is not a speed-up; it is the tax you pay to run at all.',
+        answer: 'Pure data parallelism is the fastest — it has no tensor-parallel all-reduces and its single gradient all-reduce hides behind a 70-second step — but it needs about 200 GB per GPU, almost all of it activations, and does not fit. The planner ends up at tp=4 with ZeRO-3, which quarters the activations (about 182 GB down to about 46 GB) and brings the total to about 63 GB per GPU, at roughly 7% more step time. Tensor parallelism is not a speed-up; it is the tax you pay to run at all.',
       },
       hints: [
         'Build it in the order the return value is written: validate, derive the six quantities in the table, then time, then memory. Every line calls something you already wrote.',
