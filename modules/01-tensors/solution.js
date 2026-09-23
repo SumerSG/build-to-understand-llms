@@ -67,7 +67,7 @@ function binary(a, b, fn) {
   const d = a.shape[a.shape.length - 1];
   if (typeof b === 'number') {
     for (let i = 0; i < out.length; i++) out[i] = fn(a.data[i], b);
-  } else if (b.data.length === a.data.length) {
+  } else if (b.shape.length === a.shape.length && b.shape.every((s, i) => s === a.shape[i])) {
     for (let i = 0; i < out.length; i++) out[i] = fn(a.data[i], b.data[i]);
   } else if (b.shape.length === 1 && b.shape[0] === d) {
     for (let i = 0; i < out.length; i++) out[i] = fn(a.data[i], b.data[i % d]);

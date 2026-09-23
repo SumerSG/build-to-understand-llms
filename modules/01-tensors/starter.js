@@ -47,8 +47,15 @@ export function toArray(t) {
  * offset([2, 3], [1, 2]) === 5   because row 1 starts at 3 and column 2 adds 2.
  */
 export function offset(shape, indices) {
-  // TODO: step 1
-  return 0;
+  // Completion problem: the loop is written for you. It walks the axes from last to first,
+  // carrying `stride`, the number of flat elements you skip when index d goes up by one.
+  let off = 0;
+  let stride = 1;                          // the last axis is contiguous
+  for (let d = shape.length - 1; d >= 0; d--) {
+    // TODO: step 1. Two lines: add axis d's contribution to `off`,
+    // then update `stride` so it is correct for axis d - 1.
+  }
+  return off;
 }
 
 /** Swap the two axes of a 2-D tensor: [n, m] -> [m, n]. */
