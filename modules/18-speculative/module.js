@@ -31,6 +31,10 @@ export default {
       why: 'A rejection at position i discards positions i + 1 … K − 1 unverified. Dividing by drafted underestimates α (about 0.23 instead of 0.5 in the test) and would make you pick the wrong K.' },
   ],
   concept: `
+:::plain
+A language model normally writes one token (a word or a piece of a word) per step, and each step is slow mainly because the chip has to read the whole model out of memory, not because of the arithmetic. Checking several proposed tokens in one step costs about the same as writing one, so speculative decoding lets a much cheaper helper, called the draft, guess the next few tokens and then has the real model check all of the guesses in a single step. Guesses the real model agrees with are kept, and at the first disagreement the real model supplies its own token instead, so one slow step can produce several tokens. A careful acceptance rule makes the output follow exactly the probabilities the real model would have used on its own, so quality does not change, only speed. For people who use LLMs at work, this is a common way providers make answers stream faster, and it helps most when a server is lightly loaded; under heavy load it can even slow things down.
+:::
+
 ## The slack in a decode step
 
 At small batch, one decode step reads every weight once and does almost no arithmetic per byte read. For a Llama-3-8B-shaped model in bf16 on an H100 that is approximately 16 GB through approximately 3.35 TB/s (NVIDIA's datasheet figure), about 5 ms, while the \`2N\` FLOPs take tens of microseconds. **A step that verifies K + 1 tokens costs about the same as a step that generates one**, because the weights are still read once.
@@ -80,13 +84,17 @@ Three lessons. The draft must be cheap: at \`c = 1\` even α = 0.8 cannot reach 
 
 ## Where drafts come from
 
+:::deeper Going deeper: the kinds of draft real systems use
 - **A smaller model of the same family**, which needs a matching tokenizer and a second set of weights in memory.
 - **n-gram / prompt lookup** (Saxena 2023; \`prompt_lookup_num_tokens\` in Hugging Face \`generate\`): propose what followed the last few tokens earlier in the context. Free, and strong on code.
 - **Self-speculation**: Medusa (Cai et al. 2024) adds heads predicting tokens 2, 3, 4 ahead from the target's hidden state; EAGLE (Li et al. 2024) predicts the next feature vector instead and accepts more; DeepSeek-V3's multi-token-prediction module plays the same role. No second model; \`c\` is a small fraction of a step.
+:::
 
 ## Where this toy differs from production
 
+:::deeper Going deeper: how production systems verify drafts
 Your target calls \`forward()\` over the whole window for every verify pass, so a pass costs the same as a decode step for a different reason than on a GPU: it is recompute-bound, not bandwidth-bound. A production pass runs on the KV cache, rolls it back on rejection, batches drafts across sequences, and verifies a *tree* of drafts (Medusa, EAGLE, SpecInfer) with a custom attention mask rather than one chain. And α on a 2-layer, 64-dimensional checkpoint says nothing about α on a 70-billion-parameter model; the rule, the residual and the cost model carry over unchanged.
+:::
 `,
   steps: [
     {

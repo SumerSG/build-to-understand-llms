@@ -41,6 +41,10 @@ export default {
       why: 'A prompt is a request; the registry is the only place a capability can actually be withheld.' },
   ],
   concept: `
+:::plain
+An agent is a language model inside a simple repeating program: the model reads the conversation so far and either answers or asks to use a tool (a function such as searching a database or sending an email), the program runs the tool and adds the result to the conversation, and the loop repeats. The model only ever produces text; it cannot run anything itself, and it remembers nothing between steps except that growing conversation, which it reads again in full on every step, so long agent runs get expensive. Everything that decides what an agent may do (which tools exist, which actions need a person's approval, how many steps or dollars a task may use) lives in the surrounding program, called the harness. That is why two agent products built on the same model can behave very differently. It is also why safety belongs in the harness: text the agent reads from a web page or an email can try to hijack the model, which is called prompt injection, so a dangerous action should be blocked or need approval rather than be left to the model's judgement.
+:::
+
 ## An agent is a loop you can write in twenty lines
 
 Every agent product has the same program at its centre:
@@ -93,7 +97,9 @@ A tool result is text from a web page, a file, a database row or another user. I
 
 ## Where this toy differs from production
 
+:::deeper Going deeper: what production harnesses add
 Ours is one synchronous scripted model, one process, and a string-length truncation. Real harnesses stream tokens and start tools before generation finishes, run calls in parallel, retry provider errors with exponential backoff, execute tools in sandboxes with their own timeouts, count real tokens with the tokenizer instead of \`length / 4\`, cap wall-clock time and dollars as well as tokens, compact or summarise the transcript instead of only truncating (module 21), and persist the message array so a run can be resumed. None of that changes the shape of the loop you are about to write.
+:::
 `,
   steps: [
     {

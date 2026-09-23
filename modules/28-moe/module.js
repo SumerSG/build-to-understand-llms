@@ -29,11 +29,19 @@ export default {
       why: 'The bias changes which experts are chosen but not the gate values that weight the outputs, so balancing no longer competes with the language-model gradient.' },
   ],
   concept: `
+:::plain
+A mixture of experts is a way to build a much larger model without making each token (chunk of text) proportionally more expensive to process: instead of one big block of calculations in each layer, the model has many smaller blocks, called experts, and a small learned switch, the router, sends each token to only a few of them. The model can then hold far more parameters (the adjustable numbers where its learned knowledge lives), while each token pays only for the few experts it visits. Several widely used open models, such as Mistral's Mixtral and DeepSeek-V3, are built this way. Despite the name, the experts are not specialists in human subjects: the Mixtral authors report no obvious pattern of experts by topic. For someone who uses models at work, it explains why a headline size can mislead: the total parameter count decides how much memory is needed to host the model, while the much smaller active count, the part each token uses, decides the arithmetic per token. That is why such a model can still need large, expensive hardware even though each token takes little arithmetic.
+:::
+
 ## Capacity is not cost
 
 In the GPT from module 06, every token passes through every weight. Parameters (what it can store) and FLOPs per token (what it costs) are tied: about 2 FLOPs per parameter (module 08). A **mixture of experts** (MoE) breaks that link. Replace the block's MLP with \`E\` independent MLPs, the **experts**, plus a small **router** that sends each token to only \`k\` of them. Total parameters grow roughly \`E\`-fold; the work per token grows only \`k\`-fold.
 
+The idea is older than transformers, and several of today's largest open models use it.
+
+:::deeper Going deeper: a short history of MoE models
 Shazeer et al. (2017) introduced the sparsely gated MoE layer between LSTM layers. GShard (2020) and Switch Transformer (Fedus, Zoph & Shazeer, 2021) brought it to transformers; Switch routes each token to one expert and reports up to approximately 7× faster pre-training than a dense T5-Base at equal FLOPs per token. Google's GLaM (approximately 1.2T parameters, 64 experts) and xAI's Grok-1 (approximately 314B, 8 experts) route each token to 2. Mixtral 8x7B (Mistral AI, December 2023) uses 2 of 8 experts, approximately 13B of its 47B parameters per token. DeepSeek-V3 (2024) has 256 small routed experts plus one always-on **shared expert** per layer, picks 8, and activates approximately 37B of 671B parameters.
+:::
 
 ## The router
 
@@ -73,7 +81,13 @@ FLOPs fall, bytes do not. At inference every expert must be resident, because th
 
 ## Where the toy differs from production
 
-Your dispatch is a JavaScript loop that gathers rows with \`embed\` and scatters them back with a one-hot matmul, on 4 experts of width 64. Production kernels **permute** the tokens (sort them by expert id), run all experts in one **grouped GEMM** (MegaBlocks, vLLM's fused MoE kernel, CUTLASS grouped GEMM), then un-permute, with experts spread across GPUs. Real experts are SwiGLU MLPs in bf16 or fp8, across dozens of layers. At our scale of one layer and 150 steps, MoE does not reliably beat the dense block: the advantage reported in the papers needs many more tokens per expert than a browser can train on.
+Your dispatch is a JavaScript loop that gathers rows with \`embed\` and scatters them back with a one-hot matmul, on 4 experts of width 64.
+
+:::deeper Going deeper: how production MoE kernels run
+Production kernels **permute** the tokens (sort them by expert id), run all experts in one **grouped GEMM** (MegaBlocks, vLLM's fused MoE kernel, CUTLASS grouped GEMM), then un-permute, with experts spread across GPUs. Real experts are SwiGLU MLPs in bf16 or fp8, across dozens of layers.
+:::
+
+At our scale of one layer and 150 steps, MoE does not reliably beat the dense block: the advantage reported in the papers needs many more tokens per expert than a browser can train on.
 `,
   steps: [
     {

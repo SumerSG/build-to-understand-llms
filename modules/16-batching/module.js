@@ -21,6 +21,10 @@ export default {
     { q: 'Two requests send the identical 40-token prompt and blockSize is 16. How many blocks can they share?', options: ['3', '2', '0'], answer: 1, why: 'Only the two full blocks. The third block holds 8 prompt tokens and will be written with each request\'s own generated tokens, so each request gets its own. vLLM\'s automatic prefix caching likewise shares only full blocks; true copy-on-write (vLLM\'s parallel sampling) shares the partial block too and copies it at the first write.' },
   ],
   concept: `
+:::plain
+Serving a language model means running it for many users at once on expensive chips called GPUs, and batching is how those users share one chip. Every step of writing text has a large fixed cost, reading the whole model out of the chip's memory, which is the same whether the step produces the next word for one user or for dozens, so grouping requests makes each word much cheaper. Continuous batching lets a finished request leave the group and a waiting one join after every single step, so a short answer is not held back by a long one. The limit is memory: every active conversation needs its own growing store of earlier work (the KV cache from module 15), so the engine hands out that memory in small fixed-size pages, the way a computer's operating system does. This is why hosted models are cheap per word yet can slow down when a service is busy: the provider is trading how many people share a chip against how fast each answer arrives.
+:::
+
 ## The engine is a scheduler
 
 A serving engine looks like a model and behaves like an operating system. The model is fixed; what varies, thousands of times a second, is **which requests share the GPU next** and **who keeps memory**. Those two decisions set your throughput, your latency and your bill.
@@ -63,7 +67,9 @@ You watch four numbers, not one: **TTFT** (time to first token, dominated by que
 
 ## What this simulator is not
 
+:::deeper Going deeper: what real engines add beyond this simulator
 You are building the scheduler, not the kernels. The cost model is linear in batched tokens, so attention's quadratic cost in context length, FlashAttention tiling and CPU overhead never appear; a real iteration also gets slower as sequences lengthen. Arrivals are synthetic, not production traffic, and your simulator knows each output length in advance — a real scheduler cannot, which is why length prediction is an open research topic. Sharing here matches whole prompts by key; real prefix caching finds the longest shared prefix, with a radix tree over token ids in SGLang's RadixAttention or a table of chained block hashes in vLLM, and evicts LRU, which is module 17. And a real engine runs on many GPUs with tensor parallelism (module 24), which changes \`tFixed\` but no idea in this module.
+:::
 `,
   steps: [
     {

@@ -31,6 +31,10 @@ export default {
       why: 'Your scoreDrift shows PI changing short-range scores the most. NTK-aware scaling and YaRN keep the fast pairs and stretch only the slow ones, which is why they need less fine-tuning.' },
   ],
   concept: `
+:::plain
+Attention is the part of a language model that lets each word look back at earlier words. The original 2017 design has two costs that matter in use: it learns word order from a fixed table of positions, so it cannot read past the length that table covers, and it stores a lot of memory for every word of the conversation (the KV cache from module 15). This module builds the fixes used in today's open models: marking position by rotating numbers so that only the distance between two words matters, letting many parts of the model share one stored copy, compressing what is stored, and letting most words look back only over a recent window. Each exists to shrink that per-word memory or to let a model read longer inputs than it was trained on. These choices are a large part of why two models of similar size can need several times more or less memory for the same long conversation, which shapes how many users a server can hold and what long context costs.
+:::
+
 ## What the 2017 recipe spends
 
 Two properties of the module-05/06 design decide its serving cost. Position enters once, as a learned vector added to the input, so the model knows nothing beyond its table. And every token stores a key and a value for every head in every layer (module 15): \`2 · nLayer · nHead · headDim\` numbers per token. At Llama-2-7B dims (32 layers, 32 heads, head dimension \`dh = 128\`, bf16) that is 512 KiB per token, so 4 GiB for one 8k-token sequence. Every variant below changes one of those two things.
@@ -47,7 +51,9 @@ You shift every query and key position by 1000. How many attention scores change
 None. Each pair of both vectors rotates by an extra \`1000 · θ_i\`, and the angle between them is unchanged. With a learned \`wpe\` table, the same shift would change every input vector.
 :::
 
+:::deeper Going deeper: ALiBi, the other route
 **ALiBi** (Press, Smith & Lewis 2021; BLOOM, MPT) takes the other route: no rotation, just a penalty \`−slope · (i − j)\` added to each score, a fixed slope per head. It extrapolates well, but most recent open models use RoPE.
+:::
 
 ## GQA and MQA: fewer KV heads
 
@@ -75,7 +81,9 @@ Beyond the training length, slow pairs reach angles the model never saw. **Posit
 
 ## What is different in production
 
+:::deeper Going deeper: how real engines run these variants
 No weights are trained here. The variants run on random weights at the lab checkpoint's dims (byte counts at Llama-3-8B dims), so you verify arithmetic and memory, not quality. Real engines fuse RoPE into kernels, never materialise the \`[T, T]\` scores, page the ring buffer (module 16), and run MLA with \`W_uk\` absorbed into the query projection (so full keys are never rebuilt) and a decoupled RoPE key. Your hybrid row assumes a \`dh × dh\` state per head; real recurrent states differ in shape and precision. \`unseenRotation\` and \`scoreDrift\` are cheap diagnostics, not the perplexity measurements the papers report.
+:::
 `,
   steps: [
     {

@@ -31,6 +31,10 @@ export default {
       why: 'Llama-3-8B has 32 query heads but 8 KV heads: a 4× smaller cache. Ainslie et al. (2023), who introduced GQA, report quality close to full multi-head attention at speed close to MQA. Multi-query attention (Shazeer 2019) is the limit with one KV head.' },
   ],
   concept: `
+:::plain
+A language model writes one token (a word or a piece of a word) at a time, and to choose each new token it looks back at every token before it. Done naively, it would redo all of its work on every earlier word each time it adds one word, so a long answer would get slower and slower. The KV cache is the shortcut that serving systems use: it keeps the intermediate results the model already computed for each earlier token (called keys and values), so each word is processed once and then remembered. The price is memory on the chip that runs the model, and that memory grows with every token in the conversation; for an open model with 8 billion parameters at its longest supported context, this module works out that one conversation's cache is about as large as the model itself. That is a large part of why long chats and long documents cost more to serve, and why a server can hold fewer long conversations at the same time than short ones.
+:::
+
 ## What the uncached model wastes
 
 To produce token 11 without a cache, a \`forward\` over the whole sequence (what module 14's \`generate\` would have done without lib/infer.js) embeds all ten earlier tokens, runs them through every layer, and reads one row of the result: the logits at the last position. The other nine rows are thrown away. Token 12 repeats all of it, plus one more token. Generating \`n\` tokens costs about \`n²/2\` token-forwards instead of \`n\`.
@@ -75,7 +79,9 @@ Two consequences are whole modules. Reserving the worst-case cache per request u
 
 ## Where this toy differs from production
 
+:::deeper Going deeper: how real engines store the cache
 Batch size 1 and float32 throughout. The cache grows by \`concat\`, which copies the whole block every step; real engines write into a preallocated buffer, paged in 16-token blocks (vLLM). \`prefill\` here is a loop of decode steps: the same numbers as the batched pass, none of its efficiency. This model has one key/value head per query head (no GQA) and learned absolute position embeddings; Llama-family models apply RoPE to \`q\` and \`k\` before caching, so stored keys carry their position inside them. None of this changes the invariant you are about to test: cached and uncached decoding must give the same logits at every position, to within float32 noise.
+:::
 `,
   steps: [
     {

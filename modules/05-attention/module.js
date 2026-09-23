@@ -31,6 +31,10 @@ export default {
       why: 'Position 0 may only see itself; one visible key with the rest at -Infinity gives a single weight of 1.' },
   ],
   concept: `
+:::plain
+Attention is the step that lets each word in a text look back at the earlier words and pull in what it needs from them, for example so that "it" can pick up which thing it refers to. For every position, the model computes a short description of what it is looking for, compares it with a description of what each earlier position offers, and takes a blend of them, weighted towards the best matches; this module builds that step. Language models need it because the meaning of a word often depends on words far back in the text, and attention gives every position direct access to all of them, in a way the model learns during training rather than by hand-written rules. It runs several of these look-ups side by side, called heads, so different heads can track different kinds of relationship. The catch is cost: every position is compared with every earlier one, so the work grows with the square of the text length, which is one reason long prompts take longer to process and why the context window (the most text a model can take in at once) has a limit.
+:::
+
 ## A soft dictionary lookup
 
 Notation, used throughout: a batch of \`B\` sequences of \`T\` tokens, each token a vector of \`C\` channels, is a tensor \`[B, T, C]\`. Attention splits \`C\` into \`H\` heads of \`dh = C / H\` channels, so per-head tensors are \`[B, H, T, dh]\`.
@@ -75,7 +79,11 @@ Per layer, the four projections cost about \`8·T·C²\` FLOPs (2 FLOPs per mult
 
 ## Where this toy differs from production
 
-Your layer has the same maths and weight layout as GPT-2, and the demo loads the lab's pre-trained checkpoint into it. But: it materialises the whole score matrix (no FlashAttention tiling); it has no notion of position (GPT-2-style learned position embeddings arrive in module 06; rotary embeddings, as in Llama, arrive in module 29); every head has its own keys and values (Llama 3 uses grouped-query attention, where several query heads share one key/value head to shrink the KV cache; module 29 builds it); there is no dropout; and everything is float32.
+Your layer has the same maths and weight layout as GPT-2, and the demo loads the lab's pre-trained checkpoint into it.
+
+:::deeper Going deeper: what production attention adds
+Differences from production: it materialises the whole score matrix (no FlashAttention tiling); it has no notion of position (GPT-2-style learned position embeddings arrive in module 06; rotary embeddings, as in Llama, arrive in module 29); every head has its own keys and values (Llama 3 uses grouped-query attention, where several query heads share one key/value head to shrink the KV cache; module 29 builds it); there is no dropout; and everything is float32.
+:::
 `,
   steps: [
     {

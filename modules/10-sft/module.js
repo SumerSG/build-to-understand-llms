@@ -31,6 +31,10 @@ export default {
       why: 'Fine-tuning moves an already good model a short distance. A small learning rate and few epochs keep the base capabilities while the format is learned.' },
   ],
   concept: `
+:::plain
+Supervised fine-tuning is the step that turns a model that merely continues text into an assistant that answers: you keep training it, briefly and gently, on example conversations in which the assistant's replies are written the way you want them. Only the replies are graded during this training, not the user's messages, so the model learns to answer rather than to imitate questions, and it also learns when to stop. It needs far less data than the first training stage, because the model already knows the language and is only learning a format and a role. For someone who uses models at work, this is the difference between fine-tuning and prompting: a prompt changes what you tell the model each time, while fine-tuning changes the model itself, which suits a consistent format, tone or narrow task you have many good examples of, but is generally a less reliable way to add new facts than putting them in the prompt, and it can erode what the model already did well. The special markers that separate the user's and the assistant's turns, called a chat template, are also why a model can behave oddly when a tool lays out a conversation differently from the way the model was trained.
+:::
+
 ## The same loop, a different distribution
 
 The checkpoint you load in this module has never seen a chat. It has read the lab corpus and learned to continue it. Supervised fine-tuning (SFT) does not add a new objective or a new architecture: it runs the module 07 loop again, on a different token stream, with one change to the loss. Everything you need is already built; this module is about **which tokens you train on**.
@@ -55,7 +59,11 @@ Corpus-like text with no relation to the prompt, and it never emits \`<|end|>\`.
 
 ## Why mask at all?
 
-Without the mask the model is trained to predict the user's words too. That wastes capacity on imitating prompts and, worse, teaches the model to *write questions*: greedy decoding after \`<|assistant|>\` often produces a new \`<|user|>\` turn. In PyTorch and Hugging Face code the mask is usually implemented by setting prompt labels to \`-100\`, the default \`ignore_index\` of \`CrossEntropyLoss\`; in TRL it is \`assistant_only_loss\`. Your version multiplies a one-hot pick tensor by the mask, which makes the gradient at a masked-out position exactly zero (module 02: \`d(a·c)/da = c\`); the tests check that changing prompt logits changes nothing.
+Without the mask the model is trained to predict the user's words too. That wastes capacity on imitating prompts and, worse, teaches the model to *write questions*: greedy decoding after \`<|assistant|>\` often produces a new \`<|user|>\` turn. Your version multiplies a one-hot pick tensor by the mask, which makes the gradient at a masked-out position exactly zero (module 02: \`d(a·c)/da = c\`); the tests check that changing prompt logits changes nothing.
+
+:::deeper Going deeper: how training libraries write the mask
+In PyTorch and Hugging Face code the mask is usually implemented by setting prompt labels to \`-100\`, the default \`ignore_index\` of \`CrossEntropyLoss\`; in TRL it is \`assistant_only_loss\`.
+:::
 
 The end marker is masked **in**. It is the one token that teaches the model to stop.
 
@@ -63,7 +71,11 @@ The end marker is masked **in**. It is the one token that teaches the model to s
 
 Examples are 16–43 tokens; the window is 64. Padding every example to 64 would spend most of the compute on \`<|endoftext|>\`. Packing concatenates examples in order, separated by \`eos\`, until the next one would not fit, then pads only the tail of each window. The mask travels with each example, so nothing in a separator, in padding, or in the next example's prompt ever counts.
 
-One honest caveat: your packed window has a single causal mask, so the second example can attend to the first. The correct fix is a block-diagonal attention mask with position ids restarting at each example (FlashAttention's \`varlen\` kernels; Hugging Face \`padding_free\` batching). Many training libraries simply let the contamination happen, as GPT-3-style pre-training does with documents separated only by \`eos\`, and the models cope because \`eos\` is a strong "start over" cue.
+One honest caveat: your packed window has a single causal mask, so the second example can attend to the first.
+
+:::deeper Going deeper: how production code keeps packed examples apart
+The correct fix is a block-diagonal attention mask with position ids restarting at each example (FlashAttention's \`varlen\` kernels; Hugging Face \`padding_free\` batching). Many training libraries simply let the contamination happen, as GPT-3-style pre-training does with documents separated only by \`eos\`, and the models cope because \`eos\` is a strong "start over" cue.
+:::
 
 :::predict
 The 66 \`INSTRUCTIONS\` pairs contain about 1,700 tokens, about 630 of them assistant tokens, packed into 38 windows of 64. Roughly what fraction of the 2,432 window positions produce gradient?
@@ -75,7 +87,9 @@ About a quarter (626 / 2,432 ≈ 26%). The rest are prompt tokens, markers, sepa
 
 SFT uses a learning rate about an order of magnitude below the pre-training peak (Llama 2 7B, Touvron et al. 2023: approximately 3e-4 for pre-training, 2e-5 for SFT) and one to three epochs. Larger steps on a narrow dataset overwrite what pre-training learned, which is called **catastrophic forgetting**; you can measure it as the base corpus's perplexity rising during SFT. Mixing a fraction of pre-training data into the fine-tuning batches is a common antidote.
 
+:::deeper Going deeper: LoRA, fine-tuning a small add-on instead of the whole model (module 30 builds it)
 **LoRA** (Hu et al. 2021) freezes every weight \`W\` of shape \`[d, k]\` and trains a low-rank update, using \`W + B·A\` with \`B\` of shape \`[d, r]\` (initialised to zero, so training starts from the base model) and \`A\` of shape \`[r, k]\`, \`r\` typically 8–64. Only \`A\` and \`B\` receive gradients and AdamW moments: full fine-tuning of a 7B model keeps two fp32 moments per parameter, approximately 7e9 × 8 bytes = 56 GB of optimizer state, while LoRA's moments take from tens of megabytes to about a gigabyte depending on the rank and which matrices are adapted. Combined with a frozen base stored in 4 bits, that is how QLoRA (Dettmers et al. 2023) fits a 65B fine-tune on one 48 GB GPU.
+:::
 
 ## Where the toy differs from production
 

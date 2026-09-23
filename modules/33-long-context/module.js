@@ -31,6 +31,10 @@ export default {
       why: 'Prefill is `2·N·T + 2·L·C·T·(T+1)`: the weight term doubles, the attention term quadruples. At 64k attention is about half the work, so the total grows about 3× (your step-5 test checks 2.5–4).' },
   ],
   concept: `
+:::plain
+A model's advertised context window, for example "128k tokens" (a token is a word or a piece of a word), only says how much text fits into it at once, not how well the model uses all of that text. Research cited below found that models tend to use information near the start or the end of a long input more reliably than information buried in the middle, and that many models fall short of their advertised length on harder tests. This module builds the standard way to measure the gap: hide a fact at a chosen place in long filler text, ask for it back, and repeat across many lengths and positions. It also shows why long prompts are expensive: the work of reading a prompt grows faster than its length. For anyone who puts long documents into a model at work, the lessons are to test on your own material rather than trust the headline number, and to put what matters most near the start or the end.
+:::
+
 ## Two numbers that get confused
 
 A model's **context window** is how many tokens fit through its forward pass: the size of its position encoding and of the KV cache you can afford. Its **effective context** is the longest input from which it still reliably *uses* information. The first is a design choice written on the model card. The second you have to measure, and it is usually smaller.
@@ -71,7 +75,11 @@ Every token of a long prompt goes through prefill, the phase module 15 calls com
 
 ## Where the toy differs from production
 
-The lab checkpoint has a **64-token** window, and its tokenizer spends most of that on one needle sentence, so it cannot show any of these curves; the demo probes it only to show the window's hard edge. The curves come from a **synthetic model** whose recall is a formula with a distance fade, a sink term and key interference. It makes the eval's mechanics testable; it is not a claim about any real model. Real evals count tokenizer tokens, not words (Llama 3's tokenizer produces roughly 1.3 tokens per English word), use realistic filler, generate answers with the actual model, and run thousands of items per length.
+The lab checkpoint has a **64-token** window, and its tokenizer spends most of that on one needle sentence, so it cannot show any of these curves; the demo probes it only to show the window's hard edge. The curves come from a **synthetic model** whose recall is a formula with a distance fade, a sink term and key interference. It makes the eval's mechanics testable; it is not a claim about any real model.
+
+:::deeper Going deeper: how real long-context evals are run
+Real evals count tokenizer tokens, not words (Llama 3's tokenizer produces roughly 1.3 tokens per English word), use realistic filler, generate answers with the actual model, and run thousands of items per length.
+:::
 `,
   steps: [
     {

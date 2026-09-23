@@ -64,7 +64,6 @@ function checkSchema(def, meta) {
     ids.add(s.id);
     if (!Array.isArray(s.hints) || s.hints.length !== 3) errs.push(`step "${s.id}" must have exactly 3 hints (got ${s.hints?.length})`);
   }
-  const num = parseInt(meta.id.slice(0, 2), 10);
   const recall = def.recall || [];
   if (recall.length < 3 || recall.length > 6) errs.push(`need 3–6 recall questions, got ${recall.length}`);
   for (const q of recall) {
@@ -78,11 +77,14 @@ function checkSchema(def, meta) {
   if (predicts < 2) errs.push(`need >= 2 predict prompts (concept :::predict blocks or step.predict), got ${predicts}`);
   if (!Array.isArray(def.reflection) || def.reflection.length < 2) errs.push('need >= 2 reflection prompts');
   if (!Array.isArray(def.stretch) || def.stretch.length < 2) errs.push('need >= 2 stretch goals');
-  const words = String(def.concept).split(/\s+/).length;
+  // The budget is for the required reading: text folded into a collapsed :::deeper block is optional.
+  const visible = String(def.concept).replace(/^:::deeper[^\n]*\n[\s\S]*?^:::\s*$/gm, '');
+  const words = visible.split(/\s+/).length;
   if (words < 300) warns.push(`concept is short (${words} words; aim for 400–900)`);
-  if (words > 1400) warns.push(`concept is long (${words} words; aim for 400–900)`);
+  if (words > 1400) warns.push(`concept is long (${words} words outside :::deeper blocks; aim for 400–900)`);
   if (/\$[^$]+\$/.test(def.concept)) warns.push('concept seems to contain LaTeX ($…$); use code spans instead');
-  if (num > 1 && !(def.prereqs || []).length) warns.push('no prereqs listed');
+  // Only the first modules on the path may have no prereqs (ids are names, so use the path position).
+  if (MODULES.filter((m) => m.status === 'ready').findIndex((m) => m.id === meta.id) > 2 && !(def.prereqs || []).length) warns.push('no prereqs listed');
   // Ids are names, not positions: the path is the MODULES order. Prereqs and recall questions must point
   // backwards along it; a pointer to a later module belongs in concept text or a stretch goal.
   const order = MODULES.filter((m) => m.status === 'ready' || m.id === meta.id).map((m) => m.id);

@@ -65,6 +65,10 @@ export default {
     },
   ],
   concept: `
+:::plain
+The largest language models are too big to train, and often too big to run, on a single GPU (the chip that does the calculations), so the work is spread over many of them. There are three basic ways to split it: give every GPU a full copy of the model and a different share of the training examples, cut each of the model's large tables of numbers into slices held by different GPUs, or give each GPU a different range of the model's layers so work flows through them like an assembly line. Each split saves memory or time but forces the GPUs to exchange data over connections far slower than the chips themselves, so choosing a layout means balancing memory, communication and idle time. This is why training a frontier model takes thousands of GPUs for weeks or months, and why a very large model is often served on several GPUs working together on each request.
+:::
+
 ## Three things you can split
 
 A Llama-3-70B training step needs about 1.1 TB of persistent state: 70 billion parameters at the 16 bytes per parameter you counted in module 08. An H100 has 80 GB. The step must be spread over many GPUs, and there are exactly three things you can cut.
@@ -97,11 +101,15 @@ Tensor parallelism, by about 20×. One activation is 2 bytes × 8192 tokens × 8
 
 ZeRO (Rajbhandari et al. 2020) asks why every data-parallel rank stores all 16 bytes per parameter when it only ever *updates* 1/dp of them. Stage 1 shards the 12-byte optimizer state, stage 2 also the 2-byte gradients, stage 3 also the 2-byte parameters, gathering each shard just before it is needed. Stage 3 is PyTorch's FSDP. It costs 1.5× the communication of plain data parallelism, usually hidden behind compute, so you turn ZeRO up until the model fits.
 
+:::deeper Going deeper: how Llama 3 was split, and three more kinds of split
 Llama-3-405B was trained with tensor parallelism of 8 (one node), pipeline parallelism of 16 and data parallelism of 128 on up to 16,384 H100s, adding context parallelism of 16 for the long-context stage (Grattafiori et al., "The Llama 3 Herd of Models", 2024, table 4). Two further splits deserve a name. **Sequence parallelism** (Korthikanti et al. 2022) cuts the sequence axis inside the tensor-parallel group for the LayerNorm and dropout regions, so that *all* of a layer's activations shrink by \`tp\` at no extra communication (each all-reduce becomes a reduce-scatter plus an all-gather of the same volume); your simulator assumes it is on whenever \`tp > 1\`. **Context parallelism** splits long sequences across GPUs and pays for exchanging keys and values in attention. **Expert parallelism** places the different experts of a mixture-of-experts layer on different GPUs and pays two all-to-all exchanges per layer; you built the experts in module 28, and module 25 later prices that all-to-all.
+:::
 
 ## Where this toy differs from production
 
+:::deeper Going deeper: what the simulator leaves out
 Your simulator is an arithmetic model, not a measurement. It assumes every GPU runs at exactly \`mfu\` of peak, that collectives achieve the full link bandwidth, that the network is uncontended, and that a single \`overlap\` fraction captures all compute/communication overlap. It assumes sequence parallelism is on (without it, 10 of the 34 activation bytes per token per layer per \`dModel\` would not shrink with \`tp\`), prices only the fill-and-drain pipeline sends as exposed, uses a GPT-style activation count for a SwiGLU model, and ignores activation recomputation (full recomputation costs about 33% more compute for a large drop in activation memory, and some form of it is used in essentially every real run), optimizer offload to host memory, and the extra embedding and loss weights on the first and last pipeline stages. Compare the layouts it prints against each other; do not read them as wall-clock predictions.
+:::
 `,
   steps: [
     {

@@ -38,6 +38,10 @@ export default {
       why: 'Caching matches prefixes. Anything that changes per request invalidates everything after it, so volatile content goes last — measured in the demo as 0% versus 78% hit rate on identical tokens.' },
   ],
   concept: `
+:::plain
+Many requests to a language model begin with the same long text: a company's standing instructions to the model (the system prompt), a list of tools it may use, or one document asked about again and again. Before answering, the model has to read the whole prompt, and the result of that reading (the stored work called the KV cache in module 15) is exactly the same whenever the beginning of the prompt is the same. Prefix caching keeps that stored work and reuses it for any later request that starts with the same text, so the shared part is not read again. The answer starts sooner and costs the provider less, which is why several hosted APIs offer "prompt caching" and bill the cached part of a prompt at a discount. The practical rule for anyone writing prompts at work is to put what never changes first and what changes every time, such as today's date or the user's question, last, because any change throws away the cached work for everything after it.
+:::
+
 ## Two requests, one prefill
 
 Serving a prompt costs two different things. **Prefill** runs the whole prompt through the model at once and is compute-bound; **decode** then emits one token at a time from the KV cache of module 15. A 4,000-token system prompt with a 20-token question spends almost all its money on prefill — and the next request carrying that system prompt redoes the work for an identical result.
@@ -78,11 +82,15 @@ Two rules fall out. **Put stable content first** — system prompt, tools, few-s
 
 ## What a cached entry is bound to
 
+:::deeper Going deeper: what invalidates a cache, and who can see it
 KV is not portable: it is bound to the exact weights, the numerical precision and any LoRA adapter, so a model update or a switch from bf16 to fp8 voids the whole cache. vLLM mixes extra keys such as the LoRA adapter id into each block hash for exactly this reason. A shared tree is also a fairness and privacy surface — one tenant's traffic evicts another's hot prefix, and the timing gap between hit and miss reveals whether someone else recently sent the same prompt. Production systems partition by tenant (vLLM accepts a per-request *cache salt* mixed into the first block's hash, so differently salted requests can never share a block) or accept that side channel deliberately.
+:::
 
 ## Where this toy differs from production
 
+:::deeper Going deeper: how vLLM and SGLang do it
 Yours stores a 32-bit number per block; a real cache stores \`2 x layers x kv_heads x head_dim\` numbers per token in GPU HBM, so capacity is gigabytes and eviction pressure is constant. A 32-bit hash also collides by the birthday bound after tens of thousands of distinct blocks, which a busy server passes in seconds; vLLM uses a much wider hash (SHA-256 is an option) so collisions are negligible rather than detected, and SGLang avoids the question by comparing tokens. vLLM does not build a tree at all: it keeps step 1's hash table plus a reference count per block and an LRU queue of free blocks. SGLang keeps the tree with a lock count per node, as you do. Both can offload evicted blocks to host memory rather than dropping them. Your simulator is serial: two requests never prefill at once and contend for free blocks. What transfers exactly is the shape — block granularity, chained identity, longest-prefix match, leaves-only LRU under reference counts, and hit rate to bill.
+:::
 `,
   steps: [
     {

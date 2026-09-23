@@ -31,6 +31,10 @@ export default {
       why: 'The first LayerNorm sees mostly `wpe`. Fan-in initialisation (std 1/sqrt(nIn)) keeps each layer near unit scale and the image becomes visible from step one.' },
   ],
   concept: `
+:::plain
+A multimodal model is a language model that can also take in other kinds of input, most commonly images, and this module builds a small one that learns to write captions for simple pictures. The main trick is that the picture is cut into small square tiles, and each tile is turned into the same kind of list of numbers the model already uses for tokens (chunks of text), so the language model reads the image as if it were extra words placed in the prompt. In real systems, a separate image model, trained on huge numbers of pictures paired with captions, usually does that conversion, and the language model is then trained to make use of its output. For someone who uses models at work, the key consequence is that images are not free: depending on the model and the image size, one image often becomes hundreds or even thousands of tokens, so it uses up the context window (the most text a model can take in at once) and, on services that bill by tokens, costs money the way text does. Sending a higher-resolution image gives the model more detail to read, but also more tokens.
+:::
+
 ## An image is just more tokens
 
 Your module-06 GPT never sees token ids after its first line: \`wte.forward(ids)\` turns them into vectors of width \`C\`, and everything after that (position embeddings, blocks, LayerNorm, the tied head) works on vectors. Turn a picture into a sequence of \`C\`-dimensional vectors and the same GPT can read it. That is the whole trick behind LLaVA, Qwen-VL and most open vision-language models.
@@ -61,7 +65,11 @@ CLIP (Radford et al. 2021) trains an image tower and a text tower on approximate
 
 ## Early fusion, late fusion
 
-LLaVA **fuses early**: image vectors enter the sequence and the LLM's own attention does the mixing. Fuyu-8B (Adept) even drops the vision encoder and feeds projected patches straight in; Chameleon (Meta, 2024) turns images into discrete codebook tokens and trains one model on interleaved sequences. **Late fusion** keeps the modalities apart longer: Flamingo (DeepMind, 2022) freezes the LLM, compresses each image to 64 vectors and inserts cross-attention layers that read them.
+LLaVA **fuses early**: image vectors enter the sequence and the LLM's own attention does the mixing. **Late fusion** keeps the modalities apart longer.
+
+:::deeper Going deeper: other ways to wire images in, model by model
+Fuyu-8B (Adept) even drops the vision encoder and feeds projected patches straight in; Chameleon (Meta, 2024) turns images into discrete codebook tokens and trains one model on interleaved sequences. In late fusion, Flamingo (DeepMind, 2022) freezes the LLM, compresses each image to 64 vectors and inserts cross-attention layers that read them.
+:::
 
 ## Image tokens cost context
 

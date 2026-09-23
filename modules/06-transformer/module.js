@@ -29,6 +29,10 @@ export default {
       why: 'Every weight takes part in one multiply-add. The attention products add 4·L·T·C; next to the 24·L·C² of the block matmuls that is T/(6C), so it is about 17% at T = C and equals the matmul cost at T = 6C.' },
   ],
   concept: `
+:::plain
+A transformer is the overall design behind today's large language models, and this module assembles a small one from the attention step of module 05 plus a few simpler parts. Each token (a chunk of text) is first turned into a list of numbers, and then a stack of identical layers, called blocks, each makes a small correction to those lists: attention lets each position gather information from earlier positions, and a small neural network, applied to each position on its own, works on what was gathered. Each block adds its correction on top of what was already there instead of replacing it, which is what lets real models stack dozens of blocks and still train. You also count the model's parameters, the adjustable numbers that training sets, and see where they sit. When a model is described as having 8 billion parameters, that count is the size of this structure, and it largely decides how much memory the model needs and how much computing each generated token takes, which is a large part of why bigger models cost more to run.
+:::
+
 ## The residual stream is the whole design
 
 Take the input sequence, look up one vector per token, and call the resulting \`[B, T, C]\` tensor **x** (batch, time, channels). A GPT never replaces x. Each of its L blocks reads x, computes an update, and *adds* it back:
@@ -64,7 +68,9 @@ Count what you build. A \`Linear(nIn, nOut)\` holds \`nIn·nOut + nOut\` scalars
 
 So \`12C² + 13C\` per block, and the model is \`V·C + T·C + L·(12C² + 13C) + 2C\`. For GPT-2 small that is exactly **124,439,808**, the published figure: token table 38.6M (31%), positions 0.8M, attention 28.3M (23%), MLP 56.7M (46%), LayerNorm 38 thousand. Two thirds of every block is the MLP.
 
+:::deeper Going deeper: the same budget for Llama-3-8B
 Now Llama-3-8B (V = 128,256, C = 4,096, L = 32): the embedding is 525.3M and, because the head is *untied*, the output matrix is another 525.3M. Attention uses grouped-query attention with 8 key/value heads for 32 query heads, so q and o are \`C×C\` (16.8M each) but k and v are \`C×1024\` (4.2M each): 41.9M per layer. The MLP is SwiGLU with three matrices of \`4096 × 14,336\`: 176.2M per layer. Per layer 218.1M; times 32 is 6.98B; plus the two tables gives **8.03B**. The shape of the budget is the same as GPT-2's: the MLP dominates, attention is a fifth, and the tables matter only when V·C is comparable to L·C².
+:::
 
 :::predict
 You double the context length of a model from 1,024 to 2,048 tokens. Which components gain parameters?
@@ -78,7 +84,11 @@ Every weight matrix is used in one multiply-add per weight per token, so a forwa
 
 ## Where the toy differs from production
 
-Your model is GPT-2's architecture at 1/1000 scale; the differences are mostly what Llama-style models changed later: **RMSNorm** instead of LayerNorm (no mean subtraction, no beta), **SwiGLU** instead of GELU with a 4× hidden (three matrices; Llama 1 and Llama 2 7B/13B use a hidden width of about 8C/3 ≈ 2.7C so the MLP still costs about 8C², and Llama 3 8B widens it to 3.5C = 14,336), **rotary position embeddings** applied inside attention instead of a learned \`wpe\` table, **no biases**, grouped-query attention, and an untied head. None of these change the threshold idea: a residual stream, and blocks that alternately mix across positions and transform within them. Production code also fuses LayerNorm, GELU and the residual add into single kernels, and FlashAttention-style kernels never materialise the \`[T, T]\` score matrix; your version runs plain JavaScript loops, one op at a time.
+Your model is GPT-2's architecture at 1/1000 scale; the differences are mostly what Llama-style models changed later. None of them change the threshold idea: a residual stream, and blocks that alternately mix across positions and transform within them.
+
+:::deeper Going deeper: what Llama-style models changed, and how production code runs it
+The changes: **RMSNorm** instead of LayerNorm (no mean subtraction, no beta), **SwiGLU** instead of GELU with a 4× hidden (three matrices; Llama 1 and Llama 2 7B/13B use a hidden width of about 8C/3 ≈ 2.7C so the MLP still costs about 8C², and Llama 3 8B widens it to 3.5C = 14,336), **rotary position embeddings** applied inside attention instead of a learned \`wpe\` table, **no biases**, grouped-query attention, and an untied head. Production code also fuses LayerNorm, GELU and the residual add into single kernels, and FlashAttention-style kernels never materialise the \`[T, T]\` score matrix; your version runs plain JavaScript loops, one op at a time.
+:::
 `,
   steps: [
     {

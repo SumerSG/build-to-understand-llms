@@ -29,6 +29,10 @@ export default {
       why: '`readDoc` walks from `(shard, offset)` for `length` tokens, moving into the next shard when one ends. That is how contamination checks and per-source loss curves find a document again after sharding.' },
   ],
   concept: `
+:::plain
+Before a model is trained, someone decides which text it will learn from, and this module builds that data pipeline: a series of steps that throws out low-quality pages, removes exact and near copies of the same text, decides how much of each source to include, and cuts the result into files ready for training. Raw web data is mostly menus, spam and repeated pages, and published experiments have found that changing only the filtering, with the same model and training budget, noticeably changes how well the finished model does. Removing duplicates matters too, because text a model sees many times is more likely to be repeated back word for word, which raises privacy and copyright concerns. For someone who uses models at work, the training data explains much of a model's behaviour: its strengths and blind spots in particular languages, subjects and styles largely reflect what the pipeline kept. It also bears on how far to trust a benchmark score, because if the test questions leaked into the training data, a high score may reflect memory rather than skill.
+:::
+
 ## The corpus is a model decision
 
 A web crawl is not a dataset: most of Common Crawl is menus, boilerplate, spam, and the same page a hundred times over. Every pre-training corpus (C4, MassiveText, RefinedWeb, FineWeb, DCLM) is the output of a *pipeline* that decides, document by document, what the model will never see. DCLM (Li et al. 2024) held compute fixed, changed only the filtering, and moved downstream accuracy by several points.
@@ -65,7 +69,11 @@ With \`k = 32\` hash functions and a true Jaccard similarity of 0.8, roughly how
 \`sqrt(0.8 × 0.2 / 32) ≈ 0.07\`, so an 0.8 threshold sometimes keeps a pair at true similarity 0.85 and removes one at 0.75. Production uses more hashes (FineWeb: 112 in 14 buckets of 8) and accepts the remaining noise.
 :::
 
-Your \`nearDedup\` compares each document against every earlier survivor, still quadratic. At scale, **locality-sensitive hashing** splits each signature into \`b\` bands of \`r\` rows and compares only documents that share a band bucket; a pair at similarity \`J\` collides with probability \`1 − (1 − J^r)^b\` (the first stretch goal).
+Your \`nearDedup\` compares each document against every earlier survivor, still quadratic.
+
+:::deeper Going deeper: how near-deduplication scales to billions of documents
+At scale, **locality-sensitive hashing** splits each signature into \`b\` bands of \`r\` rows and compares only documents that share a band bucket; a pair at similarity \`J\` collides with probability \`1 − (1 − J^r)^b\` (the first stretch goal).
+:::
 
 ## Mixing and epochs
 
@@ -79,7 +87,11 @@ Tokenisation is independent per document, so it is embarrassingly parallel: prod
 
 ## Where the toy differs from production
 
-Your pipeline holds every document in memory, compares MinHash signatures pairwise instead of through LSH buckets, uses 32 hash functions, and skips language identification, URL blocklists, PII scrubbing and the learned classifiers of DCLM and FineWeb-Edu. Production shards are binary files on object storage holding millions to hundreds of millions of tokens each (Karpathy's FineWeb-Edu shards for build-nanogpt hold 100M), addressed by \`(shard, offset)\`. The stage boundaries, reason strings and counts are the same.
+Your pipeline holds every document in memory, compares MinHash signatures pairwise instead of through LSH buckets, uses 32 hash functions, and skips language identification, URL blocklists, PII scrubbing and the learned classifiers of DCLM and FineWeb-Edu. The stage boundaries, reason strings and counts are the same.
+
+:::deeper Going deeper: what production shards look like
+Production shards are binary files on object storage holding millions to hundreds of millions of tokens each (Karpathy's FineWeb-Edu shards for build-nanogpt hold 100M), addressed by \`(shard, offset)\`.
+:::
 `,
   steps: [
     {

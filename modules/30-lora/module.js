@@ -38,11 +38,19 @@ export default {
       why: 'dL/dA = s·xᵀ·(g·Bᵀ) is zero while B = 0, and dL/dB = s·(x·A)ᵀ·g is not, because A is random. B moves first, and A starts to learn one step later.' },
   ],
   concept: `
+:::plain
+LoRA, short for low-rank adaptation, is a cheap way to fine-tune a model, meaning to train it further on your own examples: instead of changing all of its internal numbers, you freeze them and train a small add-on, called an adapter, that is often under one percent of the model's size. That needs far less memory than changing every number, so fine-tuning fits on much smaller hardware, and the original paper reported quality on par with full fine-tuning on the tasks it tested. After training, the adapter can be folded into the model so it runs exactly as fast as before, or kept separate so that one copy of the base model can serve many different customisations at once. For someone who uses models at work, LoRA is the default method in many open-source fine-tuning tools, and some hosting services run many customers' adapters on one shared base model, which is part of why a custom model can be cheap to create and to host. It is still fine-tuning, though: it teaches a format, a style or a narrow task well, and is generally a weaker way to add new facts than supplying them in the prompt.
+:::
+
 ## What full fine-tuning costs, and why you can skip most of it
 
 Module 10 fine-tuned every parameter of the checkpoint. That costs what training costs: a gradient, an fp32 master copy and two AdamW moments per weight, 16 bytes per parameter (module 08). For a 7-billion-parameter model that is approximately 108 GB before activations, and every fine-tune produces a complete new copy of the model to store and serve.
 
-Two results say you do not need most of that. Aghajanyan et al. (2020) showed that fine-tuning has a low **intrinsic dimension**: optimising only about 200 numbers, projected into RoBERTa's full weight space through a fixed random projection, reaches 90% of full fine-tuning's accuracy on the MRPC paraphrase task, and the larger the pre-trained model, the fewer such numbers it needs. Hu et al. (2021) turned this into **LoRA** (low-rank adaptation): freeze every pre-trained weight and learn each update as a product of two thin matrices. On GPT-3 175B they reported roughly 10,000× fewer trainable parameters and 3× less GPU memory, with quality on par with full fine-tuning.
+Two results say you do not need most of that: fine-tuning turns out to need very few effective degrees of freedom, and LoRA exploits it.
+
+:::deeper Going deeper: the two papers behind LoRA
+Aghajanyan et al. (2020) showed that fine-tuning has a low **intrinsic dimension**: optimising only about 200 numbers, projected into RoBERTa's full weight space through a fixed random projection, reaches 90% of full fine-tuning's accuracy on the MRPC paraphrase task, and the larger the pre-trained model, the fewer such numbers it needs. Hu et al. (2021) turned this into **LoRA** (low-rank adaptation): freeze every pre-trained weight and learn each update as a product of two thin matrices. On GPT-3 175B they reported roughly 10,000× fewer trainable parameters and 3× less GPU memory, with quality on par with full fine-tuning.
+:::
 
 ## The adapter
 
@@ -59,13 +67,19 @@ Both \`A\` and \`B\` could start at zero, which would also make the adapted mode
 Nothing would ever train. \`dL/dB = s·(x·A)ᵀ·g\` is zero when \`A = 0\`, and \`dL/dA = s·xᵀ·(g·Bᵀ)\` is zero when \`B = 0\`. With \`A\` random and \`B = 0\`, \`B\` receives a gradient on the first step and \`A\` from the second step on. You will check exactly this in step 2.
 :::
 
-\`W\` is frozen: autograd never computes its gradient and the optimizer holds no state for it. The constant \`alpha/r\` (\`alpha\` is a hyperparameter, commonly \`r\` or \`2r\`) keeps the size of the update roughly stable when you change \`r\`, so a learning rate tuned at one rank transfers to another. **rsLoRA** (Kalajdzievski 2023) argues \`alpha/sqrt(r)\` is the stable choice at large rank, and **DoRA** (Liu et al. 2024) splits each weight column into a magnitude and a direction and adapts the direction with LoRA.
+\`W\` is frozen: autograd never computes its gradient and the optimizer holds no state for it. The constant \`alpha/r\` (\`alpha\` is a hyperparameter, commonly \`r\` or \`2r\`) keeps the size of the update roughly stable when you change \`r\`, so a learning rate tuned at one rank transfers to another.
+
+:::deeper Going deeper: two popular LoRA variants
+**rsLoRA** (Kalajdzievski 2023) argues \`alpha/sqrt(r)\` is the stable choice at large rank, and **DoRA** (Liu et al. 2024) splits each weight column into a magnitude and a direction and adapts the direction with LoRA.
+:::
 
 ## Which matrices, and how much it saves
 
 Hu et al. adapted only the attention query and value projections. **QLoRA** (Dettmers et al. 2023) found that adapting *all* linear layers is what matches full fine-tuning, and that the rank matters less than coverage. In your GPT \`attn.qkv\` is one fused Linear, so targeting it adapts query, key and value together.
 
+:::deeper Going deeper: how QLoRA fits a 65B fine-tune on one GPU
 QLoRA also stores the frozen base in 4-bit **NF4** (a 16-level grid placed at normal-distribution quantiles, a block-wise quantisation of the kind module 19 builds later), dequantises each block on the fly, and pages optimizer state to CPU RAM on memory spikes. The adapters stay in bf16. That combination fine-tuned a 65B model on a single 48 GB GPU.
+:::
 
 :::predict
 Llama 2 7B has approximately 6.74 billion parameters. With \`r = 8\` on all seven linear projections of its 32 layers, the adapters hold approximately 20 million. Using 2 bytes per frozen parameter and 16 per trainable one, how much persistent training state do you need, against full fine-tuning?

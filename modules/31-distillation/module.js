@@ -31,6 +31,10 @@ export default {
       why: 'Controlled comparison: the only change is where the targets come from, so the held-out gap is the effect of the soft targets, not of more data or compute.' },
   ],
   concept: `
+:::plain
+Distillation trains a small, cheap model, the student, to imitate a large, capable one, the teacher. Instead of learning only which token (chunk of text) came next in real text, the student learns the teacher's whole set of probabilities for the next token, which carries extra information, such as which wrong answers were nearly right. Several published small models, for example Google's Gemma 2 and Meta's smallest Llama 3.2 models, were trained partly this way according to their makers, and when a teacher is only reachable as a service that returns text, a student can simply be trained on text the teacher wrote. For someone who uses models at work, distillation is one reason small, cheap models have become much more capable, and why a small model can come close to a larger one on the kinds of task it was distilled on while falling behind on others. It is also why some providers' terms of use forbid using their outputs to train competing models.
+:::
+
 ## One label versus a whole distribution
 
 In module 07 every position had a single target: the next token in the corpus, a one-hot distribution. The trained model outputs a full distribution over 256 tokens. After "The teacher is green beside the" it gives " road" about 97%, " garden" 0.6%, and a long tail of near-zeros. That ranking (garden is a place, "r" is not) is knowledge extracted from the whole corpus. Hinton, Vinyals & Dean (2015) called it **dark knowledge**: train a small **student** to match the **teacher**'s distribution instead of, or as well as, the label.
@@ -73,7 +77,11 @@ Logit KD is best (about 3.67 nats), then scratch (about 3.90), then sequence-lev
 
 ## Where you will meet it
 
+Distillation is how many small open models are made, and it reappears inside speculative decoding (module 18).
+
+:::deeper Going deeper: distilled models, paper by paper
 DistilBERT (Sanh et al. 2019) halved BERT's depth and, by the authors' count, kept about 97% of its GLUE score while running about 60% faster. MiniLM (Wang et al. 2020) distills attention distributions rather than outputs. Meta says Llama 3.2 1B and 3B used logits from Llama 3.1 8B and 70B as token-level targets. Speculative decoding, which module 18 builds later, accepts a small draft model's token with probability \`min(1, p/q)\` (p the target's probability, q the draft's), so drafts are often distilled from their target (DistillSpec, Zhou et al. 2023). The contrast is TinyLlama, a 1.1B model trained from scratch on about 3 trillion tokens: the expensive way to get a small model.
+:::
 
 ## Where the toy differs from production
 

@@ -29,6 +29,10 @@ export default {
       why: 'That observation is the basis of compile-ahead engines: Outlines precomputes state → allowed tokens for a finite-state machine, and XGrammar precomputes most of the mask for its pushdown automaton.' },
   ],
   concept: `
+:::plain
+When software reads a model's answer, it usually needs an exact format, such as JSON (a standard text format for structured data, like a form with named fields), and a model left to itself sometimes writes a broken one. Structured output, also called constrained decoding, fixes this at the moment each token (a word or a piece of a word) is chosen: every token that would break the required format is ruled out first, so the model can only pick among tokens that keep the output valid. It works with any model, needs no retraining, and guarantees that the output parses and has the required fields. It does not guarantee that the content is right: a valid "age" field can still hold a wrong or impossible age. The schema options that some model APIs offer, such as OpenAI's Structured Outputs, work this way, which is why they are more reliable than asking for JSON in the prompt.
+:::
+
 ## Why constrain at all
 
 In module 20 the harness parsed tool calls with \`JSON.parse\`, and a malformed block was simply skipped. A model that writes \`{"age": thirty}\` crashes nothing, but its intent is gone. Fine-tuning and retries help; there is also a way to make invalid output **impossible**, for any model, with no training.
@@ -57,7 +61,11 @@ The text so far is \`{"name":"ab\` and "age" is a required key. Is the single to
 
 ## The cost, and the compile-ahead trick
 
-A naive mask scans all \`V\` tokens at every step. With 258 tokens that is cheap; with Llama 3's 128,256, times every character of every token, it becomes a per-step cost that engines work hard to hide. But the mask depends **only on the automaton state**, not on the model or the exact prefix. Generation revisits a handful of states thousands of times, so you cache masks by state (step 5). Outlines (Willard & Louf, 2023) takes this to its limit: it compiles a regex or JSON Schema into a finite-state machine and precomputes, for every state, the set of allowed tokens. Nested JSON needs a stack (a pushdown automaton) whose states cannot all be listed, so XGrammar (Dong et al., 2024) precomputes the tokens whose validity ignores the stack and checks the few others at runtime. llguidance, the Rust engine behind Microsoft's Guidance, computes masks lazily with a lexer and an Earley parser. vLLM and SGLang can use XGrammar, llguidance or Outlines as the structured-output backend.
+A naive mask scans all \`V\` tokens at every step. With 258 tokens that is cheap; with Llama 3's 128,256, times every character of every token, it becomes a per-step cost that engines work hard to hide. But the mask depends **only on the automaton state**, not on the model or the exact prefix. Generation revisits a handful of states thousands of times, so you cache masks by state (step 5).
+
+:::deeper Going deeper: how Outlines, XGrammar and llguidance do it
+Outlines (Willard & Louf, 2023) takes this to its limit: it compiles a regex or JSON Schema into a finite-state machine and precomputes, for every state, the set of allowed tokens. Nested JSON needs a stack (a pushdown automaton) whose states cannot all be listed, so XGrammar (Dong et al., 2024) precomputes the tokens whose validity ignores the stack and checks the few others at runtime. llguidance, the Rust engine behind Microsoft's Guidance, computes masks lazily with a lexer and an Earley parser. vLLM and SGLang can use XGrammar, llguidance or Outlines as the structured-output backend.
+:::
 
 The mask does not touch the KV cache: it acts on logits after the forward pass. It does constrain speculative decoding (module 18): the verify step must apply the mask at every drafted position and reject a draft token the grammar forbids. APIs expose two strengths: **JSON mode** promises parseable JSON of any shape, while **schema mode** (OpenAI's Structured Outputs, for example) compiles your JSON Schema into a grammar like the one you will build.
 
@@ -67,7 +75,9 @@ The mask enforces form, not content. The demo's story model writes names like "M
 
 ## Where the toy differs from production
 
+:::deeper Going deeper: what production grammar engines support
 Your grammar covers compact JSON with keys in a fixed order: no whitespace outside strings, no arrays, no floats, no \`minimum\` or \`pattern\`, and \`maxDigits\` is a lab stand-in for JSON Schema's \`maximum\`. Each token is simulated character by character in JavaScript. Production engines work on bytes, accept full JSON Schema or general context-free grammars (EBNF, Lark), allow flexible whitespace, and apply precomputed bitmasks to a whole batch of logits on the GPU.
+:::
 `,
   steps: [
     {

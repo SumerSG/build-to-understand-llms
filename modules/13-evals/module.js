@@ -31,6 +31,10 @@ export default {
       why: 'Overlap is evidence about the measurement, not proof about the model. Sainz et al. 2023 argue for reporting contamination alongside the score; GPT-3, GPT-4 and Llama 3 all published overlap analyses, each with a different overlap rule.' },
   ],
   concept: `
+:::plain
+An eval, short for evaluation, is a repeatable test that gives a model a set of tasks, grades each answer with a fixed rule and reports a score; this module builds the parts of one. Every score on a leaderboard or in a model announcement comes from such a test, and the model is only one ingredient: how the questions are worded, how strictly answers are graded, how many attempts are allowed and how many questions there are can move a score as much as a new model version does. That is why two published scores for the same model often disagree, and why a small gap between two models may be nothing more than chance. Some evals use another language model as the judge, which is cheap but known to favour longer answers and whichever answer it read first, and a score can also be inflated when the test questions leaked into the model's training text. For choosing a model at work, the practical lesson is to test candidates on a sample of your own tasks, graded the way you would grade them, and to treat a gap of a few points on a public benchmark with caution.
+:::
+
 ## The number is not the measurement
 
 By module 12 you can watch a reward go up; this module decides whether that number means anything. An eval has four parts, and only one is the model:
@@ -78,7 +82,11 @@ Finally, **contamination**: if an eval prompt appears verbatim in the training c
 
 ## Where this toy differs from production
 
-Your graders run on strings, in one process, on 40 procedurally generated word problems, against a scripted "model" that is a seeded random function rather than a network. A real harness — lm-evaluation-harness, HELM, OpenAI's evals, SWE-bench's Docker runner — sandboxes untrusted model-written code, retries API failures, caches responses by prompt hash, records template, model version, temperature and harness commit with every run, and shards thousands of tasks across machines. The statistics are identical; the plumbing is an order of magnitude larger.
+Your graders run on strings, in one process, on 40 procedurally generated word problems, against a scripted "model" that is a seeded random function rather than a network. The statistics are the same as in production.
+
+:::deeper Going deeper: what a production eval harness adds
+A real harness — lm-evaluation-harness, HELM, OpenAI's evals, SWE-bench's Docker runner — sandboxes untrusted model-written code, retries API failures, caches responses by prompt hash, records template, model version, temperature and harness commit with every run, and shards thousands of tasks across machines. The statistics are identical; the plumbing is an order of magnitude larger.
+:::
 `,
   steps: [
     {

@@ -21,6 +21,10 @@ export default {
     { q: 'Llama-3 8B saw approximately 1875 tokens per parameter instead of about 20. What does that buy?', options: ['A lower training bill', 'A model that is cheaper to serve at the same quality', 'A larger context window'], answer: 1, why: 'Inference costs 2N per token forever. Spending extra training compute to hit a given loss with a smaller N pays back once you serve enough tokens.' },
   ],
   concept: `
+:::plain
+Scaling laws are rules of thumb, fitted to many past training runs, that predict how good a language model will get for a given model size and amount of training text; this module turns them into a small planner. The central fact is that training cost is plain arithmetic: the number of calculations is roughly six times the parameter count (the model's adjustable numbers) times the number of training tokens (chunks of text), and that converts into chip-hours and money. Builders need this because a large run is too expensive to try twice, so they choose the model size and the amount of data on paper first. For someone who uses models at work, it explains why providers often train smaller models on far more text than the older rules suggested: a smaller model is cheaper to run on every request it serves, and that saving keeps adding up. It also explains why published cost figures are estimates: scaling laws are fitted curves, not laws of nature, and researchers still disagree about some of their constants.
+:::
+
 ## Six multiplications decide a training run
 
 A transformer training run looks like an engineering epic and prices like arithmetic. Fix two numbers — \`N\`, the parameter count, and \`D\`, the number of training tokens — and almost everything follows.

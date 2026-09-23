@@ -71,6 +71,10 @@ export default {
     },
   ],
   concept: `
+:::plain
+Serving runs a model for many users at once on a fleet of GPUs (the chips that do the calculations). A user feels two timings: time to first token, how long before the answer starts, and time per output token, how fast the rest of it streams. Your prompt is read in one pass in which thousands of its tokens (words or pieces of words) share one read of the model from memory, but the answer is written one token per step, and each step pays for that read again, shared only among the requests in the same batch. So in this module's numbers an output token costs about four times as much to produce as an input token, which is why hosted APIs typically charge several times more for output. At fleet scale the main levers are sending each request to the machine that already holds its prompt's opening, and putting prompt reading and answer writing on separate machines so neither stalls the other.
+:::
+
 ## From one engine to a fleet
 
 Module 16 built the engine: the per-iteration scheduler that decides which requests share one GPU. This module is the layer above. You have \`R\` replicas, each running that engine with its own prefix cache (module 17), behind one load balancer. Nothing changes inside an iteration; everything changes **which replica a request reaches** and **what work it may do there**. Two numbers judge the result: **TTFT**, time to first token, which prefill sets, and **TPOT**, time per output token, which decode sets.
@@ -111,15 +115,21 @@ Capacity is itself a control problem with dead time: you scale on queue depth, b
 
 **Why output tokens cost more than input tokens.** Split the GPU-seconds by phase. With this module's numbers, prefilling a 2,000-token prompt is one iteration of \`5 ms + 2000 * 50 us\` = 105 ms, about 52 us per input token, because 2,000 tokens share one read of the weights. A decode step at batch 32 is \`5 ms + 32 * 50 us\` = 6.6 ms for 32 tokens, about 206 us per output token: roughly 4x dearer, and the whole difference is \`tFixed\` spread over 32 tokens instead of 2,000. That is why hosted APIs typically list output tokens at several times the input price, and why module 17's cached-read discount goes further still: a cached input token skips even the 50 us of prefill arithmetic.
 
+:::deeper Going deeper: many fine-tuned models
 When one fleet serves many models, LoRA adapters (module 30) let hundreds of fine-tunes share one base model's weights, so a replica multiplexes them (S-LoRA, Punica) and the router must be adapter-aware too: an adapter miss costs a load, not a recompute.
+:::
 
 ## When a replica is more than one GPU
 
+:::deeper Going deeper: replicas of many GPUs
 Here a replica is one GPU serving an 8B model. Size a real one as weights plus a KV budget with module 19's calculator: Llama-3-70B in bf16 is 70.6e9 x 2 bytes = 141 GB, so it needs at least two 80 GB H100s before any KV cache. A dense model that outgrows one GPU runs tensor parallelism inside the NVLink domain (modules 24 and 25), and the whole TP group is the replica: it routes, caches and scales as one unit. A large MoE reshapes the decode pool instead: attention runs data-parallel, each GPU (or small TP group) with its own batch and KV cache, while the experts spread over a wide expert-parallel group that pays module 25's \`moeAllToAll\` (dispatch plus combine) in every MoE layer. Width is the point: module 28 showed that a decode step reads nearly every expert's weights; a larger group and a larger batch send more tokens to each expert per step, so more tokens share each read. DeepSeek-V3 is the real example (DeepSeek-AI technical report, 2024), with attention in 4-GPU TP groups: its minimum prefill unit is 32 GPUs with 32-way expert parallelism, 8 routed experts per GPU plus one redundant copy; its minimum decode unit is 320 GPUs with 320-way expert parallelism, one expert per GPU. Disaggregation lets each phase pick the parallelism its bottleneck wants.
+:::
 
 ## Where this toy differs from production
 
+:::deeper Going deeper: what the simulator leaves out
 The cost model is linear and a GPU is one number: no kernels, no paged KV blocks, no KV capacity limit, no chunked prefill, no quantisation. Prefixes are opaque strings standing in for "the first 64 token ids"; a real router hashes token blocks or walks a radix tree; the network is uncontended at the full 25 GB/s. The autoscaler sees perfect metrics instantly; real ones add a 15-60 s scrape delay on top of the cold start, and there are no failures or priorities. Read its numbers as comparisons, never as a capacity plan.
+:::
 `,
   steps: [
     {

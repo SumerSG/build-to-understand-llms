@@ -41,6 +41,10 @@ export default {
       why: 'A sliding window changes the second message every turn. Compaction that replaces a span only occasionally, and appends otherwise, keeps a stable prefix between compactions.' },
   ],
   concept: `
+:::plain
+A language model only sees what is sent to it in a single request, and a request has a size limit called the context window, measured in tokens (words or pieces of words). The model keeps no memory between requests, so a chat or an agent sends the whole conversation again each time, and long work fills the window quickly; research cited below also found that models use facts buried in the middle of a long input less reliably than facts near the start or the end. Context management is the set of rules that decide what goes into that limited space: shortening long tool outputs, dropping or summarising old turns, and fetching back only the few stored notes or document passages that match the current question, which is called retrieval-augmented generation, or RAG. This is why an assistant can "forget" something said early in a long conversation, why pasting in more documents does not always give better answers, and why the order of what you put in a prompt affects both quality and cost.
+:::
+
 ## A window is not a memory
 
 Every model call sees exactly one array of messages, and that array has a hard limit: the **context window**, measured in tokens. Claude and GPT-4-class models advertise windows of approximately 128,000 to 1,000,000 tokens (per their providers' documentation). An agent fills it fast: module 20 showed that each tool result is re-sent on every later turn. The window is a **budget**, and it is **ordered**: position matters as much as presence.
@@ -86,7 +90,13 @@ The deploy-key note: "slot" and "key" are rare terms that match. (The atlas note
 
 A **dense retriever** maps each text to one vector and ranks notes by cosine similarity to the query's vector, so it can match "credentials" to "key" if its embedding model has learned they are related. DPR (Karpukhin et al. 2020) and Contriever (Izacard et al. 2021) train that model contrastively, with an InfoNCE loss like your CLIP head's in module 32: each query must pick its own passage out of many negatives, such as the other passages in its batch. Dense is not strictly better: on the BEIR benchmark (Thakur et al. 2021) plain BM25 beat many dense retrievers on unseen domains.
 
-At scale, stores do not score every vector; they search an **approximate nearest-neighbour** index such as HNSW (a layered proximity graph, Malkov and Yashunin 2016) or FAISS's IVF-PQ (probe only the nearest k-means clusters, over product-quantised vectors). **Hybrid search** merges the BM25 and dense rankings by **reciprocal rank fusion** (step 6); Elasticsearch and Vespa both offer it. A **cross-encoder reranker** (Nogueira and Cho 2019) then reads the query and each candidate passage together in one transformer: more accurate than comparing two vectors, but one forward pass per candidate, so it only reorders a shortlist.
+At scale, stores do not score every vector; they search an **approximate nearest-neighbour** index.
+
+:::deeper Going deeper: how large stores search quickly
+Two common indexes are HNSW (a layered proximity graph, Malkov and Yashunin 2016) and FAISS's IVF-PQ (probe only the nearest k-means clusters, over product-quantised vectors).
+:::
+
+**Hybrid search** merges the BM25 and dense rankings by **reciprocal rank fusion** (step 6); Elasticsearch and Vespa both offer it. A **cross-encoder reranker** (Nogueira and Cho 2019) then reads the query and each candidate passage together in one transformer: more accurate than comparing two vectors, but one forward pass per candidate, so it only reorders a shortlist.
 
 ## Ordering and caching
 
@@ -94,7 +104,9 @@ Module 17 showed that a provider's prefix cache only hits on an identical prefix
 
 ## Where this toy differs from production
 
+:::deeper Going deeper: what production context managers do differently
 Your summariser is a regular expression that keeps tagged facts perfectly; a real one is a model call that paraphrases, drops details it judged unimportant, and costs its own tokens and latency. Your notes are one-line strings and your index is rebuilt from scratch; production stores chunk documents and keep inverted and ANN indexes updated incrementally. The step 6 tests write the embedding rows by hand and pool them without context; a real embedding model is a trained transformer whose token vectors depend on their neighbours. Your 800-token budget and small BPE make absolute counts unlike any commercial model. The policies, the ordering rules and the failure modes are the same.
+:::
 `,
   steps: [
     {

@@ -31,6 +31,10 @@ export default {
       why: 'The model never sees characters. If "strawberry" is three tokens the letters are hidden inside them; if digits are chunked arbitrarily, place value is hidden too.' },
   ],
   concept: `
+:::plain
+A language model does not read letters or whole words: it reads tokens, which are chunks of text such as a common word, a piece of a rarer word, or a punctuation mark. A tokenizer is the part that cuts text into those chunks and gives each chunk a number, and the one you build here learns its chunks by repeatedly gluing together the pair of pieces that occurs most often in a sample of text. The model needs it because it can only choose from a fixed list of possible next pieces, and chunks are the middle ground between very long runs of single letters and an endless list of words. At work, tokens are the unit that hosted model services bill by, and the context window (the most text a model can take in at once) is also measured in tokens. OpenAI's rule of thumb is roughly four characters of ordinary English per token, and many other languages and long numbers need more tokens for the same content. Tokens also explain some odd failures: a model can miscount the letters in a word because it saw the word as a few chunks, never as separate letters.
+:::
+
 ## Why not characters, and why not words
 
 A language model predicts the next *token*, so the first design decision is what a token is. Both obvious choices fail.
@@ -78,11 +82,19 @@ The model sees ids, not characters. If "strawberry" is \`str|aw|berry\`, the num
 
 ## The alternative: Unigram
 
-BPE builds bottom-up. SentencePiece's **Unigram** model (Kudo 2018) works top-down: start from a large candidate vocabulary, fit a probability to each piece, and repeatedly prune the pieces whose removal least hurts the likelihood of the corpus. T5 and ALBERT use Unigram; Llama 1 and 2 used SentencePiece's BPE mode; Llama 3 moved to tiktoken-style byte-level BPE.
+BPE builds bottom-up. SentencePiece's **Unigram** model (Kudo 2018) works top-down.
+
+:::deeper Going deeper: how Unigram works and which models use it
+Start from a large candidate vocabulary, fit a probability to each piece, and repeatedly prune the pieces whose removal least hurts the likelihood of the corpus. T5 and ALBERT use Unigram; Llama 1 and 2 used SentencePiece's BPE mode; Llama 3 moved to tiktoken-style byte-level BPE.
+:::
 
 ## Where this toy differs from production
 
-Your base vocabulary is the characters of the training text, so an unseen character encodes to \`<|unk|>\`; GPT-2 starts from the 256 byte values, so nothing is ever unknown and the round trip is exact for any input. Your regex knows only ASCII letters and digits, where GPT-2's uses Unicode categories (\`\\p{L}\`, \`\\p{N}\`) and handles contractions such as \`'s\` and \`'re\`. Your merge loop re-counts every pair after every merge, fine for 43 KB of text; \`lib/tokenizer.js\` updates counts incrementally, and Hugging Face's \`tokenizers\` trainer keeps pairs in a heap so gigabytes stay tractable. \`tiktoken\` encodes in Rust with the same lowest-rank-first rule over bytes that you are about to write.
+Your base vocabulary is the characters of the training text, so an unseen character encodes to \`<|unk|>\`; GPT-2 starts from the 256 byte values, so nothing is ever unknown and the round trip is exact for any input.
+
+:::deeper Going deeper: how production tokenizers are engineered
+Your regex knows only ASCII letters and digits, where GPT-2's uses Unicode categories (\`\\p{L}\`, \`\\p{N}\`) and handles contractions such as \`'s\` and \`'re\`. Your merge loop re-counts every pair after every merge, fine for 43 KB of text; \`lib/tokenizer.js\` updates counts incrementally, and Hugging Face's \`tokenizers\` trainer keeps pairs in a heap so gigabytes stay tractable. \`tiktoken\` encodes in Rust with the same lowest-rank-first rule over bytes that you are about to write.
+:::
 `,
   steps: [
     {

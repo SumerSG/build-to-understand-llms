@@ -38,6 +38,10 @@ export default {
       why: 'It does the same 4 * seqLen^2 * headDim FLOPs per head. It keeps tiles of Q, K and V in SRAM and recomputes the softmax online, so the quadratic term disappears from the byte count, not from the FLOP count.' },
   ],
   concept: `
+:::plain
+A GPU, the chip that runs language models, can be slow for two different reasons: it can run out of arithmetic speed, or it can sit waiting for numbers to arrive from its memory. The roofline model is a simple way to tell which: count how many calculations a task does for each byte it has to fetch, and compare that ratio with the chip's own ratio of calculation speed to memory speed. When a model writes text for a single user, each new word needs the whole model read from memory but only a little arithmetic, so the chip mostly waits, using well under one percent of its calculating power in this module's example. That one fact explains much of how LLMs are served: why providers process many users' requests together, why storing a model in smaller numbers can make it faster, and why reading your prompt costs less per token (word or piece of a word) than writing the answer.
+:::
+
 ## Two roofs over every kernel
 
 A GPU can do two things: arithmetic and moving bytes. An H100 SXM does approximately 989 TFLOP/s of dense bf16 matrix maths (NVIDIA's H100 datasheet) and reads approximately 3.35 TB/s from its HBM3 memory. A kernel that does \`flops\` floating-point operations and moves \`bytes\` bytes therefore cannot finish faster than \`flops / peakFlops\`, and cannot finish faster than \`bytes / bandwidth\`. If the two overlap perfectly — and a well-written kernel prefetches while it computes — the time is the larger of the two:
@@ -48,7 +52,9 @@ time = max(flops / peakFlops, bytes / bandwidth)
 
 That is the whole roofline model (Williams, Waterman & Patterson, 2009). Rearranged as achieved FLOP/s against **arithmetic intensity** \`intensity = flops / bytes\`, it becomes two straight lines: a sloped memory roof \`intensity * bandwidth\` and a flat compute roof \`peakFlops\`. They meet at the **ridge point** \`peakFlops / bandwidth\`, which for the H100 is \`989e12 / 3.35e12 = 295\` FLOP/byte. A kernel below 295 FLOP/byte is **memory-bound**: the tensor cores wait for HBM. Above it, it is **compute-bound**.
 
+:::deeper Going deeper: newer GPUs
 Per GPU, NVIDIA's DGX B200 figures give approximately 2.25 PFLOP/s dense bf16 and 8 TB/s of HBM3e: a ridge of about 281 FLOP/byte, almost the H100's. At FP4, approximately 9 PFLOP/s dense on the same bandwidth, the ridge is 4 times higher, so even more of inference sits on the memory side.
+:::
 
 :::predict
 A decode step multiplies one token's activations, a \`[1, 4096]\` row, by a \`[4096, 4096]\` bf16 weight matrix. That is 33.6 MFLOP. How many bytes must move, and what intensity does that give?
@@ -74,7 +80,9 @@ An H100 holds Llama-3-8B in bf16, which is 16.06 GB of weights. Every generated 
 
 ## Where this toy differs from production
 
+:::deeper Going deeper: how engineers measure real kernels
 You will benchmark JavaScript on a CPU, and JavaScript reaches roughly 1 GFLOP/s — about a million times below an H100's tensor cores, and far below your CPU's own memory roof, so our tiling experiment measures cache behaviour, not the HBM wall. There are no tensor cores, no warps, no asynchronous copies, and no way to see the effect of fp8. The cost model is also optimistic: it assumes perfect overlap, perfect caching of each tile, and it ignores kernel launch overhead, wave quantisation and the fact that real kernels reach 60–80% of the roofline. Production engineers measure the real thing with Nsight Compute and report **MFU** (model FLOPs utilisation) against the datasheet peak. What survives the simplification is the ordering: which ops are memory-bound, and by how much.
+:::
 `,
   steps: [
     {

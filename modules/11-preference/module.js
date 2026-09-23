@@ -29,6 +29,10 @@ export default {
       why: 'DPO can raise the margin by lowering both log-probs unequally. Production runs log the chosen and rejected log-ratios separately (and variants such as DPO-Positive add a term to stop the chosen one from falling) for exactly this reason.' },
   ],
   concept: `
+:::plain
+Preference training teaches a model which of two answers people like better, since people can reliably pick between two answers even when they could not write the best one. This module builds a reward model, a scorer trained on such choices, and DPO, a shortcut that trains the assistant directly on preferred and rejected pairs. This stage shapes tone, helpfulness and refusals. Familiar quirks, such as overlong answers or refusing harmless but risky-looking requests, often trace back to it.
+:::
+
 ## From a comparison to a gradient
 
 SFT (module 10) gives you a model that answers in the right format. It does not say which of two plausible answers is *better*. Humans can rarely write the best answer, but they can usually pick between two. InstructGPT (Ouyang et al. 2022) made the recipe standard: **SFT**, then a **reward model** (RM) trained on human comparisons, then **reinforcement learning** (PPO) towards high reward. This module builds the RM stage, then DPO, which collapses the last two stages into one loss.
@@ -85,7 +89,9 @@ Margin = 0.1 · (0.4 − (−0.6)) = 0.1. And yes: the loss constrains only the 
 
 ## Variants, in one paragraph
 
+:::deeper Going deeper: DPO variants
 **IPO** (Azar et al. 2023) replaces the log-sigmoid with a squared loss on the margin, so the policy stops pushing at a target margin instead of overfitting near-deterministic preferences. **KTO** (Ethayarajh et al. 2024) needs no pairs, only good/bad labels on single responses. **ORPO** (Hong et al. 2024) drops the reference and adds an odds-ratio term to the SFT loss. **SimPO** (Meng et al. 2024) also drops the reference and uses the *length-normalised* log-probability with a target margin, a direct attack on length bias. Meta's Llama 3 report (2024) describes rounds of rejection sampling plus DPO on top of SFT; many open pipelines use DPO or a close variant, with PPO or GRPO (module 12) reserved for rewards a verifier can compute.
+:::
 
 ## Harmlessness is a preference too
 

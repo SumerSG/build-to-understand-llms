@@ -29,6 +29,10 @@ export default {
       why: 'Float addition is not associative. Same seed only implies same output when the arithmetic that produced the logits is bit-identical, which continuous batching does not guarantee.' },
   ],
   concept: `
+:::plain
+A language model does not write a word directly: at each step it gives every possible next token (a word or a piece of a word) a probability, and a separate rule called decoding picks one. That rule can be changed without retraining the model, and it is what the "temperature" and "top-p" settings in a chat product or an API control. Temperature sets how adventurous the pick is: a low value makes the model almost always take its most likely token, so answers are more predictable and more repetitive, and a high value gives unlikely tokens more chances, so answers are more varied and more error-prone. Top-p first throws away the rarest candidates, keeping only the most likely tokens that together make up a chosen share of the probability, for example 90 percent, and then picks among those. This is why the same prompt can give different answers each time, and why a common recommendation is a low temperature for tasks with one right answer, such as pulling fields out of a document, and a higher one for brainstorming.
+:::
+
 ## The model does not choose a token
 
 Every model from modules 04–06 ends the same way: \`V\` logits, one per vocabulary entry, which softmax turns into a distribution over the next token. Nothing in the network picks one. That is the job of a separate program, the **decoder**, and you can change it without touching a weight. Here it is a pipeline of **logit processors**: each takes logits, returns new logits, and marks a dropped token with \`-Infinity\` (probability 0 after softmax).
@@ -79,7 +83,9 @@ Your sampler draws one uniform per token, so the same seed gives the same text; 
 
 ## Where this toy differs from production
 
+:::deeper Going deeper: how serving engines sample at scale
 You run one sequence at a time on a 256-token vocabulary with plain loops over a \`Float32Array\`, and top-p sorts the whole vector every step. A serving engine samples a whole batch in one fused GPU kernel, uses a partial sort for top-k, avoids a full sort for top-p on a 128,000-token vocabulary (FlashInfer's sampling kernels, which vLLM and SGLang can use, draw from the top-p set by rejection sampling without sorting), and checks stop sequences incrementally in the detokenizer. The arithmetic is what you write here; only the batching and the kernels change.
+:::
 `,
   steps: [
     {

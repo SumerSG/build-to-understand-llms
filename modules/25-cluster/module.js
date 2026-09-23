@@ -71,11 +71,15 @@ export default {
     },
   ],
   concept: `
+:::plain
+Training a large language model takes thousands of GPUs (the chips that do the calculations) joined by links that get far slower with distance: fastest within one server, much slower between servers. Planning a cluster means putting the chattiest work on the fastest links. Breakdowns are routine: Meta's Llama 3 report counted a job interruption about every three hours. That is part of why frontier models cost so much to train.
+:::
+
 ## The machine is a hierarchy, not a pile
 
-Buy 128 H100s and you do not get 128 equal peers. You get 16 boxes. Inside one box — an NVIDIA HGX or DGX H100 baseboard — eight SXM modules hang off four NVSwitches, and any GPU can reach any other at approximately 900 GB/s bidirectional, so roughly 450 GB/s in each direction (NVIDIA's H100 datasheet). The box also holds eight ConnectX-7 InfiniBand NDR network cards, one per GPU, each carrying 400 Gb/s, which is 50 GB/s (NVIDIA's DGX H100 and ConnectX-7 datasheets). For comparison, the PCIe Gen5 x16 slot the GPU sits in carries approximately 64 GB/s each way, so NVLink is roughly 7× PCIe. Those cards are how the box talks to the other fifteen.
+Buy 128 H100s and you do not get 128 equal peers. You get 16 boxes. Inside one box — an NVIDIA HGX or DGX H100 baseboard — eight SXM modules hang off four NVSwitches, and any GPU can reach any other at approximately 900 GB/s bidirectional, 450 GB/s each way (NVIDIA's H100 datasheet). The box talks to the other fifteen through eight ConnectX-7 InfiniBand NDR network cards, one per GPU, each carrying 400 Gb/s, or 50 GB/s (NVIDIA's DGX H100 and ConnectX-7 datasheets). The PCIe Gen5 x16 slot the GPU sits in carries approximately 64 GB/s each way, so NVLink is roughly 7× PCIe.
 
-Write the four numbers in a column, with one newer rung for comparison, and the shape of every decision in this module appears:
+The four numbers, plus one newer rung for comparison:
 
 | rung | approximate one-way bandwidth | how far |
 |------|------------------------------|---------|
@@ -85,9 +89,13 @@ Write the four numbers in a column, with one newer rung for comparison, and the 
 | InfiniBand NDR 400, one leaf hop | 50 GB/s | inside one pod |
 | the same port through a spine we make 2:1 oversubscribed | 25 GB/s | anywhere |
 
-The three H100 rungs are each roughly an order of magnitude apart (3,350 → 450 → 50); the spine row is our modelling choice, not a datasheet number. Large training fabrics are often built non-blocking, but real ones still lose bandwidth to congestion once traffic leaves a leaf switch, and halving it makes the planner's choices visible. Fabrics are built **rail-optimised**: GPU *k* of every node connects to leaf switch *k* (NVIDIA's DGX SuperPOD reference architecture groups 32 nodes per such unit), so a collective in which every rank talks to the same slot on other nodes stays on one rail and does not need the spine. Our model collapses that into two inter-node tiers, "same pod" and "anywhere".
+The three H100 rungs are each roughly an order of magnitude apart (3,350 → 450 → 50); the spine row is our modelling choice, not a datasheet number. Large training fabrics are often built non-blocking, but still lose bandwidth to congestion beyond a leaf switch; halving it makes the planner's choices visible. Fabrics are built **rail-optimised**: GPU *k* of every node connects to leaf switch *k* (NVIDIA's DGX SuperPOD reference architecture groups 32 nodes per such unit), so a collective between same-slot ranks on different nodes stays on one rail, off the spine. Our model collapses that into two inter-node tiers, "same pod" and "anywhere".
 
-The ladder is not frozen at H100. NVIDIA lists its Blackwell GPUs (B200 and GB200, shipping in volume from 2025) at approximately 2.25 to 2.5 PFLOP/s dense bf16 and 8 TB/s of HBM3e each, a bit more than double the H100 on both counts, so module 23's ridge point barely moves: \`2.25e15 / 8e12 ≈ 281\` FLOP/byte against 295. The bigger change is the NVLink rung. A GB200 NVL72 rack joins 72 GPUs through NVLink Switch trays at approximately 1.8 TB/s bidirectional per GPU (NVIDIA's GB200 NVL72 page), so the fast domain becomes a rack instead of a box. Every constant in your code stays H100; the method carries over unchanged.
+The ladder is not frozen at H100.
+
+:::deeper Going deeper: Blackwell GPUs
+NVIDIA lists its Blackwell GPUs (B200 and GB200, shipping in volume from 2025) at approximately 2.25 to 2.5 PFLOP/s dense bf16 and 8 TB/s of HBM3e each, a bit more than double the H100 on both counts, so module 23's ridge point barely moves: \`2.25e15 / 8e12 ≈ 281\` FLOP/byte against 295. The bigger change is the NVLink rung. A GB200 NVL72 rack joins 72 GPUs through NVLink Switch trays at approximately 1.8 TB/s bidirectional per GPU (NVIDIA's GB200 NVL72 page), so the fast domain becomes a rack instead of a box. Every constant in your code stays H100; the method carries over unchanged.
+:::
 
 :::predict
 An all-reduce of a 16 GB gradient buffer over 128 GPUs. Schedule A rings through all 128 ranks on the inter-node link. Schedule B reduce-scatters inside each node over NVLink, all-reduces the resulting chunks across the 16 nodes, then all-gathers inside each node. How much faster is B?
@@ -97,9 +105,9 @@ About 6× with this module's constants (213 ms against 1,276 ms). In B each GPU 
 
 ## Why tensor parallelism is eight wide
 
-Megatron-LM communicates four all-reduces of the full \`[tokens, dModel]\` activation per transformer layer. For a 70B model that is 320 all-reduces per micro-batch. Data parallelism communicates one gradient all-reduce per *step*, and pipeline parallelism one activation per stage boundary. So the chattiest axis must get the fastest link, and the fastest link stops at the edge of the NVLink domain, 8 GPUs on an HGX H100 node, so **tp = 8** here. A GB200 NVL72 rack stretches that domain to 72 GPUs, and NVIDIA's own NVL72 write-ups spend much of the extra room on wide expert parallelism for serving mixtures of experts rather than on wider tensor parallelism: a tensor-parallel all-reduce moves about the same bytes per GPU whatever \`tp\` is, while each GPU's share of the matmuls shrinks as \`1/tp\`.
+Megatron-LM communicates four all-reduces of the full \`[tokens, dModel]\` activation per transformer layer. For a 70B model that is 320 all-reduces per micro-batch. Data parallelism communicates one gradient all-reduce per *step*, and pipeline parallelism one activation per stage boundary. So the chattiest axis gets the fastest link, which stops at the edge of the NVLink domain, 8 GPUs on an HGX H100 node: **tp = 8**. NVIDIA's own write-ups spend much of a GB200 NVL72 rack's 72-GPU domain on wide expert parallelism for serving mixtures of experts rather than on wider tensor parallelism: a tensor-parallel all-reduce moves about the same bytes per GPU whatever \`tp\` is, while each GPU's share of the matmuls shrinks as \`1/tp\`.
 
-That is not a rule you memorise — it falls out of the arithmetic. In the demo your planner will find that tp = 16 uses *less* memory per GPU and is still about a third slower, purely because a group of 16 consecutive ranks straddles two nodes.
+That falls out of the arithmetic: in the demo your planner will find that tp = 16 uses *less* memory per GPU and is still about a third slower, purely because a group of 16 consecutive ranks straddles two nodes.
 
 Rank order is what makes this work. Megatron-LM numbers ranks with tensor parallelism innermost: \`rank = (ppIndex·dp + dpIndex)·tp + tpIndex\`. Tensor-parallel groups are therefore consecutive ids, data-parallel groups are spaced \`tp\` apart, and pipeline groups \`tp·dp\` apart.
 
@@ -123,7 +131,9 @@ At that size, failures are continuous. The Llama 3 paper (Grattafiori et al. 202
 
 ## Where this toy stops
 
-Every link here is a single alpha–beta number. Real fabrics have congestion, adaptive routing, SHARP in-network reduction on the switch and per-rail asymmetry; NCCL picks among ring, tree and double-binary-tree algorithms by message size and topology. Our "pod" and "cluster" tiers stand in for a real fat tree with measurable oversubscription, and we assume perfectly balanced expert routing and independent failures. Our reliability model treats every interruption as an independent, memoryless failure with no restart cost; real jobs also pay minutes to reschedule, reload and warm up. The hierarchy and the arithmetic of routing traffic onto it are real; every constant is approximate.
+:::deeper Going deeper: what real fabrics add
+Every link here is a single alpha–beta number. Real fabrics have congestion, adaptive routing, SHARP in-network reduction on the switch and per-rail asymmetry; NCCL picks among ring, tree and double-binary-tree algorithms by message size and topology. Our "pod" and "cluster" tiers stand in for a real fat tree with measurable oversubscription, and we assume perfectly balanced expert routing. Our reliability model treats every interruption as an independent, memoryless failure with no restart cost; real jobs also pay minutes to reschedule, reload and warm up. The hierarchy and the arithmetic of routing traffic onto it are real; every constant is approximate.
+:::
 `,
   steps: [
     {

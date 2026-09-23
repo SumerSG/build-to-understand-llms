@@ -31,6 +31,10 @@ export default {
       why: 'Each entry tends to alpha / (alpha · V) = 1/V. Smoothing interpolates between the data (alpha = 0) and the prior (alpha → ∞); on the lab corpus the best alpha is about 0.1.' },
   ],
   concept: `
+:::plain
+This module builds the simplest possible language model: a table that says, for each character, how likely each character is to come next, filled in by counting which characters follow which in a sample of text. You then build the same table a second way, starting from random numbers and nudging them step by step until the real text becomes more likely, which is the same training method every large model uses. Every language model, however large, does this one job: given the text so far, it gives a probability to each possible next token (a chunk of text), and writing a reply means repeatedly drawing one token from those probabilities. That drawing step is why the same prompt can give different answers on different tries, unless the service is set to always take the most likely token. You also measure the model with perplexity, a score for how many equally likely options the model is effectively choosing between at each step, so lower is better. This table only looks one character back, and the rest of the course is about giving the model much more to look at.
+:::
+
 ## A language model is a table
 
 Fix a tokenizer with \`V\` tokens. By the chain rule a language model only has to supply \`P(next | everything so far)\`. A **bigram** model keeps one token of context, \`P(next | previous)\`: a table with \`V\` rows and \`V\` columns, row \`i\` being a distribution over what follows token \`i\`. With the lab's \`CharTokenizer\`, \`V = 71\`, so the whole model is 5,041 numbers. Andrej Karpathy's *makemore* starts here too.
@@ -61,7 +65,11 @@ You evaluate the alpha = 0 count table on the validation text. What number comes
 \`Infinity\`. One unseen transition has \`P = 0\` and \`−log 0 = ∞\`. The fix is not a bigger corpus (there is always a next unseen pair) but a prior.
 :::
 
+Counting was the production method for decades; it scaled to huge corpora, but the context it could use did not.
+
+:::deeper Going deeper: counting at web scale, before neural models
 Before about 2012 the production form of this idea, 5-gram counts with **Kneser–Ney smoothing** (Kneser & Ney 1995; the "modified" variant of Chen & Goodman 1999), was the standard language model in speech recognition and statistical machine translation. Google's translation system counted 5-grams over roughly two trillion tokens of web text; at that scale even Kneser–Ney was too expensive to estimate, so it used a cruder "stupid backoff" (Brants et al. 2007). Counting scaled; the context did not.
+:::
 
 ## Replacing counting with gradient descent
 
@@ -77,7 +85,11 @@ Why take the slow road to the same table? Because \`W[x]\` is the only part that
 
 ## Where this toy differs from production
 
-The vocabulary is 71 characters; GPT-2 uses 50,257 byte-level BPE tokens, so the smallest GPT-2's output table alone is \`50,257 × 768\` numbers and its perplexity is per token. Classical n-gram toolkits (SRILM, KenLM) stored billions of 5-gram counts with back-off, not a dense table. The neural model here is a bare table trained with AdamW for 600 minibatch steps; a real run (module 07) adds a schedule, clipping, validation and checkpoints. And a bigram, counted or learned, writes text that looks like letters, not words: that is what one character of context buys; the rest of the curriculum closes the gap.
+A bigram, counted or learned, writes text that looks like letters, not words: that is what one character of context buys; the rest of the curriculum closes the gap.
+
+:::deeper Going deeper: sizes and tooling in real systems
+The vocabulary is 71 characters; GPT-2 uses 50,257 byte-level BPE tokens, so the smallest GPT-2's output table alone is \`50,257 × 768\` numbers and its perplexity is per token. Classical n-gram toolkits (SRILM, KenLM) stored billions of 5-gram counts with back-off, not a dense table. The neural model here is a bare table trained with AdamW for 600 minibatch steps; a real run (module 07) adds a schedule, clipping, validation and checkpoints.
+:::
 `,
   steps: [
     {

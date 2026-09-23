@@ -29,6 +29,10 @@ export default {
       why: 'Train falling while validation rises, with a large and growing gap, means the model predicts windows it has seen much better than fresh text. More data (or fewer epochs over the same data) fixes it; more steps would widen the gap. Undertrained looks different: both curves still falling, close together.' },
   ],
   concept: `
+:::plain
+Pre-training is the first and usually costliest stage of making a language model: it reads huge amounts of text, guesses the next token (chunk of text) at every position, and keeps nudging its internal numbers so the right guesses become more likely. This module builds that loop and the guard rails that stop it going wrong. That stage gives a model its general knowledge and fluency; the assistants you use at work were then trained further to follow instructions. A model's knowledge cutoff is roughly when its pre-training text was collected, so on its own it cannot know later events.
+:::
+
 ## One loop
 
 Every large language model was made by the same loop, and you already own every piece of it: \`backward()\` from module 02, cross-entropy from module 04, a GPT whose \`forward\` returns one prediction per position from module 06. Pre-training is:
@@ -64,7 +68,9 @@ Bias correction fixes the *size* of Adam's early estimates but not their *noise*
 
 Even with warmup, an occasional batch produces a gradient ten times larger than usual, and one such step can undo hours of progress. Clipping the *global* norm of all gradients to \`maxNorm\` bounds the length of the update while keeping its direction. Log the norm before clipping: a run whose gradient norm creeps upward is about to diverge.
 
+:::deeper Going deeper: newer training recipes
 Recipes since 2024 keep this loop and change the parts around it. **Warmup-stable-decay** (WSD; Hu et al. 2024, MiniCPM) holds the learning rate at its peak and decays it only over a short final stretch, so you can branch a decayed checkpoint off the flat phase at any point instead of fixing \`total\` in advance. Llama 3 (2024) ended pre-training by annealing the learning rate to zero over its final approximately 40 million tokens while upsampling high-quality data. **Muon** (Jordan et al. 2024) orthogonalises the momentum update of each hidden weight matrix and is the most prominent alternative to AdamW at scale; Moonshot AI trained Kimi K2 (2025) with a variant of it. Against loss spikes, two cheap guards are now common: **z-loss** (PaLM, Chowdhery et al. 2022), a small penalty \`1e-4 · (log Z)²\`, where \`Z\` is the softmax normaliser (the sum of \`exp\` over the output logits), which holds \`log Z\` near 0 so the logits cannot drift upward together, and **QK-norm** (Dehghani et al. 2023, ViT-22B), a normalisation of queries and keys before their dot product so that attention logits cannot grow without bound.
+:::
 
 :::predict
 You run the same 350-step config twice, once with clipping at 1.0 and once without. Do you expect a different final loss?
@@ -80,9 +86,13 @@ The training loss is measured on batches the model is updating on; the validatio
 
 ## What is missing here, and what production adds
 
-This loop runs in fp32 on one thread of one CPU. Real runs add **mixed precision** (bf16 matmuls with fp32 master weights and optimizer state, 16 bytes per parameter in total), **gradient checkpointing** (recompute activations during backward instead of storing them), **checkpoint and resume** (model, optimizer buffers and rng state saved every few hundred steps so a crash costs minutes, not days), and a **data loader** that shards trillions of tokens across thousands of workers (module 09). Nothing here is distributed; module 24 splits this same loop across GPUs. The loop itself does not change.
+This loop runs in fp32 on one thread of one CPU.
+
+:::deeper Going deeper: mixed precision, checkpoints, number formats
+Real runs add **mixed precision** (bf16 matmuls with fp32 master weights and optimizer state, 16 bytes per parameter in total), **gradient checkpointing** (recompute activations during backward instead of storing them), **checkpoint and resume** (model, optimizer buffers and rng state saved every few hundred steps so a crash costs minutes, not days), and a **data loader** that shards trillions of tokens across thousands of workers (module 09). Nothing here is distributed; module 24 splits this same loop across GPUs. The loop itself does not change.
 
 The choice of bf16 is deliberate. bf16 keeps fp32's 8-bit exponent, so it has the same range with fewer mantissa bits (7 instead of 23). fp16 spends more bits on the mantissa (10) and fewer on the exponent (5): it tops out at 65,504, and gradients smaller than about 6e-8 underflow to zero. That is why fp16 training needs **loss scaling** (Micikevicius et al. 2018): multiply the loss by a large factor before \`backward()\`, divide the gradients by the same factor before the optimizer step, and when any gradient overflows to inf or NaN, skip that step and lower the factor.
+:::
 `,
   steps: [
     {

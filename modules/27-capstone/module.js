@@ -41,6 +41,10 @@ export default {
       why: 'Context management is about keeping the context coherent as well as short.' },
   ],
   concept: `
+:::plain
+This capstone joins the earlier pieces into one small chat assistant, following the path a message takes through a real product: the conversation becomes one long text with markers for who said what, is cut to fit the model's size limit, is split into tokens (words or pieces of words), runs through the model, and is answered one token at a time, with tools run in between when the model asks for one. The key idea is that a conversation is not reprocessed from scratch on every turn: the model's stored work on earlier messages (the KV cache from module 15) is kept, so a new turn only pays for its new words. That saving lasts only while the start of the conversation stays exactly the same, which is why products drop or summarise old turns in large, occasional steps rather than trimming a little every turn. It also explains why very long conversations, edits to an early message and a changed system prompt can all make the next reply slower or more expensive.
+:::
+
 ## Where each module sits on the request path
 
 A message sent to a production assistant passes through a fixed sequence of stages. Each is listed with the module where you built it:
@@ -85,7 +89,9 @@ The checkpoint is the 2-layer, 64-dimension model pre-trained in this lab on a 4
 
 ## Where the toy differs from production
 
+:::deeper Going deeper: what a production assistant adds
 Production context windows are 128K tokens (Llama 3.1) rather than 64. Prefill is one batched pass, not a loop of decode steps. KV lives in paged blocks shared across requests (vLLM's default block is 16 tokens), not in one growing array per conversation. Chat templates are Jinja templates shipped with the tokenizer (Hugging Face's \`chat_template\`). Tool calls are JSON (OpenAI function calling) or Python-style calls (Llama 3.2), and are often enforced with constrained decoding (module 22). This pipeline also leaves out whole stages that products need: safety classifiers such as Llama Guard on input and output, token streaming over server-sent events, tracing and latency metrics (time to first token, time per output token), billing per token, and retries. Each would be another stage on the same path.
+:::
 `,
   steps: [
     {

@@ -31,6 +31,10 @@ export default {
       why: 'Selection is optimisation: the harder you select on a proxy, the more you pick its errors (Gao et al. 2022). The oracle has no such errors, so its curve only rises.' },
   ],
   concept: `
+:::plain
+Test-time compute means letting a model do more work on each question as it answers, instead of only making the model bigger or training it longer. There are two basic ways: have it write several independent attempts and pick one, or let a single attempt reason step by step for longer, which is what "reasoning" or "thinking" models such as OpenAI's o1 and DeepSeek-R1 do. Either way something must choose the final answer, such as a majority vote or a separate scoring model, and this module shows that a flawed scorer can make results worse the more attempts it sees. The extra thinking is not free: each thinking token (a word or a piece of a word) is generated like any other output token, and providers such as OpenAI bill hidden reasoning tokens as output tokens. That is why a "reasoning effort" or thinking-budget setting trades answer quality against cost and waiting time.
+:::
+
 ## A second axis for scaling
 
 Module 08 scaled *training* compute. Here you spend compute *at inference*, per problem. Snell et al. (2024) showed that, spent well, test-time compute can beat a model about 14 times larger on problems the small model already sometimes solves. OpenAI's o1 (2024) and DeepSeek-R1 (2025) made the idea standard: they write long reasoning traces before answering, and o1's report plots accuracy rising with both training and thinking compute.
@@ -73,7 +77,11 @@ Every thinking token is a decode step (module 15). Its KV cache grows with the t
 
 ## Toy versus production
 
-The reasoner is scripted, not trained: its errors are independent per step and drawn at a fixed rate, and its "reward models" are the exact checker plus a length bias and Gaussian noise. Real models' errors correlate across samples, real PRMs are much noisier than this one, real traces run to thousands of tokens rather than about 55, and real beam search shares prefix KV (module 17) and pays for PRM forward passes. The curves show how selection works and what it costs, not the numbers of any real model.
+The reasoner is scripted, not trained: its errors are independent per step and drawn at a fixed rate, and its "reward models" are the exact checker plus a length bias and Gaussian noise. The curves show how selection works and what it costs, not the numbers of any real model.
+
+:::deeper Going deeper: how real models and searches differ
+Real models' errors correlate across samples, real PRMs are much noisier than this one, real traces run to thousands of tokens rather than about 55, and real beam search shares prefix KV (module 17) and pays for PRM forward passes.
+:::
 `,
   steps: [
     {

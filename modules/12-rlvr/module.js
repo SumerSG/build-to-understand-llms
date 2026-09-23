@@ -29,6 +29,10 @@ export default {
       why: 'RLVR only trains "was it right" when the verifier truly measures rightness. Length, format and enumeration exploits are the classic ways a policy games a loose checker; the tests make your verifier compare numbers, not substrings.' },
   ],
   concept: `
+:::plain
+Reinforcement learning with verifiable rewards is a training stage in which the model attempts problems that a simple program can check, such as a maths answer or code that must pass tests, and is nudged towards the attempts that were checked correct. This module builds GRPO, a popular version that samples several attempts at the same question and rewards each one for doing better than the others in its group, so no separate judging model is needed. Published work, notably DeepSeek's R1 report, showed that this kind of training at scale makes models write long chains of working before they answer, because longer working got more answers right; this approach is widely associated with today's reasoning models. For someone who uses models at work, it helps explain why such models tend to improve most where answers can be checked, like maths and code, and why they spend extra tokens thinking, which providers typically bill as output. It also shows why a checker that is too lenient teaches a model to game the check instead of being right.
+:::
+
 ## From a learned reward to a checked one
 
 RLHF as used for InstructGPT trains three networks: the policy, a **reward model** fitted to human preference pairs (module 11), and a **value network** (the "critic") that PPO uses as its baseline. The critic is as large as the policy and its errors leak into every update.
@@ -75,7 +79,11 @@ On a real model the completion is a chain of thought followed by an answer, and 
 
 ## Systems note: rollouts dominate
 
-In production most wall-clock goes to generation, not gradient steps: 16 samples of thousands of tokens per prompt. Trainers such as verl and OpenRLHF run an inference engine (vLLM or SGLang) inside the loop, sync weights into it after each update, and increasingly generate **asynchronously** from weights an update or two old. The clipped ratio is what makes that staleness tolerable.
+In production most wall-clock goes to generation, not gradient steps: 16 samples of thousands of tokens per prompt.
+
+:::deeper Going deeper: how RL trainers keep generation fast
+Trainers such as verl and OpenRLHF run an inference engine (vLLM or SGLang) inside the loop, sync weights into it after each update, and increasingly generate **asynchronously** from weights an update or two old. The clipped ratio is what makes that staleness tolerable.
+:::
 
 ## Where this toy differs from production
 
