@@ -4,10 +4,10 @@ What is built, what is in progress, and what is planned. The registry (`modules/
 of truth: a module with `status: 'ready'` is part of the path and is verified by CI; `status: 'planned'`
 modules appear in the lab as "planned" and are skipped by the verifier.
 
-## In progress
-The 34 modules in the registry are being authored and adversarially reviewed. A whole-curriculum review
-(sequencing, cross-module facts, progression, coverage gaps) will produce further fixes and possibly new
-modules, which take ids 34–39.
+## Status
+All 35 modules in the registry are written, adversarially audited and verified in CI. A whole-curriculum
+review (sequencing, cross-module facts, progression, coverage gaps) has been applied; it added module 34,
+reasoning and test-time compute. Ids 35–39 are free for future modules.
 
 ## Planned: data-center deep dive (groundwork laid, not scheduled)
 Modules 40–42 in docs/CURRICULUM_BRIEFS.md: collectives from scratch, the data-center fabric, and

@@ -1,7 +1,7 @@
 # Build to Understand LLMs
 
 A build-it-yourself curriculum for the whole LLM stack, running entirely in your browser.
-Thirty-four self-contained projects: you write the code, the tests check it, and a goal demo
+Thirty-five self-contained projects: you write the code, the tests check it, and a goal demo
 draws what your code just did. Nothing counts as learned until it runs.
 
 | Track | You build |
@@ -9,14 +9,13 @@ draws what your code just did. Nothing counts as learned until it runs.
 | Foundations | a Zipf word counter (the lab loop), a tensor library, an autograd engine, a BPE tokenizer, a bigram language model |
 | Transformer & pre-training | attention, a GPT, the training loop, a compute/scaling planner, a data pipeline, a mixture-of-experts layer, a tiny multimodal model |
 | Post-training | SFT with loss masking, LoRA adapters, knowledge distillation, reward models and DPO, GRPO with verifiable rewards, an eval harness |
-| Inference | sampling, a KV cache, continuous batching with paged attention, prefix/prompt caching, speculative decoding, test-time compute (voting, verifiers, reward-guided search; planned), RoPE/GQA/MLA/sliding-window attention, long-context evaluation, quantisation |
+| Inference | sampling, a KV cache, continuous batching with paged attention, prefix/prompt caching, speculative decoding, test-time compute (voting, verifiers, reward-guided search), RoPE/GQA/MLA/sliding-window attention, long-context evaluation, quantisation |
 | Harnesses & agents | an agent tool loop, context management with BM25 retrieval, grammar-constrained decoding |
 | Systems & data centers | roofline analysis, data/tensor/pipeline parallelism simulators, node & interconnect placement, a serving cluster with disaggregated prefill/decode |
 | Capstone | a chat with a model trained in this lab |
 
-Planned next: module 34, reasoning and test-time compute, placed after speculative decoding (brief in
-[docs/CURRICULUM_BRIEFS.md](docs/CURRICULUM_BRIEFS.md)); and a data-center deep dive: programming the
-collectives, a simulated network fabric, and cluster operations (design in [docs/ROADMAP.md](docs/ROADMAP.md)).
+Planned next: a data-center deep dive: programming the collectives, a simulated network fabric, and
+cluster operations (design in [docs/ROADMAP.md](docs/ROADMAP.md)).
 
 ## Run it
 

@@ -58,7 +58,7 @@ export const MODULES = [
     goal: 'A radix-tree prefix cache with LRU eviction and a prompt-caching cost model; you measure hit rates and cost savings on realistic traffic.' },
   { id: '18-speculative', track: 'inference', title: 'Speculative decoding', minutes: 90, status: 'ready',
     goal: 'Draft-and-verify decoding with the rejection-sampling acceptance rule that provably preserves the target distribution, with measured speedup.' },
-  { id: '34-test-time-compute', track: 'inference', title: 'Reasoning & test-time compute', minutes: 105, status: 'planned',
+  { id: '34-test-time-compute', track: 'inference', title: 'Reasoning & test-time compute', minutes: 105, status: 'ready',
     goal: 'Self-consistency voting, best-of-N with outcome and process reward models, step-level beam search and thinking budgets on a verifiable reasoning task, with the accuracy each buys per GPU-second.' },
   { id: '29-attention-variants', track: 'inference', title: 'Modern attention: RoPE, GQA, MLA, sliding windows', minutes: 105, status: 'ready',
     goal: 'Rotary positions, grouped-query and multi-head latent attention, and a sliding-window ring cache, each proven equivalent to plain attention where it should be, with the KV-cache bytes each one saves.' },
