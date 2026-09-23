@@ -63,7 +63,7 @@ The mask does not touch the KV cache: it acts on logits after the forward pass. 
 
 ## What the guarantee does not cover
 
-The mask enforces form, not content. The demo's story model writes names like "My mar my te" and negative ages, because the schema said "integer", not "age". Masking also changes the distribution: renormalising over legal tokens step by step is not sampling from the model conditioned on a valid output. Where the model put less than 1% of its probability on legal tokens, the grammar made the choice. Finally, a \`max_tokens\` cut-off can still truncate JSON. Here \`maxLength\` and \`maxDigits\` bound the length of every value, so the longest legal object is finite (124 characters for the demo schema, when every name character is a \`\\uXXXX\` escape) and a \`maxTokens\` at least that large always lets generation finish.
+The mask enforces form, not content. The demo's story model writes names like "My mar my te" and negative ages, because the schema said "integer", not "age". Masking also changes the distribution: renormalising over legal tokens step by step is not sampling from the model conditioned on a valid output. Where the model put less than 1% of its probability on legal tokens, the grammar made the choice. Finally, a \`max_tokens\` cut-off can still truncate JSON. Here \`maxLength\` and \`maxDigits\` bound the length of every value, so the longest legal object is finite and a \`maxTokens\` at least that large always lets generation finish. The demo schema is \`{ name: { type: 'string', maxLength: 12 }, age: { type: 'integer', maxDigits: 2 }, member: { type: 'boolean' }, tier: { enum: ['gold', 'silver', 'bronze'] } }\` with all four keys required. Its longest object is 124 characters: \`{\` (1), \`"name":\` (7), a name of 12 \`\\uXXXX\` escapes in quotes (74), \`,\` (1), \`"age":\` (6), \`-99\` (3), \`,\` (1), \`"member":\` (9), \`false\` (5), \`,\` (1), \`"tier":\` (7), \`"silver"\` (8) and \`}\` (1).
 
 ## Where the toy differs from production
 
@@ -139,7 +139,7 @@ Two functions.
 \`constrainedGenerate(model, machine, vocab, { eos, next, temperature = 1, maxTokens = 256, masker = null })\`:
 
 1. Start from \`machine.start\` with no ids.
-2. Each step: \`logits = model(ids)\` (the model sees the ids generated so far), mask them with \`masker(state)\` if one is given, otherwise \`maskForState\`, and draw with \`sample(masked, { temperature, next })\` from \`lib/sampling.js\`.
+2. Each step: \`logits = model(ids)\` (the model sees the ids generated so far; the tests copy the array on every call, so passing your live \`ids\` is fine, but pass \`ids.slice()\` if a model of yours keeps a reference to it), mask them with \`masker(state)\` if one is given, otherwise \`maskForState\`, and draw with \`sample(masked, { temperature, next })\` from \`lib/sampling.js\`.
 3. If the id is \`eos\`, return \`{ text, ids, finished: true }\`. Otherwise advance the state by \`vocab[id]\`, push the id and append its text.
 4. If \`maxTokens\` runs out, return \`{ text, ids, finished: false }\`.
 
