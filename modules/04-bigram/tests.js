@@ -147,6 +147,7 @@ export const tests = [
     const sd1 = sd(Array.from(m.initNeural(30, T.rng(4), 0.5).W.data));
     T.ok(sd1 > 0.4 && sd1 < 0.6, `initNeural(V, next, std) must honour its std argument (asked for 0.5, measured ${sd1.toFixed(3)})`);
     T.eq(Array.from(m.initNeural(6, T.rng(1)).W.data), vals, 'the same seed must give the same initialisation');
+    T.close(vals, Array.from(Tensor.randn([6, 6], T.rng(1), 0.01).data), 1e-7, 'W must be drawn with Tensor.randn([V, V], next, std, { requiresGrad: true }): the training tests seed `next` and compare against a reference W drawn that way, so any other draw order gives different numbers');
   } },
   { step: 'neural', name: 'neuralLogits(model, xs) is an embedding lookup: row xs[i] of W, still attached to the graph', run(m, T) {
     const model = m.initNeural(4, T.rng(2));

@@ -7,7 +7,7 @@ export default {
   goal: 'A count-based and a neural bigram language model on the character-level corpus; you measure perplexity for both, watch the neural table converge to the counts, and sample text from each.',
   prereqs: ['01-tensors', '02-autograd', '03-tokenizer'],
   recall: [
-    { q: 'lib/tokenizer.js\'s `CharTokenizer` (the character-level baseline to module 03\'s BPE) builds its vocabulary from…', options: ['The 256 byte values', 'The sorted distinct characters of the training text', 'A fixed list of English letters'], answer: 1,
+    { q: 'lib/tokenizer.js\'s `CharTokenizer` (the character-level alternative to the BPE tokenizer you built in module 03) builds its vocabulary from…', options: ['The 256 byte values', 'The sorted distinct characters of the training text', 'A fixed list of English letters'], answer: 1,
       why: 'On the lab corpus that is 71 characters, so both bigram tables in this module are 71 × 71 and every id is a row index.' },
     { q: 'In module 01, entry (i, j) of a row-major `[V, V]` table lives at flat offset…', options: ['`i + j`', '`i * V + j`', '`j * V + i`'], answer: 1,
       why: 'Every count, probability and logit lookup in this module is this one offset; getting it backwards transposes the model.' },
@@ -127,7 +127,7 @@ Two functions rather than one because the NLL is what every training loop in thi
       instructions: `
 \`sampleNext(probs, prev, next, temperature = 1)\`: draw one token id from row \`prev\` of the table. \`next\` is a seeded rng function from \`lib/util.js\` (\`rng(seed)\`), so draw \`u = next()\` **once** and invert the cumulative distribution: walk the row, accumulating probabilities, and return the first index whose running sum exceeds \`u\` (\`u < acc\`). If float rounding leaves the sum a hair below 1, return \`V − 1\`.
 
-Temperature reshapes the row before the draw: \`p[j] ∝ row[j]^(1/T)\`, renormalised to sum to 1. Do this in a fresh array: \`rowOf\` returns a view, and writing into it would silently change the model. \`T = 1\` leaves the row alone; \`T → 0\` concentrates on the most likely token; \`T → ∞\` flattens towards uniform. (Applied to probabilities this is the same as \`softmax(logits / T)\` applied to logits, which is how module 14 will do it.)
+Temperature reshapes the row before the draw: \`p[j] ∝ row[j]^(1/T)\`, renormalised to sum to 1. Do this in a fresh array: \`rowOf\` returns a view, and writing into it would silently change the model. \`T = 1\` leaves the row alone; \`T → 0\` concentrates on the most likely token; \`T → ∞\` flattens towards uniform. Only \`T > 0\` is valid here: at \`T = 0\` every power underflows to 0 and the row sums to 0, so nothing can be drawn. Module 14 handles \`T = 0\` separately, as greedy argmax. (Applied to probabilities this is the same as \`softmax(logits / T)\` applied to logits, which is how module 14 will do it.)
 
 \`generate(probs, start, n, next, temperature = 1)\`: sample \`n\` tokens in a chain, each conditioned on the previous one, starting from \`start\`; return the \`n\` new ids (not \`start\`).
 
@@ -145,7 +145,7 @@ The worked helper \`rowOf(table, i)\` gives you the row as a typed-array view. \
       instructions: `
 The neural model is one parameter, a \`[V, V]\` \`Tensor\` of logits \`W\`, and it produces the same kind of \`[V, V]\` probability table as step 1 once you take a softmax of every row.
 
-\`initNeural(V, next, std = 0.01)\`: return \`{ V, W }\` where \`W\` is Gaussian noise with the given standard deviation and \`requiresGrad = true\`. Small noise means every row starts close to uniform, so the first loss is close to \`log V\`.
+\`initNeural(V, next, std = 0.01)\`: return \`{ V, W }\` where \`W\` is a \`[V, V]\` \`Tensor\` of Gaussian noise with the given standard deviation and \`requiresGrad = true\`. Build it with \`Tensor.randn(shape, next, std, opts)\` from \`lib/tensor.js\`, where \`opts\` is the same options object the \`Tensor\` constructor takes (\`{ requiresGrad = false }\` by default). Use that one call rather than your own loop over \`randn(next)\`: the tests seed \`next\` and compare against a reference \`W\` drawn by \`Tensor.randn\`, so a different draw order gives different numbers. Small noise means every row starts close to uniform, so the first loss is close to \`log V\`.
 
 \`neuralLogits(model, xs)\`: for an array of context ids \`xs\`, the logits are the rows \`W[xs[i]]\`, as a \`Tensor\` of shape \`[xs.length, V]\`. This is an embedding lookup, and it must stay attached to the autograd graph so that gradients flow back into the rows that were used. \`Tensor.prototype.embed(ids)\` from \`lib/tensor.js\` does exactly that (its backward scatter-adds into \`W.grad\`); the raw \`embed\` from \`lib/ops.js\` returns a plain \`{ shape, data }\` object with no graph, so it would silently break the chain.
 
