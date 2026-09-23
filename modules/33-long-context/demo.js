@@ -51,7 +51,7 @@ function tailLogProb(model, ids, nTail) {
 export default async function demo(m, lab) {
   // ---------- 1. the grid on the synthetic model ----------
   const model = m.makeFadingModel({ window: WINDOW });
-  lab.md(`**The model under test** advertises a ${WINDOW.toLocaleString()}-word window. Its recall fades with distance from the question, the first few hundred words stay visible (a caricature of attention sinks), and similar keys interfere. You do not get to see those parameters in the result; your eval has to find them.`);
+  lab.md(`**The model under test** advertises an ${WINDOW.toLocaleString()}-word window. Its recall fades with distance from the question, the first few hundred words stay visible (a caricature of attention sinks), and similar keys interfere. You do not get to see those parameters in the result; your eval has to find them.`);
   const kinds = ['niah', 'multikey', 'multivalue'];
   const total = kinds.length * LENGTHS.length;
   const results = {};

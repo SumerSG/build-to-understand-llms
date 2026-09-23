@@ -61,7 +61,17 @@ export const tests = [
     T.eq(hits.length, 1, `found ${hits.length} sentences mentioning Oslo or 4321; only the needle may. Otherwise a model can answer from filler and your eval measures the wrong thing`);
     T.ok(h.tokens >= 300, 'skipping sentences must not shorten the haystack');
     T.ok(h.sentences.includes('Ticket 43210 was never sold.'), '43210 is not the value 4321: match whole words only, or you throw away harmless filler');
-    T.throws(() => m.buildHaystack({ length: 50, needles: [needle], depths: [0.5], next: T.rng(3), filler: poison }), 'when every filler sentence is an accidental needle there is no valid haystack: throw instead of looping forever');
+    // All-poison filler must throw. The Proxy caps how many filler sentences may be read, so a missing
+    // full-lap throw fails here with a message instead of hanging the page in an endless loop.
+    let reads = 0;
+    const LOOP_GUARD = 'test guard: buildHaystack read over 1000 filler sentences';
+    const guarded = new Proxy(poison, { get(t, p, r) {
+      if (typeof p === 'string' && /^\d+$/.test(p) && ++reads > 1000) throw new Error(LOOP_GUARD);
+      return Reflect.get(t, p, r);
+    } });
+    let err = null;
+    try { m.buildHaystack({ length: 50, needles: [needle], depths: [0.5], next: T.rng(3), filler: guarded }); } catch (e) { err = e; }
+    T.ok(err && err.message !== LOOP_GUARD, err ? 'with every filler sentence an accidental needle, buildHaystack kept skipping (over 1000 filler reads for a 3-sentence filler) instead of throwing: after filler.length skips in a row, throw, because there is no valid haystack and the loop would otherwise never end' : 'when every filler sentence is an accidental needle there is no valid haystack: expected buildHaystack to throw, but it returned');
     const long = m.buildHaystack({ length: 1000, needles: [needle], depths: [0.5], next: T.rng(4), filler: [...uniformFiller(10), poison[0]] });
     T.ok(long.tokens >= 1000, 'one bad sentence in 11 must not make a long haystack throw: it wraps around the filler about 20 times and meets that sentence on every lap, so throw only after filler.length skips in a row');
   } },
