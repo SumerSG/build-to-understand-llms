@@ -70,7 +70,7 @@ export default async function demo(m, lab) {
   }
 
   // ---------- 3. your own matmul: naive vs tiled ----------
-  const sizes = [256, 512, 768, 1024];
+  const sizes = [256, 512, 1024];
   const blockSize = 64;
   const naiveGf = [], tiledGf = [];
   for (const n of sizes) {
@@ -108,7 +108,7 @@ export default async function demo(m, lab) {
   const cap = (x) => (x >= 1e12 ? (x / 1e12).toFixed(1) + ' TB' : x >= 1e9 ? (x / 1e9).toFixed(0) + ' GB' : (x / 1e6).toFixed(1) + ' MB');
   const bw = (x) => (x >= 1e12 ? (x / 1e12).toFixed(1) + ' TB/s' : (x / 1e9).toFixed(0) + ' GB/s');
   lab.table({
-    title: 'Approximate H100 memory hierarchy (NVIDIA H100 whitepaper; latencies are rounded orders of magnitude)',
+    title: 'Approximate H100 memory hierarchy (capacities from NVIDIA\'s H100 whitepaper; upper-level bandwidths and latencies are rounded orders of magnitude)',
     columns: ['level', 'capacity', 'bandwidth', 'latency (ns)', 'bandwidth vs HBM', 'note'],
     rows: m.MEMORY_HIERARCHY.map((h) => [h.level, cap(h.capacity), bw(h.bandwidth), h.latencyNs, (h.bandwidth / 3.35e12).toFixed(2) + 'x', h.note]),
   });
@@ -122,13 +122,15 @@ export default async function demo(m, lab) {
   const minBatch = m.minBatchForCompute(hw, { K: L.dModel, N: L.dModel, bytesPerElement: b });
   const sram = m.flashBlockSize(228 * 1024, L.headDim, b);
   const speedup = tiledGf.at(-1) / naiveGf.at(-1);
+  const smallRatio = tiledGf[0] / naiveGf[0];
   lab.done(`
 Your roofline calculator puts one **${L.name}** decode step at **${decode[1].intensity.toFixed(2)} FLOP/byte** on an ${hw.name},
 against a ridge point of **${ridge.toFixed(0)} FLOP/byte** — **${(100 * decode[1].fractionOfPeak).toFixed(2)}% of peak bf16**.
 Summing the four matmuls over ${L.layers} layers gives **${(perLayer * L.layers * 1e3).toFixed(2)} ms/token**, about **${tokPerSec.toFixed(0)} tokens/s**,
-and the whole-model estimate agrees: **${single.tokensPerSecond.toFixed(0)} tokens/s** for a single stream (${single.bound}-bound).
+and the whole-model estimate is **${single.tokensPerSecond.toFixed(0)} tokens/s** for a single stream (${single.bound}-bound): the layer sum comes out
+about ${(100 * (tokPerSec / single.tokensPerSecond - 1)).toFixed(0)}% high because it leaves out the embedding and output-projection weights, which every decode step also reads.
 The same matmuls at prefill 2048 sit at **${analysed[2048][1].intensity.toFixed(0)} FLOP/byte** and reach **100% of peak**;
-the crossover is a batch of **${minBatch.toFixed(0)}**. Quantising the weights to int4 raises the single-stream ceiling to
+the crossover is a batch of **${minBatch.toFixed(0)}** once the activations are counted (**${(ridge * b / 2).toFixed(0)}** if you count only the weight stream). Quantising the weights to int4 raises the single-stream ceiling to
 **${int4.tokensPerSecond.toFixed(0)} tokens/s** without changing a single FLOP.
 
 Attention at 4096 tokens moves **${fmt(attn.bytes / 1e6)} MB** per head naively and **${fmt(flash.bytes / 1e6)} MB** when the
@@ -136,7 +138,10 @@ score tiles stay in SRAM — **${(attn.bytes / flash.bytes).toFixed(0)}x less tr
 whole argument; at headDim ${L.headDim} in bf16, 228 KB of shared memory holds a block of **${sram}** rows.
 
 Your own kernels, measured just now: naive **${naiveGf.at(-1).toFixed(2)} GFLOP/s** and tiled(${blockSize}) **${tiledGf.at(-1).toFixed(2)} GFLOP/s**
-at n=${big} (**${speedup.toFixed(2)}x**), while the traffic model says tiling raises intensity from
+at n=${big} (**${speedup.toFixed(2)}x**) — ${smallRatio < 1
+    ? `but tiling *lost* at n=${sizes[0]} (**${smallRatio.toFixed(2)}x**), because at that size B already fits in cache and the extra loop bookkeeping is pure cost`
+    : `but at n=${sizes[0]} it bought only **${smallRatio.toFixed(2)}x**, because at that size B already fits in cache and there is little traffic left to save`}.
+The trend across sizes in the chart is the lesson, not the headline speedup. Meanwhile the traffic model says tiling raises intensity from
 **${m.arithmeticIntensity(2 * big ** 3, m.blockTraffic(big, 1, 4)).toFixed(2)}** to **${m.arithmeticIntensity(2 * big ** 3, m.blockTraffic(big, blockSize, 4)).toFixed(1)} FLOP/byte**.
 That peak is roughly **${(hw.flops / 1e9 / Math.max(naiveGf.at(-1), tiledGf.at(-1))).toExponential(1)}x** below the ${hw.name}'s bf16 peak — JavaScript never gets near either roof.
 `);

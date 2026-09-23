@@ -89,7 +89,7 @@ Four small functions. Every later step is built from them.
 The tests check that \`flops / kernelTime\` equals \`attainable(intensity)\` exactly, which is only true if \`kernelTime\` takes the maximum of the two times rather than their sum.
 `,
       hints: [
-        'Both roofs are lines through the origin in the plane of (intensity, FLOP/s) — except the compute roof, which is flat. "The device gives you whichever is worse" is the whole model.',
+        'Take a kernel that does 1 GFLOP and moves 1 GB, on the H100 row. Work out how long the arithmetic alone would take and how long the traffic alone would take. Which of those two numbers do you actually wait for — and why would the answer change if the hardware could not do both at once?',
         'attainable is `Math.min` of two quantities; kernelTime is `Math.max` of two quantities. Check that the units work: bytes / (bytes/s) is seconds, and intensity (FLOP/byte) times bandwidth (bytes/s) is FLOP/s.',
         '`if (!(bytes > 0)) throw new Error(...)` also rejects `NaN` and negative values, which `bytes === 0` does not.',
       ],
@@ -143,6 +143,13 @@ the ridge point to four decimals.
 - \`memoryBound = batch * bandwidth / (params * bytesPerParam)\` — every step reads all the weights once, and all \`batch\` sequences in the step share that one read.
 - \`computeBound = flops / (2 * params)\` — about 2 FLOPs per parameter per token (module 08). Both the FLOPs and the tokens scale with the batch, so this ceiling does not move.
 - \`tokensPerSecond\` is the smaller; \`bound\` names which one won (call a tie \`'memory'\`). Throw if \`batch\` is below 1.
+
+You will end this step holding two crossover batches for the same H100 and the same 4096-wide bf16
+weights — about 345 and about 295 — and both are right. \`minBatchForCompute\` counts the activation bytes
+(\`M*K\` in and \`M*N\` out) that grow with the batch, so it needs a larger \`M\` to clear the ridge.
+\`decodeThroughput\` counts only the weight stream, whose intensity is exactly \`2*M / bytesPerParam\`; that
+reaches the ridge at \`ridge * bytesPerParam / 2 = 295.2\`, which is the rule of thumb you will hear quoted.
+The gap of about 50 between them is the activations.
 `,
       hints: [
         'For minBatchForCompute the algebra is one line of rearrangement; do it on paper first and keep `R * bytesPerElement` as a single variable.',
@@ -174,7 +181,7 @@ which is how you check the formula.
       hints: [
         'Start from `naiveMatmul` and wrap its three loops in three outer loops over tile origins; the body changes only in its bounds.',
         'Each inner loop runs from the tile origin to `Math.min(origin + blockSize, n)`. Accumulate into a local `let s = C[i * n + j]` and store it back after the k loop so you do not re-read C on every multiply.',
-        '`for (let i0 = 0; i0 < n; i0 += blockSize) for (let j0 = 0; j0 < n; j0 += blockSize) for (let k0 = 0; k0 < n; k0 += blockSize) { … for (i = i0; i < iMax; i++) for (j = j0; j < jMax; j++) { let s = C[i*n+j]; for (k = k0; k < kMax; k++) s += A[i*n+k] * B[k*n+j]; C[i*n+j] = s; } }`',
+        'One tile bound looks like `const iMax = Math.min(i0 + blockSize, n);` — write the other two the same way. The innermost `k` loop must start from what is already in `C[i*n+j]`, not from 0, because the tile at `k0 = 0` only contributed part of the dot product; the tiles at later `k0` add the rest.',
       ],
     },
     {
@@ -197,7 +204,7 @@ Floor it, and never return less than 1.
       hints: [
         'Write the element counts before you multiply by bytesPerElement; the linear term and the quadratic term are easier to see that way.',
         'The whole point is that flash keeps the linear term and drops the quadratic one. At seqLen 4096 and headDim 128 the quadratic term is 32 times the linear one.',
-        'flashBlockSize: four tiles of `blockSize * headDim` elements must fit, so `Math.max(1, Math.floor(sramBytes / (4 * headDim * bytesPerElement)))`.',
+        'flashBlockSize: count the elements in one tile (`blockSize * headDim`), remember there are four of them (Q, K, V and the running O), convert to bytes, and solve for `blockSize`. Then ask what a fractional row of SRAM would mean, and what a block of 0 would do downstream.',
       ],
     },
   ],
@@ -208,7 +215,7 @@ Floor it, and never return less than 1.
   ],
   stretch: [
     'Add an fp8 row to the analysis: the H100 datasheet lists approximately 1979 TFLOP/s dense fp8, double the bf16 figure, with no change in bandwidth. Recompute the ridge point and the batch needed to reach it, and explain why DeepSeek-V3 reports training in fp8 as a bandwidth win as much as a FLOPs win.',
-    'Model chunked prefill as vLLM and SGLang implement it: split a 8192-token prefill into chunks of 512 and interleave them with decode steps of batch 64, then compare the intensity and the time of the mixed batch with running the two phases separately.',
+    'Model chunked prefill as vLLM and SGLang implement it: split an 8192-token prefill into chunks of 512 and interleave them with decode steps of batch 64, then compare the intensity and the time of the mixed batch with running the two phases separately.',
     'Extend `attentionCost` to grouped-query attention with `nKvHeads` smaller than `nHeads` (Llama-3-8B uses 8 and 32) and to a KV cache read during decode, then show why GQA is a bandwidth optimisation for decoding rather than a quality one.',
     'Autotune your tiled matmul the way Triton and CUTLASS autotune real kernels: sweep `blockSize` over 8, 16, 32, 64, 128 at several `n`, plot GFLOP/s, and see whether the best block size matches the one your L2 cache size predicts.',
   ],

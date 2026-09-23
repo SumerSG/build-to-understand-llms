@@ -25,9 +25,10 @@ export const LLAMA3_8B = {
 };
 
 /**
- * One GPU's memory hierarchy, from fastest to slowest. Capacities and bandwidths are approximate
- * H100 figures from NVIDIA's H100 whitepaper; latencies are rounded orders of magnitude from
- * published microbenchmarks, not datasheet numbers. Used by the demo table.
+ * One GPU's memory hierarchy, from fastest to slowest. Capacities and the HBM3 bandwidth are
+ * approximate H100 figures from NVIDIA's H100 whitepaper. The register, SRAM and L2 bandwidths and
+ * all latencies are rounded orders of magnitude from published microbenchmarks, not datasheet
+ * numbers — treat them as ratios, not measurements. Used by the demo table.
  */
 export const MEMORY_HIERARCHY = [
   { level: 'registers', capacity: 256e3 * 132, bandwidth: 100e12, latencyNs: 1, note: '256 KB per SM x 132 SMs' },

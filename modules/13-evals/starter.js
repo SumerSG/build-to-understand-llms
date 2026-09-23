@@ -127,7 +127,11 @@ export function exactMatch(answer, reference) {
   return 0;
 }
 
-/** 1 if `pattern` (a RegExp, or a string compiled case-insensitively) matches anywhere in the answer, else 0. */
+/**
+ * 1 if `pattern` (a RegExp, or a string compiled case-insensitively) matches anywhere in the answer, else 0.
+ * A grader must be pure: a RegExp with the g or y flag keeps `lastIndex` between .test() calls, so rebuild
+ * it without those flags (pattern.source, pattern.flags) before testing.
+ */
 export function regexMatch(answer, pattern) {
   // TODO: step 1
   return 0;
@@ -151,7 +155,10 @@ export function passAtK(n, c, k) {
   return 0;
 }
 
-/** Unbiased pass^k (all k independent draws correct): C(c, k) / C(n, k). Same validation as passAtK. */
+/**
+ * Unbiased pass^k (all k draws, without replacement from your n samples, correct): C(c, k) / C(n, k).
+ * Same validation as passAtK (throw if k is not in 1..n or c is not in 0..n). Return 0 when c < k.
+ */
 export function passPowK(n, c, k) {
   // TODO: step 2
   return 0;

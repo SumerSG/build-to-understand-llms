@@ -66,6 +66,8 @@ export const tests = [
     T.eq(m.regexMatch('answer: 42', /^answer: \d+$/), 1, 'a RegExp object must work as well as a string');
     T.eq(m.regexMatch('nothing here', '\\d'), 0);
     T.eq(m.regexMatch('Forty-Two', 'forty-two'), 1, 'string patterns are case-insensitive');
+    const g = /42/g;
+    T.eq([m.regexMatch('42', g), m.regexMatch('42', g), m.regexMatch('42', g)], [1, 1, 1], 'a grader must be pure: a /g RegExp carries lastIndex between .test() calls, so the same input must not alternate 1, 0, 1');
   } },
 
   // ---------- step 2: pass@k ----------
@@ -96,6 +98,8 @@ export const tests = [
     }
     T.close(m.passPowK(10, 3, 3), 1 / 120, 1e-9, 'C(3,3)/C(10,3) = 1/120, whereas (0.3)^3 = 0.027 overstates it');
     T.eq(m.passPowK(10, 2, 3), 0, 'fewer successes than k: no k-subset is all-correct');
+    T.throws(() => m.passPowK(10, 11, 3), 'c > n is impossible and must throw, like passAtK');
+    T.throws(() => m.passPowK(10, 3, 11), 'k > n must throw: you cannot draw 11 of 10 samples');
   } },
 
   // ---------- step 3: bootstrap CI ----------
@@ -211,8 +215,14 @@ export const tests = [
     for (const x of rep.metrics) {
       T.close(x.value, 1, 1e-9, `pass@${x.k} must be 1 for an always-correct model`);
       T.close([x.lo, x.hi], [1, 1], 1e-9, 'the bootstrap interval of all-ones is [1, 1]');
+      T.close(x.passPowK, 1, 1e-9, `every sample is correct, so every ${x.k}-subset is all-correct: pass^${x.k} must be 1`);
     }
+    const before = calls;
     T.throws(() => m.runEval({ tasks, model, grader, n: 4, ks: [8], next: T.rng(1) }), 'pass@8 with only 4 samples per task must throw');
+    T.eq(calls, before, 'validate ks before sampling: a real run would have burned 32 API calls before failing');
+    const partial = (a, ref) => (a.includes(ref) ? 0.6 : 0.2);
+    const rp = m.runEval({ tasks: evenTasks(4), model, grader: partial, n: 2, ks: [1], next: T.rng(1), B: 20 });
+    T.eq(rp.results.map((r) => r.c), [2, 2, 2, 2], 'a score of 0.6 counts as correct: the threshold is >= 0.5, not === 1, or every partial-credit grader silently scores 0');
   } },
   { step: 'runner', name: 'runEval with a 30%-accurate stochastic model: pass@10 far exceeds pass@1 and CIs bracket the estimate', run(m, T) {
     const tasks = evenTasks(40);
@@ -230,6 +240,9 @@ export const tests = [
     T.ok(rep.metrics[0].hi - rep.metrics[0].lo > 0.05, 'pass@1 over 40 tasks has real uncertainty: the interval must not collapse');
     const expectedPass1 = rep.results.reduce((s, r) => s + r.c / r.n, 0) / rep.results.length;
     T.close(p1, expectedPass1, 1e-9, 'pass@1 is the mean over tasks of c/n');
+    T.close(rep.metrics[0].passPowK, p1, 1e-9, 'pass^1 and pass@1 are the same number, the mean over tasks of c/n');
+    const expectedPow5 = rep.results.reduce((s, r) => s + m.passPowK(r.n, r.c, 5), 0) / rep.results.length;
+    T.close(rep.metrics[1].passPowK, expectedPow5, 1e-9, 'metrics[k].passPowK is the mean over tasks of passPowK(n, c, k)');
     T.ok(rep.metrics[2].passPowK < 0.01, `pass^10 for a 30% model is about 0.3^10 = 6e-6, got ${rep.metrics[2].passPowK}`);
   } },
 ];

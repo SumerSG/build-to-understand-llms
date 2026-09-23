@@ -22,6 +22,7 @@ export const tests = [
     T.close(m.ridgePoint(H.flops, H.bandwidth), 295.2239, 1e-4, 'H100: 989e12 FLOP/s / 3.35e12 B/s = 295.2 FLOP/byte');
     T.close(m.ridgePoint(A.flops, A.bandwidth), 152.9412, 1e-4, 'A100: 312e12 / 2.04e12 = 152.9 FLOP/byte');
     T.throws(() => m.arithmeticIntensity(1e9, 0), 'intensity is undefined when bytes is 0; throw instead of returning Infinity');
+    T.throws(() => m.arithmeticIntensity(1, -8), 'negative traffic is a bug upstream: `!(bytes > 0)` rejects it where `bytes === 0` does not');
   } },
   { step: 'roofline', name: 'attainable is the LOWER of the two roofs, not one of them', run(m, T) {
     const ridge = 989e12 / 3.35e12;
@@ -52,6 +53,7 @@ export const tests = [
     const prefill = m.matmulCost(2048, 4096, 4096, 2);
     T.close(prefill.intensity, 1024, 1e-6, 'with M = 2048 the same weights are reused 2048 times, so intensity is about 1000x higher');
     T.close(m.matmulCost(1, 4096, 4096, 4).intensity, decode.intensity / 2, 1e-6, 'fp32 moves twice the bytes for the same FLOPs, so it halves the intensity');
+    T.throws(() => m.matmulCost(0, 4096, 4096), 'a zero dimension is a bug, not a free matmul: throw');
   } },
   { step: 'opcost', name: 'analyseOp puts decode on the memory roof and prefill on the compute roof', run(m, T) {
     const decode = m.analyseOp({ name: 'decode', ...m.matmulCost(1, 4096, 4096, 2) }, H);
@@ -69,6 +71,9 @@ export const tests = [
     T.eq(m.analyseOp(op, SLOW).bound, 'compute', 'the same intensity 50 is above the CPU ridge of 10: "memory-bound" is a property of the pair, not of the kernel');
     T.close(m.analyseOp(op, H).intensity, 50, 1e-9, 'intensity itself does not depend on the device');
     T.ok(m.analyseOp(op, H).attainedFlops < H.flops, 'a memory-bound op must report less than peak FLOP/s');
+    // SLOW's ridge is exactly 10 FLOP/byte (2e12 / 0.2e12), so this op sits exactly on it.
+    T.eq(m.analyseOp({ name: 'ridge', flops: 10e9, bytes: 1e9 }, SLOW).bound, 'compute',
+      'at exactly the ridge the memory roof has caught up with the compute roof, so the op is (just) compute-bound: use intensity < ridge for "memory"');
   } },
 
   // ---------- step 3: how much batch buys you ----------
@@ -76,7 +81,7 @@ export const tests = [
     const M = m.minBatchForCompute(H, { K: 4096, N: 4096 });
     T.close(M, 344.949, 1e-3, 'on an H100 a [M,4096]x[4096,4096] bf16 matmul reaches the ridge at M around 345');
     T.close(m.matmulCost(M, 4096, 4096, 2).intensity, m.ridgePoint(H.flops, H.bandwidth), 1e-4,
-      'feeding your own answer back into matmulCost must give exactly the ridge intensity; the rule-of-thumb 295 does not');
+      'feeding your own answer back into matmulCost must give exactly the ridge intensity; 295 (the weight-stream-only rule of thumb) ignores the activation bytes that matmulCost counts');
     T.close(m.minBatchForCompute(H, { K: 4096, N: 4096, bytesPerElement: 1 }), 159.078, 1e-3, 'int8 weights halve the bytes, so the ridge arrives at less than half the batch');
     T.close(m.minBatchForCompute(A, { K: 4096, N: 4096 }), 165.284, 1e-3, 'the A100 has a lower ridge (152.9), so it needs a smaller batch than the H100');
     T.eq(m.minBatchForCompute({ flops: 1e18, bandwidth: 1e12 }, { K: 4096, N: 4096 }), Infinity,
@@ -91,6 +96,11 @@ export const tests = [
     T.eq(m.decodeThroughput(H, { params: 8.03e9, batch: 295 }).bound, 'memory', 'batch 295 is still (just) memory-bound');
     T.eq(m.decodeThroughput(H, { params: 8.03e9, batch: 296 }).bound, 'compute', 'the crossover sits at batch = ridge * bytesPerParam / 2 = 295.2, which is where batching stops being free');
     T.close(m.decodeThroughput(H, { params: 8.03e9, bytesPerParam: 0.5, batch: 1 }).tokensPerSecond, 834.371, 1e-3, 'int4 weights move a quarter of the bytes, so a memory-bound decode runs about 4x faster');
+    // On SLOW (ridge 10) with 1e9 bf16 params, batch 10 makes both ceilings exactly 1000 tokens/s.
+    const tie = m.decodeThroughput(SLOW, { params: 1e9, batch: 10 });
+    T.close(tie.memoryBound, tie.computeBound, 1e-12, 'at batch = ridge * bytesPerParam / 2 the two ceilings are equal (1000 tokens/s each here)');
+    T.eq(tie.bound, 'memory', 'when the two ceilings are exactly equal, report the memory roof, as the instructions say: it is the one batching can still move');
+    T.throws(() => m.decodeThroughput(H, { params: 8.03e9, batch: 0 }), 'a batch of 0 generates no tokens; throw rather than return 0 or Infinity');
   } },
 
   // ---------- step 4: raising intensity by tiling ----------
@@ -110,6 +120,20 @@ export const tests = [
       T.close(Array.from(m.tiledMatmul(A2, B2, n, bs)), want, 1e-3, `blockSize ${bs} must give the same answer as the naive loop; a block larger than n is just one tile`);
     }
     T.throws(() => m.tiledMatmul(A2, B2, n, 0), 'blockSize 0 would loop forever: throw instead');
+  } },
+  { step: 'tiling', name: 'tiledMatmul actually walks the matrices tile by tile', run(m, T) {
+    // Record every element index tiledMatmul reads from A and B. A blocked kernel revisits a few
+    // small tiles; the naive i,j,k loop sweeps a whole column of B for every output element.
+    const n = 16, bs = 4, seen = [];
+    const P = new Proxy(new Array(n * n).fill(1), {
+      get(t, k) { if (typeof k === 'string' && /^\d+$/.test(k)) seen.push(+k); return t[k]; },
+    });
+    const C = m.tiledMatmul(P, P, n, bs);
+    T.eq(C[0], n, 'an all-ones 16x16 product has 16 in every entry');
+    T.ok(seen.length >= 2 * n ** 3, `a matmul must read A and B once per multiply-add (expected ${2 * n ** 3} reads, got ${seen.length})`);
+    let worst = 0;
+    for (let i = 0; i + 512 <= seen.length; i += 512) worst = Math.max(worst, new Set(seen.slice(i, i + 512)).size);
+    T.ok(worst <= 200, `in any 512 consecutive reads a 4x4-blocked kernel touches only a few tiles' worth of elements (about 112); got ${worst}. A value near 256 means the loops are not tiled at all, so nothing is reused from fast memory`);
   } },
   { step: 'tiling', name: 'blockTraffic falls like 1/blockSize and reproduces the naive count at blockSize 1', run(m, T) {
     T.close(m.blockTraffic(256, 1, 4), (2 * 256 ** 3 + 256 * 256) * 4, 1e-9, 'blockSize 1 is the naive matmul: 2n^3 element reads plus one write of C');
@@ -144,6 +168,7 @@ export const tests = [
     T.eq(m.flashBlockSize(228 * 1024, 128, 2), 228, 'four tiles of 128 bf16 values per row need 1024 bytes per row; 228 KB of shared memory holds 228 rows');
     T.eq(m.flashBlockSize(228 * 1024, 64, 2), 456, 'halving headDim doubles the block that fits');
     T.eq(m.flashBlockSize(228 * 1024, 128, 1), 456, 'an int8 KV cache doubles the block that fits, which is a second reason to quantise it');
+    T.eq(m.flashBlockSize(100 * 1024, 96, 2), 133, 'a block is a whole number of rows: 102400 bytes / (4 * 96 * 2) = 133.3 must floor to 133, not round up and overflow SRAM');
     T.eq(m.flashBlockSize(1000, 128, 2), 1, 'when nothing fits, return 1 rather than 0: a zero block size would divide by zero downstream');
   } },
 ];

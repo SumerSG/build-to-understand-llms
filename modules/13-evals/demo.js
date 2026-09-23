@@ -5,9 +5,13 @@ export default async function demo(m, lab) {
   // ---- the "model under test": a scripted stand-in with a per-task success rate ----
   const tasks = m.makeTasks(40, 13);
   const answerOf = new Map(tasks.map((t) => [t.question, t.answer]));
-  // Each task gets a fixed latent difficulty in [0.15, 0.75] derived from its text, so the
+  // Five prompts leak into the "training corpus" (see the contamination section below). The
+  // scripted model has memorised them: it answers those at 0.95, which is what contamination does.
+  const leaked = [tasks[1], tasks[4], tasks[9], tasks[17], tasks[31]];
+  const leakedSet = new Set(leaked.map((t) => t.question));
+  // Every other task gets a fixed latent difficulty in [0.15, 0.75] derived from its text, so the
   // model is genuinely better at some tasks than others — as a real model is.
-  const rateOf = (q) => 0.15 + 0.6 * ((hash32(q) % 1000) / 1000);
+  const rateOf = (q) => (leakedSet.has(q) ? 0.95 : 0.15 + 0.6 * ((hash32(q) % 1000) / 1000));
   function model(question, next) {
     const ref = answerOf.get(question);
     const correct = next() < rateOf(question);
@@ -29,7 +33,8 @@ export default async function demo(m, lab) {
   const CHUNK = 8, N = 10, KS = [1, 5, 10];
   const results = [];
   for (let i = 0; i < tasks.length; i += CHUNK) {
-    const part = m.runEval({ tasks: tasks.slice(i, i + CHUNK), model, grader: extract, n: N, ks: KS, next, B: 50 });
+    // ks: [] — we chunk only to keep the page responsive, and aggregate the metrics over all tasks below.
+    const part = m.runEval({ tasks: tasks.slice(i, i + CHUNK), model, grader: extract, n: N, ks: [], next });
     results.push(...part.results);
     lab.progress((i + CHUNK) / tasks.length, `graded ${Math.min(i + CHUNK, tasks.length)}/${tasks.length} tasks`);
     await lab.tick();
@@ -101,7 +106,6 @@ export default async function demo(m, lab) {
   });
 
   // ---- contamination ----
-  const leaked = [tasks[1], tasks[4], tasks[9], tasks[17], tasks[31]];
   const corpus = [
     'Assorted web text about shops, boxes and friends sharing things, of no particular value.',
     ...leaked.map((t) => t.question),
@@ -110,12 +114,14 @@ export default async function demo(m, lab) {
   const contam = m.contamination(tasks, corpus, 13);
   const clean = results.filter((r) => !contam.flagged.includes(r.id));
   const cleanPass1 = meanArray(clean.map((r) => m.passAtK(r.n, r.c, 1)));
+  const flaggedRes = results.filter((r) => contam.flagged.includes(r.id));
+  const flaggedPass1 = flaggedRes.length ? meanArray(flaggedRes.map((r) => m.passAtK(r.n, r.c, 1))) : NaN;
   lab.table({
     title: '13-gram overlap between eval prompts and the "training corpus"',
     columns: ['subset', 'tasks', 'pass@1'],
     rows: [
       ['all', results.length, +metrics[0].value.toFixed(3)],
-      ['flagged as contaminated', contam.flagged.length, +meanArray(results.filter((r) => contam.flagged.includes(r.id)).map((r) => m.passAtK(r.n, r.c, 1))).toFixed(3)],
+      ['flagged as contaminated', contam.flagged.length, +flaggedPass1.toFixed(3)],
       ['clean', clean.length, +cleanPass1.toFixed(3)],
     ],
   });
@@ -123,9 +129,9 @@ export default async function demo(m, lab) {
   const p1 = metrics[0], p10 = metrics[2];
   lab.done(`Your harness evaluated **${tasks.length} tasks x ${N} samples = ${records.length} responses**.
 
-**pass@1 = ${p1.value.toFixed(3)}**, 95% CI [${p1.lo.toFixed(3)}, ${p1.hi.toFixed(3)}] — a width of ${(p1.hi - p1.lo).toFixed(3)}, so any "improvement" smaller than about ${((p1.hi - p1.lo) * 100).toFixed(0)} points on this eval is noise. **pass@10 = ${p10.value.toFixed(3)}** while **pass^10 = ${p10.passPowK.toFixed(4)}**: the same model looks near-perfect if you may retry and nearly useless if every attempt must succeed.
+**pass@1 = ${p1.value.toFixed(3)}**, 95% CI [${p1.lo.toFixed(3)}, ${p1.hi.toFixed(3)}] — a width of ${(p1.hi - p1.lo).toFixed(3)} and a bootstrap standard error of ${p1.se.toFixed(3)}. Two independent runs each carry that error, so a model scored on a *separately run* ${tasks.length}-task eval would have to differ by more than about 1.96 x sqrt(2) x se = **${(100 * 1.96 * Math.SQRT2 * p1.se).toFixed(0)} points** before the gap stands out from noise. Comparing two models on the *same* ${tasks.length} tasks is a different and much sharper question — that is the paired bootstrap in the stretch goals. **pass@10 = ${p10.value.toFixed(3)}** while **pass^10 = ${p10.passPowK.toFixed(4)}**: the same model looks near-perfect if you may retry and nearly useless if every attempt must succeed.
 
 The grader moved the score more than any of that: raw exact match scored **${(100 * accuracy[0]).toFixed(1)}%**, exact match after extracting the final answer **${(100 * accuracy[1]).toFixed(1)}%**, and the scripted judge **${(100 * accuracy[2]).toFixed(1)}%** — a spread of **${(100 * (Math.max(...accuracy) - Math.min(...accuracy))).toFixed(1)} points** on identical responses. The judge agreed with extract-then-match on only **${(100 * agreeJudge).toFixed(1)}%** of responses, and the pairwise judge was consistent under swapping on **${(100 * bias.consistency).toFixed(0)}%** of pairs while picking the first slot **${(100 * bias.firstWinRate).toFixed(0)}%** of the time (50% would be fair).
 
-Finally, **${contam.flagged.length} of ${tasks.length} prompts** shared a 13-gram with the corpus; dropping them changes pass@1 from ${p1.value.toFixed(3)} to **${cleanPass1.toFixed(3)}**. Widening the eval from 5 to 40 tasks shrank the pass@1 interval from ${widths[0].toFixed(3)} to ${widths[3].toFixed(3)}, a factor of **${(widths[0] / widths[3]).toFixed(2)}x** against the ${Math.sqrt(8).toFixed(2)}x that 1/sqrt(tasks) predicts.`);
+Finally, **${contam.flagged.length} of ${tasks.length} prompts** shared a 13-gram with the corpus. The scripted model had memorised them, and it shows: the flagged tasks score **${flaggedPass1.toFixed(3)}** against **${cleanPass1.toFixed(3)}** on the clean ones, a gap of **${(100 * (flaggedPass1 - cleanPass1)).toFixed(1)} points**, and they pull the headline pass@1 up to ${p1.value.toFixed(3)}. That gap is what the overlap check is for, and it is why the clean-subset number is the one to publish. Widening the eval from 5 to 40 tasks shrank the pass@1 interval from ${widths[0].toFixed(3)} to ${widths[3].toFixed(3)}, a factor of **${(widths[0] / widths[3]).toFixed(2)}x** against the ${Math.sqrt(8).toFixed(2)}x that 1/sqrt(tasks) predicts.`);
 }

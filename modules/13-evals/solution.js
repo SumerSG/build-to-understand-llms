@@ -109,7 +109,8 @@ export function exactMatch(answer, reference) {
 }
 
 export function regexMatch(answer, pattern) {
-  const re = pattern instanceof RegExp ? pattern : new RegExp(pattern, 'i');
+  // Rebuild a RegExp without g/y: those flags make .test() stateful through lastIndex.
+  const re = pattern instanceof RegExp ? new RegExp(pattern.source, pattern.flags.replace(/[gy]/g, '')) : new RegExp(pattern, 'i');
   return re.test(String(answer)) ? 1 : 0;
 }
 
@@ -131,6 +132,7 @@ export function passAtK(n, c, k) {
 
 export function passPowK(n, c, k) {
   if (k < 1 || k > n) throw new Error(`passPowK: k=${k} must be in 1..n=${n}`);
+  if (c < 0 || c > n) throw new Error(`passPowK: c=${c} must be in 0..n=${n}`);
   if (c < k) return 0;
   return Math.exp(logChoose(c, k) - logChoose(n, k));
 }
