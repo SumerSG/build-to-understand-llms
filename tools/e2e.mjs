@@ -7,13 +7,17 @@
 // --base tests an already-running server, e.g. one that serves the repo under a subfolder the way
 // GitHub Pages does; without it the script starts tools/serve.mjs at the site root.
 import { spawn } from 'node:child_process';
+import net from 'node:net';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const args = process.argv.slice(2);
 const only = args.includes('--module') ? args[args.indexOf('--module') + 1] : null;
-const PORT = 8790;
+// a free port, so several copies of this script (e.g. parallel reviewers) never share or kill one server
+const PORT = process.env.E2E_PORT ? Number(process.env.E2E_PORT) : await new Promise((resolve) => {
+  const srv = net.createServer().listen(0, '127.0.0.1', () => { const { port } = srv.address(); srv.close(() => resolve(port)); });
+});
 const baseArg = args.includes('--base') ? args[args.indexOf('--base') + 1] : null;
 
 let chromium;
