@@ -26,7 +26,7 @@ export default {
     { q: 'Which part of a GPT lets position 7 use information from position 3?', options: ['The MLP', 'Attention', 'LayerNorm'], answer: 1,
       why: 'Only attention mixes across positions. The MLP and both LayerNorms act on each position\'s vector alone.' },
     { q: 'The FLOPs to process one token with a model of P parameters and a short context are approximately…', options: ['`P`', '`2·P`', '`P²`'], answer: 1,
-      why: 'Every weight takes part in one multiply-add. The attention products add 4·L·T·C, which only matters once the context T is comparable to C.' },
+      why: 'Every weight takes part in one multiply-add. The attention products add 4·L·T·C; next to the 24·L·C² of the block matmuls that is T/(6C), so it is about 17% at T = C and equals the matmul cost at T = 6C.' },
   ],
   concept: `
 ## The residual stream is the whole design
@@ -40,7 +40,7 @@ x = x + mlp(ln2(x))     // transform EACH position on its own
 
 Everything a GPT does is one of these two moves. Attention (module 05) is the only place where position 7 can read from position 3; the MLP is a per-position function, applied identically to every token's vector. Because every block only *adds* to x, there is an unbroken identity path from the embeddings to the logits: the **residual stream**. Gradients travel down it without passing through any weight, which is why a 96-layer stack trains at all.
 
-The LayerNorms sit *inside* the branches (**pre-LN**, as in GPT-2 and every model since). The original transformer put them on the sum, \`x = ln(x + attn(x))\` (**post-LN**), which breaks the identity path: at initialisation the output is a normalised mix, not x, and deep post-LN stacks need learning-rate warmup to avoid diverging (Xiong et al. 2020 measure this). Your tests check the pre-LN property directly: zero both branches and the block must return x exactly.
+The LayerNorms sit *inside* the branches (**pre-LN**, as in GPT-2 and nearly every large model since). The original transformer put them on the sum, \`x = ln(x + attn(x))\` (**post-LN**), which breaks the identity path: at initialisation the output is a normalised mix, not x, and deep post-LN stacks need learning-rate warmup to avoid diverging (Xiong et al. 2020 measure this). Your tests check the pre-LN property directly: zero both branches and the block must return x exactly.
 
 ## Plumbing: embeddings, final norm, tied head
 
@@ -74,11 +74,11 @@ Only \`wpe\` (\`T·C\`): 0.8M more for GPT-2 small. Attention's weights are \`[C
 
 ## From parameters to FLOPs
 
-Every weight is used in exactly one multiply-add per token, so a forward pass costs about \`2·params\` FLOPs per token, plus \`4·L·T·C\` for \`q·kᵀ\` and \`weights·v\`. For the lab model (V = 256, T = 64, L = 2, C = 64) that is 2 × 120,576 + 32,768 ≈ 274 thousand FLOPs per token; for Llama-3-8B at a 4,096-token context it is roughly 16 GFLOPs + 2 GFLOPs. Module 08 builds the 6·N·D training rule on top of this.
+Every weight matrix is used in one multiply-add per weight per token, so a forward pass costs about \`2·params\` FLOPs per token (slightly high: the \`wpe\` lookup and the LayerNorm gains are not multiply-adds), plus \`4·L·T·C\` for \`q·kᵀ\` and \`weights·v\`. For the lab model (V = 256, T = 64, L = 2, C = 64) that is 2 × 120,576 + 32,768 ≈ 274 thousand FLOPs per token; for Llama-3-8B at a 4,096-token context it is roughly 16 GFLOPs + 2 GFLOPs. Module 08 builds the 6·N·D training rule on top of this.
 
 ## Where the toy differs from production
 
-Your model is GPT-2's architecture at 1/1000 scale; the differences are mostly what Llama-style models changed later: **RMSNorm** instead of LayerNorm (no mean subtraction, no beta), **SwiGLU** instead of GELU with a 4× hidden (three matrices, hidden ≈ 2.7C), **rotary position embeddings** applied inside attention instead of a learned \`wpe\` table, **no biases**, grouped-query attention, and an untied head. None of these change the threshold idea: a residual stream, and blocks that alternately mix across positions and transform within them. Production code also fuses LayerNorm, GELU and the residual add into single kernels and never materialises the \`[T, T]\` score matrix; your version runs plain JavaScript loops, one op at a time.
+Your model is GPT-2's architecture at 1/1000 scale; the differences are mostly what Llama-style models changed later: **RMSNorm** instead of LayerNorm (no mean subtraction, no beta), **SwiGLU** instead of GELU with a 4× hidden (three matrices; Llama 1 and 2 use a hidden width of about 8C/3 ≈ 2.7C so the MLP still costs about 8C², and Llama 3 8B widens it to 3.5C = 14,336), **rotary position embeddings** applied inside attention instead of a learned \`wpe\` table, **no biases**, grouped-query attention, and an untied head. None of these change the threshold idea: a residual stream, and blocks that alternately mix across positions and transform within them. Production code also fuses LayerNorm, GELU and the residual add into single kernels, and FlashAttention-style kernels never materialise the \`[T, T]\` score matrix; your version runs plain JavaScript loops, one op at a time.
 `,
   steps: [
     {
@@ -91,7 +91,7 @@ Two layers, following the conventions of the worked \`LayerNorm\` above.
 
 \`new Embedding(n, d, { next, std = 0.02 })\`: a trainable \`[n, d]\` table, same init. \`forward(ids)\` picks rows with \`Tensor.embed\` (ids may be nested, so \`[[B×T]]\` gives \`[B, T, d]\`). \`parameters()\` returns \`[weight]\`.
 
-The std of 0.02 is GPT-2's choice (nanoGPT keeps it). With std 1 the logits at initialisation are in the hundreds and the first loss is far above \`ln(V)\`; the tests check both the std and that gradients reach the table, which they cannot if you use raw \`ops\` instead of Tensor methods.
+The std of 0.02 is GPT-2's choice (nanoGPT keeps it). With std 1 the logits at initialisation are in the hundreds and the first loss is far above \`ln(V)\`; the tests check both the std and that gradients reach the weight, bias and table, which they cannot if you use raw \`ops\` instead of Tensor methods.
 `,
       hints: [
         'Look at how LayerNorm above creates its parameters: `Tensor.param(...)` around a raw-shaped Tensor. Linear needs one Gaussian leaf (`Tensor.randn([nIn, nOut], next, std)`) and one zero leaf (`Tensor.zeros([nOut])`).',
@@ -120,13 +120,13 @@ Attention is permutation-invariant: without \`wpe\`, "dog bites man" and "man bi
       instructions: `
 \`new MLP(nEmbd, { next })\`: \`fc = Linear(C, 4C)\`, \`proj = Linear(4C, C)\`; \`forward(x)\` is \`proj(gelu(fc(x)))\` (Tensor has \`.gelu()\`); \`parameters()\` is fc's then proj's. The 4× widening is GPT-2's ratio, and it is where two thirds of every block's parameters live.
 
-\`new Block({ nEmbd, nHead }, { next })\`: \`ln1\`, \`attn = new MultiHeadAttention({ nEmbd, nHead, next })\` from \`lib/attention.js\`, \`ln2\`, \`mlp\`, constructed **in that order** so the seeded initialisation is reproducible. \`forward(x)\` is the two lines from the file header, \`x [B, T, C] → [B, T, C]\`; the MLP branch reads the stream *after* the attention update. \`parameters()\` returns ln1, attn, ln2, mlp in order (this is the order \`lib/gpt.js\` and the checkpoints use).
+\`new Block({ nEmbd, nHead }, { next })\`: \`ln1\`, \`attn = new MultiHeadAttention({ nEmbd, nHead, next })\` from \`lib/attention.js\`, \`ln2\`, \`mlp\`, constructed **in that order** so the seeded initialisation is reproducible (the tests compare your initial weights with \`lib/gpt.js\`'s Block built from the same seed). \`forward(x)\` is the two lines from the file header, \`x [B, T, C] → [B, T, C]\`; the MLP branch reads the stream *after* the attention update. \`parameters()\` returns ln1, attn, ln2, mlp in order (this is the order \`lib/gpt.js\` and the checkpoints use).
 
-Why pre-LN: the tests zero both output projections and require the block to return \`x\` unchanged. Post-LN would return a normalised \`x\`, and a missing residual would return zero. That clean identity path is what lets gradients reach the first block of a deep stack.
+Why pre-LN: the tests zero both output projections and require the block to return \`x\` unchanged. They also give ln1 and ln2 different gains, so the MLP branch must use ln2, not ln1 again. Post-LN would return a normalised \`x\`, and a missing residual would return zero. That clean identity path is what lets gradients reach the first block of a deep stack.
 `,
       hints: [
         'Each of the two header lines is one `Tensor.add`. The LayerNorm goes on the *input* of each branch, never on the sum, and the second branch reads the updated stream.',
-        'MLP.forward: `this.proj.forward(this.fc.forward(x).gelu())`. Block.forward: `h = x + attn(ln1(x))`, then `return h + mlp(ln2(h))`. parameters(): spread the four sub-layers with `...` in the order ln1, attn, ln2, mlp.',
+        'MLP.forward is three calls chained inside out: fc, then GELU on its output, then proj. Block.forward: `h = x + attn(ln1(x))`, then `return h + mlp(ln2(h))`. parameters(): spread the four sub-layers with `...` in the order ln1, attn, ln2, mlp.',
         '`forward(x) {`\n`  const h = /* x plus the attention branch applied to ln1(x) */;`\n`  return h.add(this.mlp.forward(this.ln2.forward(h)));`\n`}`\n`parameters() { return [...this.ln1.parameters(), ...this.attn.parameters(), ...this.ln2.parameters(), ...this.mlp.parameters()]; }`',
       ],
     },
@@ -143,7 +143,7 @@ The tests copy the weights of \`lib/gpt.js\` into your model by \`parameters()\`
       predict: { question: 'Before any training, with std-0.02 weights and V = 64, roughly what cross-entropy loss should a forward pass give?', answer: 'Close to ln(64) ≈ 4.16. The logits are small, so the softmax is nearly uniform. A loss of 20 or more at init means the initial weights are too large (std 1 instead of 0.02).' },
       hints: [
         'Construct wte, wpe, then the blocks, all from the one `next`; the forward is embedInputs → blocks → lnF → head, and the head adds no parameter of its own.',
-        'The head is `x.matmul(this.wte.weight.transpose())`: `[B,T,C] · [C,V]`. parameters(): start with wte and wpe, push each block\'s `parameters()`, finish with lnF. numParams: loop over parameters() and add `p.size`.',
+        'The head is one matmul of the normalised stream `[B,T,C]` with the token table turned on its side, `[C,V]`; no new Tensor.param. parameters(): start with wte and wpe, push each block\'s `parameters()`, finish with lnF. numParams: loop over parameters() and add `p.size`.',
         '`forward(ids) {`\n`  let x = embedInputs(this.wte, this.wpe, ids);`\n`  for (const block of this.blocks) x = block.forward(x);`\n`  x = this.lnF.forward(x);`\n`  return /* x scored against the transposed token table */;`\n`}`',
       ],
     },
@@ -172,8 +172,8 @@ The tests compare \`countParams\` with \`numParams()\` of the reference model fo
     'The head is tied to the token table. Write down one argument for tying (GPT-2) and one for untying (Llama 3), and say which you would choose for a 256-token vocabulary and why.',
   ],
   stretch: [
-    'Replace the learned `wpe` with rotary position embeddings applied to q and k inside attention (Su et al. 2021), as Llama and every model since GPT-NeoX do; check that `countParams` drops by exactly T·C.',
-    'Swap `LayerNorm` for RMSNorm and the GELU MLP for SwiGLU with a hidden width of `round(8C/3)`, the Llama 2/3 block. Recompute the per-block budget and confirm it against `numParams()`.',
+    'Replace the learned `wpe` with rotary position embeddings applied to q and k inside attention (Su et al. 2021), as GPT-J, GPT-NeoX, Llama and most open models since do; check that `countParams` drops by exactly T·C.',
+    'Swap `LayerNorm` for RMSNorm and the GELU MLP for SwiGLU with a hidden width of `round(8C/3)`, the Llama 1/2 block (Llama 3 8B uses 3.5C). Recompute the per-block budget and confirm it against `numParams()`.',
     'Add `generate(ids, { maxNewTokens, temperature, next })` that recomputes the full prefix at each step inside `noGrad`, as `lib/gpt.js` does; time it against sequence length, then read module 15 to see what the KV cache in vLLM and llama.cpp removes.',
     'Scale the output projections by `1/sqrt(2L)` at initialisation, as GPT-2 does for the residual branches, and measure the per-block growth of the residual stream norm the demo plots, before and after.',
   ],

@@ -1,6 +1,6 @@
 import * as ops from 'lib/ops.js';
 import { Tensor, crossEntropy } from 'lib/tensor.js';
-import { GPT as RefGPT } from 'lib/gpt.js';
+import { GPT as RefGPT, Block as RefBlock } from 'lib/gpt.js';
 import { MultiHeadAttention } from 'lib/attention.js';
 
 /** A Tensor of the given shape with entries uniform in [-1, 1), from a seeded rng. */
@@ -50,6 +50,14 @@ export const tests = [
     T.eq(noBias.parameters().length, 1, 'parameters() lists only the weight when there is no bias');
     T.eq(lin.parameters().length, 2, 'parameters() lists weight and bias');
     T.ok(lin.parameters()[0] === lin.weight && lin.parameters()[1] === lin.bias, 'parameters() order: weight, then bias');
+    // Gradients must reach W and b: raw ops.matmul / ops.add would return plain arrays and silently stop training.
+    const fresh = new m.Linear(3, 2, { next: T.rng(1) });
+    const out = fresh.forward(x);
+    T.ok(out instanceof Tensor, 'forward must return a Tensor built with Tensor methods (x.matmul, .add), not a raw ops result');
+    out.sum().backward();
+    T.ok(fresh.weight.grad !== null && fresh.bias.grad !== null, 'backward() must reach weight and bias: build forward with Tensor methods, not raw ops');
+    T.close(fresh.bias.grad, [2, 2], 1e-6, 'with a sum() loss over 2 rows, each bias entry is used twice, so its gradient is 2');
+    T.close(fresh.weight.grad, [1, 1, 1, 1, 3.5, 3.5], 1e-6, 'dL/dW = xᵀ · ones: row i of the gradient is the column sum of input feature i');
   } },
   { step: 'layers', name: 'Linear initialises with std 0.02 and works on [B,T,C] inputs', run(m, T) {
     const lin = new m.Linear(64, 96, { next: T.rng(2) });
@@ -75,6 +83,8 @@ export const tests = [
     T.ok(emb.weight.requiresGrad === true, 'the table must be created with Tensor.param so module 07 can train it');
     const big = new m.Embedding(256, 64, { next: T.rng(5) });
     T.ok(Math.abs(stats(big.weight.data).std - 0.02) < 0.003, 'the table is initialised with std 0.02, like Linear');
+    const wide = new m.Embedding(256, 64, { next: T.rng(5), std: 0.1 });
+    T.ok(Math.abs(stats(wide.weight.data).std - 0.1) < 0.01, 'the std option of Embedding must be honoured, as for Linear');
     // Gradients must reach the table: a raw ops.embed would silently break training.
     emb.forward([[2, 2]]).sum().backward();
     T.ok(emb.weight.grad !== null, 'backward() must reach the table: use Tensor methods, not raw ops');
@@ -142,15 +152,26 @@ export const tests = [
   } },
   { step: 'block', name: 'Block computes x + attn(ln1(x)), then + mlp(ln2(·)), and lists its parameters in order', run(m, T) {
     const block = new m.Block({ nEmbd: 16, nHead: 4 }, { next: T.rng(14) });
+    // Give each LayerNorm its own gain and shift: at init ln1 and ln2 are both the plain normalisation,
+    // so reusing ln1 in the MLP branch would otherwise go unnoticed until training.
+    const noise = T.rng(16);
+    for (const ln of [block.ln1, block.ln2]) {
+      for (let i = 0; i < ln.gamma.data.length; i++) { ln.gamma.data[i] = 0.5 + noise(); ln.beta.data[i] = noise() - 0.5; }
+    }
     const x = randomInput(T, [2, 5, 16], 15);
     const h = x.add(block.attn.forward(block.ln1.forward(x)));
     const expected = h.add(block.mlp.forward(block.ln2.forward(h)));
-    T.close(block.forward(x), expected, 1e-5, 'the attention branch reads ln1(x) and the MLP branch reads ln2 of the UPDATED stream, not of the original x');
+    T.close(block.forward(x), expected, 1e-5, 'the attention branch reads ln1(x) and the MLP branch reads ln2 (not ln1 again) of the UPDATED stream, not of the original x');
     const params = block.parameters();
     T.eq(params.length, 12, 'ln1 (2) + attn (4) + ln2 (2) + mlp (4) = 12 tensors');
     T.ok(params[0] === block.ln1.gamma && params[2] === block.attn.qkv.weight && params[6] === block.ln2.gamma && params[8] === block.mlp.fc.weight, 'order: ln1, attn, ln2, mlp (what the checkpoints and lib/gpt.js paramNames() expect)');
     let count = 0; for (const p of params) count += p.size;
     T.eq(count, 12 * 256 + 13 * 16, 'a block holds 12C² weights + 13C biases and LayerNorm gains/shifts');
+    // Construction order fixes which random numbers each layer draws: ln1, attn, ln2, mlp, like lib/gpt.js.
+    const mine = new m.Block({ nEmbd: 16, nHead: 4 }, { next: T.rng(17) });
+    const ref = new RefBlock({ nEmbd: 16, nHead: 4 }, { next: T.rng(17) });
+    T.close(mine.attn.qkv.weight, ref.attn.qkv.weight, 1e-7, 'from the same seed your attn weights must equal lib/gpt.js\'s: construct attn before mlp so the seeded initialisation is reproducible');
+    T.close(mine.mlp.fc.weight, ref.mlp.fc.weight, 1e-7, 'from the same seed your mlp.fc weights must equal lib/gpt.js\'s: construct attn before mlp, and fc before proj');
   } },
 
   // ---------- step 4: the GPT ----------
@@ -168,6 +189,9 @@ export const tests = [
   } },
   { step: 'gpt', name: 'with the reference weights copied in, logits match lib/gpt.js (tied head, final LayerNorm, block order)', run(m, T) {
     const ref = new RefGPT(SMALL);
+    // Perturb every reference parameter (LayerNorm gains/shifts and biases included) so each one matters.
+    const noise = T.rng(21);
+    for (const p of ref.parameters()) for (let i = 0; i < p.data.length; i++) p.data[i] += 0.1 * (noise() - 0.5);
     const mine = new m.GPT({ ...SMALL, seed: 99 });
     copyWeights(ref, mine, T);
     const ids = [[5, 3, 3, 8, 1, 0], [2, 2, 2, 2, 2, 2]];
