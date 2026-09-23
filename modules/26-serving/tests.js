@@ -23,6 +23,16 @@ function loaded(m, id, load, prefixes = []) {
 
 const CFG = (m) => m.DEFAULT_CONFIG;
 
+/** p95 of TTFT / TPOT computed from run records here, so steps 3 and 4 do not depend on your step-5 sloReport. */
+function refP95(values) {
+  if (!values.length) return 0;
+  const s = [...values].sort((a, b) => a - b);
+  const i = 0.95 * (s.length - 1), lo = Math.floor(i), hi = Math.ceil(i);
+  return s[lo] + (s[hi] - s[lo]) * (i - lo);
+}
+const ttftP95 = (records) => refP95(records.map((r) => r.firstToken - r.arrival));
+const tpotP95 = (records) => refP95(records.filter((r) => r.outputLen > 1).map((r) => (r.end - r.firstToken) / (r.outputLen - 1)));
+
 /** Reference ring lookup built from hash32 alone, so the expected value does not depend on the learner's ring. */
 function refHome(ids, vnodes, key) {
   const pts = [];
@@ -192,9 +202,9 @@ export const tests = [
     T.eq(di.records.length, work.length, 'every request must still finish when the pools are split');
     T.ok(co.stallSeconds > 0, 'on a colocated replica each prefill step stalls every decode in flight; that time must be counted');
     T.eq(di.stallSeconds, 0, 'a decode pool never runs a prefill, so nothing stalls there');
-    const coT = m.sloReport(co.records, { ttft: 1, tpot: 0.01 });
-    const diT = m.sloReport(di.records, { ttft: 1, tpot: 0.01 });
-    T.ok(diT.tpotP95 < coT.tpotP95, `p95 TPOT was ${coT.tpotP95.toFixed(4)} s colocated and ${diT.tpotP95.toFixed(4)} s disaggregated; separating the pools must improve it`);
+    // p95 TPOT is computed here from the records (TPOT = (end - firstToken) / (outputLen - 1)), not with your sloReport.
+    const coP = tpotP95(co.records), diP = tpotP95(di.records);
+    T.ok(diP < coP, `p95 TPOT was ${coP.toFixed(4)} s colocated and ${diP.toFixed(4)} s disaggregated; separating the pools must improve it. If both runs look right, check that planPools gives the prefill pool most of these prompt-heavy replicas and that kvTransferSeconds is milliseconds, not seconds`);
     T.ok(di.handoffs > 0 && di.transferSecondsTotal > 0, 'every request that decodes elsewhere must pay a KV transfer');
   } },
 
@@ -231,8 +241,10 @@ export const tests = [
     const firstGrowth = res.scaleTrace.find((x) => x.desired > 1);
     T.ok(firstGrowth && firstGrowth.t <= cfg.scaleIntervalSeconds + 1e-9, `the controller asked for more replicas at t=${firstGrowth ? firstGrowth.t.toFixed(1) : 'never'} s; it must react on its first tick`);
     const fixed = m.runCluster(burst, { policy: 'least-loaded', replicas: 1, cfg });
-    T.ok(m.sloReport(res.records, { ttft: 2, tpot: 0.02 }).ttftP95 < m.sloReport(fixed.records, { ttft: 2, tpot: 0.02 }).ttftP95,
-      'adding replicas must actually lower p95 TTFT against the same burst on a fixed single replica');
+    // p95 TTFT is computed here from the records (firstToken - arrival), not with your sloReport.
+    const autoP = ttftP95(res.records), fixedP = ttftP95(fixed.records);
+    T.ok(autoP < fixedP,
+      `p95 TTFT was ${autoP.toFixed(2)} s autoscaled and ${fixedP.toFixed(2)} s on a fixed single replica; adding replicas must actually lower it against the same burst (peak ${res.peakReplicas} replicas)`);
     T.ok(res.gpuSeconds > fixed.gpuSeconds * 0.5, 'the extra replicas must be billed: GPU-seconds cannot fall when you add machines');
   } },
 

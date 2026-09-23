@@ -160,7 +160,7 @@ Three functions. \`candidates\` is always an array of replica objects the balanc
 
 - \`'round-robin'\`: \`ctx.dispatched % candidates.length\`, ignoring load entirely.
 - \`'least-loaded'\`: the smallest \`replicaLoad\`, first index on ties.
-- \`'cache-aware'\`: among candidates whose \`cache\` Map already has \`req.prefix\`, take the least loaded. Keep it **unless** its load exceeds \`cfg.overloadFactor\` times the mean load of the candidates. If no candidate holds the prefix (or the holder is overloaded), try the ring home \`pickOnRing(ctx.ring, req.prefix)\` under the same overload test, and otherwise fall back to least-loaded.
+- \`'cache-aware'\`: among candidates whose \`cache\` Map already has \`req.prefix\`, take the least loaded. Keep it **unless** its load exceeds \`cfg.overloadFactor\` times the mean load of the candidates. If no candidate holds the prefix (or the holder is overloaded), try the ring home \`pickOnRing(ctx.ring, req.prefix)\` under the same overload test, and otherwise fall back to least-loaded. The ring returns a replica **id**, so convert it with \`candidates.findIndex(...)\`. The driver builds the ring over every eligible replica but filters \`candidates\` to replicas with queue room, so the home may be missing from \`candidates\` (\`findIndex\` gives \`-1\`): treat that like an overloaded home. If \`ctx.ring\` is missing or empty, skip the ring attempt.
 
 Throw on an empty candidate list and on an unknown policy name: a balancer that silently invents a destination is worse than one that stops.
 `,
@@ -178,9 +178,9 @@ When \`runCluster\` is given \`{ disaggregate: true, pools }\`, a request is rou
 
 \`kvTransferSeconds(tokens, cfg)\`: \`cfg.kvSetupSeconds + tokens * cfg.kvBytesPerToken / cfg.kvBandwidth\`. With the defaults that is 0.5 ms plus 128 KB per token at 25 GB/s. Throw if \`tokens\` is negative.
 
-\`planPools(requests, nReplicas, cfg)\`: return \`{ prefill, decode, prefillWork, decodeWork }\`. Estimate the seconds of work each phase implies over the whole trace — prefill is \`promptLen * cfg.tPerToken\` per request; decode is \`(outputLen - 1)\` iterations, each costing \`cfg.tPerToken\` for the token plus its share \`cfg.tFixed / cfg.maxBatch\` of the fixed cost — then split the replicas in that proportion, rounding to whole machines. Neither pool may be empty, the two must sum to \`nReplicas\`, and fewer than 2 replicas must throw.
+\`planPools(requests, nReplicas, cfg)\`: return \`{ prefill, decode, prefillWork, decodeWork }\`. Estimate the seconds of work each phase implies over the whole trace — prefill is \`promptLen * cfg.tPerToken\` per request; decode is \`(outputLen - 1)\` iterations, each costing \`cfg.tPerToken\` for the token plus its share \`cfg.tFixed / cfg.maxBatch\` of the fixed cost — then split the replicas in that proportion, rounding to whole machines. Round with \`Math.round\`, then clamp so neither pool is empty: \`prefill\` lies in \`[1, nReplicas - 1]\` and \`decode = nReplicas - prefill\`. If both work totals are 0 (an empty trace, say), split evenly with \`Math.floor(nReplicas / 2)\` before clamping, so you never return \`NaN\`. Fewer than 2 replicas must throw.
 
-Once both work, the step's third test compares a colocated run against a disaggregated one on the same trace: \`stallSeconds\` (decode time lost to prefill steps) must drop to exactly zero, and p95 TPOT with it.
+Once both work, the step's last test compares a colocated run against a disaggregated one on the same trace: \`stallSeconds\` (decode time lost to prefill steps) must drop to exactly zero, and p95 TPOT with it. The test computes p95 TPOT from the run records itself, so it does not need your step-5 \`sloReport\`.
 `,
       predict: {
         question: 'The demo trace is 93% prefill work by these estimates, so `planPools` puts 3 of 4 replicas in the prefill pool. What does the single decode replica do that the 3 prefill replicas cannot?',
@@ -189,7 +189,7 @@ Once both work, the step's third test compares a colocated run against a disaggr
       hints: [
         '`kvTransferSeconds` is one line and mirrors `commTime` from module 24: a fixed alpha plus bytes over bandwidth.',
         'For `planPools`, accumulate the two work totals in one pass over `requests`, then `Math.round(prefillWork / (prefillWork + decodeWork) * nReplicas)`.',
-        'Clamp after rounding: `prefill = Math.max(1, Math.min(nReplicas - 1, prefill))`, then `decode = nReplicas - prefill`. Handle the degenerate zero-work trace so you never return `NaN`.',
+        'Compute `total = prefillWork + decodeWork` once and branch on `total > 0`: the proportional split if so, `Math.floor(nReplicas / 2)` if not. Then clamp: `prefill = Math.max(1, Math.min(nReplicas - 1, prefill))`, and `decode = nReplicas - prefill`.',
       ],
     },
     {
@@ -200,11 +200,13 @@ Every \`cfg.scaleIntervalSeconds\` the driver takes a snapshot \`{ pendingTokens
 
 \`queueTarget(snap, cfg)\`: the raw signal. \`Math.ceil(pendingTokens / cfg.targetQueueTokens)\`, clamped into \`[cfg.minReplicas, cfg.maxReplicas]\`. Round up: a partial replica serves nobody.
 
-\`autoscaleTarget(snap, cfg)\` where \`snap = { total, raw, window }\` and \`window\` holds the raw targets of the last \`cfg.stabilizationTicks\` ticks, most recent last (the driver seeds it with the starting replica count, so a new cluster cannot shrink on its very first tick):
+\`autoscaleTarget(snap, cfg)\` where \`snap = { total, raw, window }\` and \`window\` holds the raw targets of the last \`cfg.stabilizationTicks\` ticks, most recent last. The window already includes this tick's \`raw\` as its last element, since the driver pushes it before calling you (the driver also seeds it with the starting replica count, so a new cluster cannot shrink on its very first tick):
 
 - if \`raw >= total\`, return \`raw\` — scale up immediately, a backlog is an emergency;
 - otherwise take the largest value in the window; if that is still \`>= total\`, hold at \`total\`;
 - otherwise shrink by at most \`cfg.scaleDownStep\` replicas: \`Math.max(stabilized, total - cfg.scaleDownStep)\`.
+
+The step's last test runs a 400-request burst through the autoscaler and compares p95 TTFT against a fixed single replica. It computes TTFT from the run records itself, so it does not need your step-5 \`sloReport\`.
 
 \`gpuSeconds(spans, endTime)\`: sum \`end - start\` over spans, treating \`end === null\` as \`endTime\` and ignoring spans of zero or negative length. A replica is billed from the moment it is created, including the approximately 30 s it spends loading weights and serving nobody.
 `,
@@ -226,7 +228,7 @@ The report is what the whole simulator exists to produce. \`percentile(values, p
 { n, ttftP50, ttftP95, tpotP50, tpotP95, met, attainment, goodput, throughput, outputTokens, makespan }
 \`\`\`
 
-\`met\` counts records meeting **both** SLOs, where meeting means \`ttft <= slo.ttft\` and \`tpot <= slo.tpot\` (a one-token answer only has to pass the TTFT check), \`attainment\` is \`met / n\`, \`makespan\` is the last completion minus the first arrival, \`goodput\` is \`met / makespan\` requests per second, and \`throughput\` is \`outputTokens / makespan\`. Empty input returns zeros, never \`NaN\` — the demo calls this once per 10-second window and some windows are empty.
+\`met\` counts records meeting **both** SLOs, where meeting means \`ttft <= slo.ttft\` and \`tpot <= slo.tpot\` (a one-token answer only has to pass the TTFT check), \`attainment\` is \`met / n\`, \`outputTokens\` is the sum of \`outputLen\` over the records, \`makespan\` is the last completion (\`end\`) minus the first arrival, \`goodput\` is \`met / makespan\` requests per second, and \`throughput\` is \`outputTokens / makespan\`. If \`makespan\` is 0, \`goodput\` and \`throughput\` are 0. Empty input returns zeros, never \`NaN\` — the demo calls this once per 10-second window and some windows are empty.
 
 \`costPerMillionTokens(gpuSec, outputTokens, dollarsPerGpuHour)\`: \`(gpuSec / 3600) * dollarsPerGpuHour / (outputTokens / 1e6)\`. Throw on zero tokens rather than returning \`Infinity\`.
 `,

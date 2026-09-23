@@ -19,7 +19,7 @@ export default async function demo(m, lab) {
     { name: 'round-robin, colocated', opts: { policy: 'round-robin', replicas: REPLICAS } },
     { name: 'cache-aware, colocated', opts: { policy: 'cache-aware', replicas: REPLICAS } },
     { name: 'cache-aware, disaggregated', opts: { policy: 'cache-aware', disaggregate: true, pools } },
-    { name: `cache-aware, autoscaled ${m.DEFAULT_CONFIG.minReplicas}-${m.DEFAULT_CONFIG.maxReplicas}`,
+    { name: `cache-aware, autoscaled from ${REPLICAS} (bounds ${m.DEFAULT_CONFIG.minReplicas}-${m.DEFAULT_CONFIG.maxReplicas})`,
       opts: { policy: 'cache-aware', replicas: REPLICAS, autoscale: true } },
   ];
 
@@ -98,5 +98,5 @@ export default async function demo(m, lab) {
 
 **Pooling.** Splitting the same 4 GPUs into ${pools.prefill} prefill + ${pools.decode} decode removed every prefill stall from the decode path: **${ca.res.stallSeconds.toFixed(0)} s** of decode stall colocated against **${di.res.stallSeconds.toFixed(0)} s** disaggregated, so p95 TPOT fell from ${(1000 * ca.rep.tpotP95).toFixed(1)} ms to **${(1000 * di.rep.tpotP95).toFixed(1)} ms** and attainment reached **${(100 * di.rep.attainment).toFixed(0)}%** at **$${m.costPerMillionTokens(di.res.gpuSeconds, di.rep.outputTokens, m.DEFAULT_CONFIG.dollarsPerGpuHour).toFixed(2)} per million output tokens**. It cost ${di.res.handoffs} KV handoffs totalling ${di.res.transferSecondsTotal.toFixed(1)} s of transfer.
 
-**Scaling.** The autoscaler ran from ${REPLICAS} up to ${au.res.peakReplicas} replicas against the diurnal hump and reached ${(100 * au.rep.attainment).toFixed(0)}% attainment for ${Math.round(au.res.gpuSeconds)} GPU-seconds — ${(au.res.gpuSeconds / di.res.gpuSeconds).toFixed(1)}x the bill of the disaggregated cluster for ${Math.abs((di.rep.attainment - au.rep.attainment) * 100).toFixed(0)} points ${di.rep.attainment >= au.rep.attainment ? 'LESS' : 'more'} attainment, and still ${(100 * (1 - au.res.gpuSeconds / peakCost)).toFixed(0)}% cheaper than standing all ${m.DEFAULT_CONFIG.maxReplicas} replicas up for the whole window. A ${m.DEFAULT_CONFIG.coldStartSeconds} s cold start against a ${SECONDS} s ramp is why arranging the GPUs you already have beat buying more of them.`);
+**Scaling.** The autoscaler started at ${REPLICAS} replicas and rose to ${au.res.peakReplicas} against the diurnal hump (the seeded stabilisation window keeps it from dropping below its starting size until a whole window of ticks agrees) and reached ${(100 * au.rep.attainment).toFixed(0)}% attainment for ${Math.round(au.res.gpuSeconds)} GPU-seconds — ${(au.res.gpuSeconds / di.res.gpuSeconds).toFixed(1)}x the bill of the disaggregated cluster for ${Math.abs((di.rep.attainment - au.rep.attainment) * 100).toFixed(0)} points ${di.rep.attainment >= au.rep.attainment ? 'LESS' : 'more'} attainment, and still ${(100 * (1 - au.res.gpuSeconds / peakCost)).toFixed(0)}% cheaper than standing all ${m.DEFAULT_CONFIG.maxReplicas} replicas up for the whole window. A ${m.DEFAULT_CONFIG.coldStartSeconds} s cold start against a ${SECONDS} s ramp is why arranging the GPUs you already have beat buying more of them.`);
 }
