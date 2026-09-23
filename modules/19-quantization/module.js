@@ -2,9 +2,9 @@ export default {
   id: '19-quantization',
   title: 'Quantisation',
   track: 'inference',
-  minutes: 90,
+  minutes: 105,
   threshold: 'Quantisation replaces each float with a small integer times a shared scale; the error is set by the largest value in the group that shares the scale, so smaller groups and outlier handling are what make 4-bit weights usable.',
-  goal: 'Absmax, per-channel and group-wise int8/int4 quantisers (symmetric and with zero points), a weight-only quantised matmul, error metrics and a memory calculator for weights and KV cache; the demo quantises the trained checkpoint, plots error against group size, measures next-token agreement with fp32 over 100 positions, and shows what one outlier does to each scheme.',
+  goal: 'Absmax, per-channel and group-wise int8/int4 quantisers (symmetric and with zero points), a weight-only quantised matmul, error metrics, a memory calculator for weights and KV cache, and round-to-nearest-even into bf16, fp16, fp8 and FP4 with MXFP4 and NVFP4 block scales; the demo quantises the trained checkpoint, plots error against group size, measures next-token agreement with fp32 over 100 positions, shows what one outlier does to each scheme, and compares MXFP4 and NVFP4 with int4 g128.',
   prereqs: ['01-tensors', '08-scaling', '15-kv-cache'],
   recall: [
     { q: 'A `Float32Array` of 1,000,000 elements (module 01) occupies how many bytes?',
@@ -56,7 +56,7 @@ Symmetric schemes waste codes on lopsided groups. **Asymmetric** quantisation ma
 
 ## Why 4-bit weights work at all
 
-At batch size 1 a decode step multiplies one row of activations by every weight matrix: about 2 FLOPs per weight, and one read of every weight. NVIDIA's H100 SXM datasheet lists approximately 3.35 TB/s of HBM3 bandwidth against approximately 989 TFLOP/s of dense bf16 arithmetic, so a kernel doing 1 FLOP per byte spends over 99% of its time waiting on memory (module 23). Reading 0.5 bytes per weight instead of 2 cuts that wait by about 4x. This is **weight-only** quantisation: the codes are unpacked to fp16 inside the matmul kernel, one group at a time; the arithmetic stays in fp16. It needs a matched kernel (the Marlin and ExLlamaV2 kernels vLLM ships for GPTQ and AWQ checkpoints, \`bitsandbytes\` for NF4); without one the whole matrix is dequantised first and the saving exists only on disk. Prefill is compute-bound and gains little.
+At batch size 1 a decode step multiplies one row of activations by every weight matrix: about 2 FLOPs per weight, and one read of every weight. NVIDIA's H100 SXM datasheet lists approximately 3.35 TB/s of HBM3 bandwidth against approximately 989 TFLOP/s of dense bf16 arithmetic, so a kernel doing 1 FLOP per byte spends over 99% of its time waiting on memory (module 15; module 23 draws it on the roofline). Reading 0.5 bytes per weight instead of 2 cuts that wait by about 4x. This is **weight-only** quantisation: the codes are unpacked to fp16 inside the matmul kernel, one group at a time; the arithmetic stays in fp16. It needs a matched kernel (the Marlin and ExLlamaV2 kernels vLLM ships for GPTQ and AWQ checkpoints, \`bitsandbytes\` for NF4); without one the whole matrix is dequantised first and the saving exists only on disk. Prefill is compute-bound and gains little.
 
 :::predict
 Llama-3-8B has 8.03 billion parameters. How many bytes are its weights in bf16, int8, and int4 with groups of 128 and 16-bit scales? Does 70B (70.6 billion parameters) fit on one 80 GB H100 in int4?
@@ -70,9 +70,15 @@ Llama-3-8B has 8.03 billion parameters. How many bytes are its weights in bf16, 
 
 Typical cost, as WikiText-2 perplexity: approximately 0.1–0.3 points for 7B–70B models in int4 g128 under GPTQ or AWQ (AWQ reports Llama-2-7B going from 5.47 to about 5.6), rising steeply below 4 bits; larger models tolerate it better. Hopper GPUs add hardware **fp8** (conventionally E4M3 for weights and activations, E5M2 for gradients) at approximately twice the dense bf16 rate; vLLM and TensorRT-LLM serve in it and DeepSeek-V3 trains in it. Each fp8 value carries its own exponent, so it tolerates spread inside a tensor far better than an integer grid, but it still needs scales to fit a tensor into E4M3's range (largest value 448): one per tensor in most serving recipes, one per 1x128 activation tile and per 128x128 weight block in DeepSeek-V3, which uses E4M3 throughout. The **KV cache** quantises too: vLLM's \`kv_cache_dtype="fp8"\` halves it.
 
+## Floats with fewer bits, and scales per block
+
+A float stores a sign, an exponent field \`e\` of \`E\` bits and a mantissa \`m\` of \`M\` bits, and means \`x = ±1.m · 2^(e − bias)\`, where \`bias\` is a fixed offset that lets the exponent go negative. Every power-of-two interval holds \`2^M\` evenly spaced values, so the rounding error is relative: a small value gets a small step. **bf16** (8 exponent bits, 7 mantissa bits) keeps fp32's range, up to about 3.4e38, and gives up precision; **fp16** (5 and 10) keeps three more mantissa bits but tops out at 65504, and its smallest subnormal is about 6e-8, which is why fp16 training scales the loss up to keep small gradients from flushing to zero and bf16 training usually does not. fp8 comes as **E4M3** (largest value 448, no infinities) and **E5M2** (largest 57344). The 4-bit **E2M1** has fifteen values: 0 and ±{0.5, 1, 1.5, 2, 3, 4, 6}.
+
+Four bits of float cannot span a weight matrix alone, so they carry a shared scale, exactly as your integers do. The Open Compute Project's **MX** (microscaling) specification (2023) gives every block of 32 elements one power-of-two scale stored as an 8-bit exponent: MXFP4 costs \`4 + 8/32 = 4.25\` bits per weight. NVIDIA's **NVFP4** uses blocks of 16 with an E4M3 scale per block and one fp32 scale per tensor: \`4 + 8/16 = 4.5\` bits. This is step 3's lesson built into the format: an outlier can coarsen only its own 16 or 32 neighbours. NVIDIA describes its Blackwell GPUs as applying these block scales in hardware, inside FP4 tensor cores. OpenAI released gpt-oss (2025) with its mixture-of-experts weights in MXFP4, which OpenAI says lets the 120B model run on a single 80 GB GPU.
+
 ## Where this toy differs from production
 
-Your int4 codes occupy one byte each in an \`Int8Array\`; real kernels pack two per byte and reorder them for the tensor cores. Your kernel dequantises on a CPU in JavaScript: you will see the memory arithmetic and the error but no speed-up, which needs a fused GPU kernel. Your quantiser rounds to nearest, with no GPTQ or AWQ correction. The checkpoint is a 2-layer, 64-wide model without a 70B model's outlier features, so the demo plants one by hand.
+Your int4 codes occupy one byte each in an \`Int8Array\`; real kernels pack two per byte and reorder them for the tensor cores. Your kernel dequantises on a CPU in JavaScript: you will see the memory arithmetic and the error but no speed-up, which needs a fused GPU kernel. Your quantiser rounds to nearest, with no GPTQ or AWQ correction. Your \`fpRound\` returns a JavaScript double that happens to lie on the format's grid; hardware stores the bit pattern, two FP4 values to a byte. The checkpoint is a 2-layer, 64-wide model without a 70B model's outlier features, so the demo plants one by hand.
 `,
   steps: [
     {
@@ -166,12 +172,45 @@ Write \`weightBytes(params, { bits, groupSize = Infinity, scaleBits = 16, zeroBi
 Weights cost \`params · bits / 8\` bytes for the codes plus one scale and (optionally) one zero point per group: \`(params / groupSize) · (scaleBits + zeroBits) / 8\`. A per-tensor scale (\`groupSize = Infinity\`) adds nothing measurable. \`bitsPerParam\` is the same quantity per weight, in bits: int4 g128 with fp16 scales is 4.125; int4 g32 with fp16 scales and 4-bit zeros is 4.625.
 
 KV cache: a key and a value per layer per KV head per position, so \`2 · nLayer · nKvHeads · headDim · contextLen · batch · bits / 8\`. The exported \`LLAMA3_8B\` and \`LLAMA3_70B\` constants carry the Llama 3 configs (Meta, 2024): 32 and 80 layers, 8 KV heads each thanks to grouped-query attention, head dimension 128. Llama-3-8B at 8,192 tokens in fp16 is exactly 1 GiB; without GQA (32 KV heads) it would be 4 GiB.
+
+The same weight formula prices the block-float formats of step 6: MXFP4 is \`{ bits: 4, groupSize: 32, scaleBits: 8 }\`, 4.25 bits per weight, and NVFP4 is \`{ bits: 4, groupSize: 16, scaleBits: 8 }\`, 4.5 bits (its single fp32 scale per tensor is negligible).
 `,
       predict: { question: 'Llama-3-8B, batch 64, context 8,192, fp16 KV cache. Does the cache or the bf16 weight set take more memory?', answer: 'The cache: 64 GiB against 16 GB of weights. This is why KV-cache quantisation (fp8 in vLLM, 2-bit in KIVI) and paged allocation (module 16) matter as much as weight quantisation for throughput.' },
       hints: [
         'Everything here is counting. For weights: how many groups are there, and how many bits does each carry on top of its codes? For the cache: what is stored per token, per layer, per sequence?',
         'Weights: the codes take params · bits / 8 bytes; there are params / groupSize groups, each carrying scaleBits + zeroBits bits, and a per-tensor scale (groupSize Infinity) contributes 0. bitsPerParam is the byte count of one parameter, in bits. KV: a key and a value vector of headDim entries per KV head, per layer, per position, per sequence.',
         '`const codes = (params * bits) / 8; const overhead = groupSize === Infinity ? 0 : /* number of groups */ * /* bytes of scale + zero per group */; return codes + overhead;` bitsPerParam can call weightBytes with params = 1; kvCacheBytes is one product of the factors in hint 2, times bytes per value.',
+      ],
+    },
+    {
+      id: 'floats',
+      title: 'Floating-point formats and microscaling',
+      instructions: `
+Write \`fpRound(x, fmt)\`, \`mxQuantize(x, { block = 32, elem = 'e2m1' })\` and \`nvfp4Quantize(x)\`.
+
+\`fmt\` is \`{ exp, man, bias, max, saturate }\`: \`exp\` exponent bits, \`man\` mantissa bits, \`bias\` the exponent offset (default \`2^(exp−1) − 1\`), \`max\` the largest finite value (default \`(2 − 2^−man) · 2^(2^exp − 2 − bias)\`, the IEEE rule that reserves the top exponent for infinity and NaN) and \`saturate\`, whether overflow clamps to \`±max\` instead of returning \`±Infinity\`. The exported \`FORMATS\` holds bf16, fp16, fp8 E4M3 and E5M2, and FP4 E2M1. E4M3 and E2M1 have no infinities, so they set \`max\` (448 and 6) and saturate. With \`a = |x|\`:
+
+\`\`\`
+e   = max(floor(log2 a), 1 − bias)     below 2^(1−bias) the format is subnormal: the spacing stops shrinking
+ulp = 2^(e − man)                      the spacing of representable values near a
+r   = roundHalfEven(a / ulp) · ulp
+if r > max: r = saturate ? max : Infinity
+return sign(x) · r                     (0 and NaN come back unchanged)
+\`\`\`
+
+A tie goes to the even multiple of \`ulp\`, the one whose last mantissa bit is 0. At 1.0 bf16's \`ulp\` is \`2^−7\`, so \`1 + 2^−8\` sits exactly halfway between 1 and \`1 + 2^−7\` and rounds to 1. \`Math.round\` sends every tie up, which is wrong here.
+
+\`mxQuantize\` follows the OCP MX specification v1.0 (2023). For each block of \`block\` consecutive values (the last may be shorter), let \`amax\` be the largest \`|x|\`. The block's scale is the power of two \`2^(floor(log2 amax) − emax)\`, where \`emax = floor(log2 FORMATS[elem].max)\` is the exponent of the element format's largest power of two (2 for E2M1, whose largest is 4). An all-zero block gets scale 1. Each element is \`fpRound(x / scale, FORMATS[elem])\`. Return \`{ elems: Float32Array, scales: Float32Array, block }\`.
+
+\`nvfp4Quantize(x)\` uses blocks of 16 and two levels of scale. \`tensorScale = max|x| / (6 · 448)\` (1 if \`x\` is all zero). Each block's scale is \`s = fpRound(amax / 6 / tensorScale, FORMATS.e4m3)\`, and each element is \`fpRound(x / (s · tensorScale), FORMATS.e2m1)\`, or 0 if \`s\` is 0. Return \`{ elems, scales, tensorScale, block: 16 }\`. Dividing by \`6 · 448\` gives the block that holds the tensor's largest value a scale of exactly 448, the top of E4M3's range. The worked \`dequantizeBlocks\` turns either result back into floats.
+
+The tests check ties to even in bf16, overflow to \`Infinity\` at 65520 in fp16, saturation at 448 in E4M3 and subnormals, the exact E2M1 grid, power-of-two MX scales, E4M3-representable NVFP4 scales, and that both beat int4 g128 on weights with scattered outliers.
+`,
+      predict: { question: 'An MXFP4 block of 32 has largest |x| = 7.5. What scale does the MX rule pick, and what happens to the 7.5?', answer: 'floor(log2 7.5) = 2, so the scale is 2^(2 − 2) = 1. The element 7.5 / 1 = 7.5 rounds to 8, which E2M1 lacks, so it saturates to 6: an error of 1.5 on the block\'s largest value. Any block whose largest |x| / scale lands in [7, 8) saturates this way, because the floor rule can leave that ratio anywhere in [4, 8) while E2M1 stops at 6. An E4M3 scale can be 7.5 / 6 = 1.25 exactly, which is one reason NVFP4 is more accurate.' },
+      hints: [
+        'Work with the magnitude and put the sign back at the end; return 0 and NaN unchanged. What remains is two questions: what is the spacing of the grid near |x|, and which multiple of it is nearest? In the block quantisers fpRound does all the rounding; you only choose the scales.',
+        'fpRound: e = Math.floor(Math.log2(a)), corrected by one if 2^e > a or 2^(e+1) ≤ a (log2 is not always exact), then raised to at least 1 − bias; ulp = 2^(e − man). Split a / ulp into floor f and remainder d: d > 0.5 rounds up, d < 0.5 down, d = 0.5 goes to whichever of f and f + 1 is even. Then apply max and saturate. mxQuantize: per block, amax gives an exponent, and the scale is 2 to that exponent minus emax. nvfp4Quantize: one pass for the tensor amax, then per block an E4M3 scale and E2M1 elements.',
+        '`const f = Math.floor(v), d = v - f; const n = d > 0.5 ? f + 1 : d < 0.5 ? f : /* the even one of f, f + 1 */; let r = n * ulp; if (r > max) r = /* clamp or overflow */;` and in mxQuantize `scales[b] = 2 ** (/* exponent of amax */ - Math.floor(Math.log2(FORMATS[elem].max)));`',
       ],
     },
   ],

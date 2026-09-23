@@ -1,11 +1,19 @@
 import * as ops from 'lib/ops.js';
 import { rng } from 'lib/util.js';
+import { Tensor } from 'lib/tensor.js';
+import { attention } from 'lib/attention.js';
 
 // Hardware figures used by the tests, so that a learner who edits the constants still gets
 // meaningful failures. These are the same approximate datasheet numbers as in the starter.
 const H = { flops: 989e12, bandwidth: 3.35e12 };   // H100 SXM, ridge = 295.2 FLOP/byte
 const A = { flops: 312e12, bandwidth: 2.04e12 };   // A100 SXM, ridge = 152.9 FLOP/byte
 const SLOW = { flops: 2e12, bandwidth: 0.2e12 };   // server CPU, ridge = 10 FLOP/byte
+const B = { flops: 2.25e15, bandwidth: 8e12 };     // B200 (NVIDIA DGX B200, per GPU), ridge = 281.25 FLOP/byte
+
+// The reference: lib/attention.js (module 05) on the same raw tensors. Returns { shape, data }.
+function reference(q, k, v, causal) {
+  return attention(new Tensor(q), new Tensor(k), new Tensor(v), { causal }).out;
+}
 
 function matrix(n, seed) {
   const next = rng(seed);
@@ -31,6 +39,14 @@ export const tests = [
     T.close(m.attainable(ridge, H.flops, H.bandwidth), 989e12, 1e-6, 'at exactly the ridge point the two roofs are equal');
     T.close(m.attainable(ridge / 2, H.flops, H.bandwidth), 989e12 / 2, 1e-6, 'half the ridge intensity buys half of peak FLOP/s');
     T.close(m.attainable(4, SLOW.flops, SLOW.bandwidth), 0.8e12, 1e-6, 'the same intensity gives a different answer on a different device');
+  } },
+  { step: 'roofline', name: 'the B200 row: more of everything, but almost the same ridge', run(m, T) {
+    T.ok(m.HARDWARE.includes(m.B200), 'HARDWARE must list the B200 so the demo plots its roofline');
+    T.close(m.ridgePoint(B.flops, B.bandwidth), 281.25, 1e-9, 'B200: approximately 2.25e15 FLOP/s bf16 / 8e12 B/s = 281.25 FLOP/byte, close to the H100 ridge of 295');
+    T.close(m.ridgePoint(9e15, B.bandwidth) / m.ridgePoint(B.flops, B.bandwidth), 4, 1e-9,
+      'at FP4 (approximately 9 PFLOP/s dense) on the same 8 TB/s the ridge is 4x higher, so even more of inference is memory-bound');
+    T.close(m.attainable(1, B.flops, B.bandwidth) / m.attainable(1, H.flops, H.bandwidth), 8 / 3.35, 1e-9,
+      'a batch-1 decode matmul on a B200 speeds up only by the bandwidth ratio (about 2.4x), whatever the FLOP/s');
   } },
   { step: 'roofline', name: 'kernelTime takes the max of the two times, never the sum', run(m, T) {
     T.close(m.kernelTime(1e12, 1e9, H.flops, H.bandwidth), 1e12 / 989e12, 1e-9, 'compute-heavy kernel: 1.011 ms of arithmetic hides 0.299 ms of traffic');
@@ -170,5 +186,56 @@ export const tests = [
     T.eq(m.flashBlockSize(228 * 1024, 128, 1), 456, 'an int8 KV cache doubles the block that fits, which is a second reason to quantise it');
     T.eq(m.flashBlockSize(100 * 1024, 96, 2), 133, 'a block is a whole number of rows: 102400 bytes / (4 * 96 * 2) = 133.3 must floor to 133, not round up and overflow SRAM');
     T.eq(m.flashBlockSize(1000, 128, 2), 1, 'when nothing fits, return 1 rather than 0: a zero block size would divide by zero downstream');
+  } },
+  { step: 'hierarchy', name: 'tiledAttention equals lib/attention.js at T = 64 for every block size', run(m, T) {
+    const n = 64, dh = 16;
+    const q = ops.randn([n, dh], T.rng(11), 1.5), k = ops.randn([n, dh], T.rng(12), 1.5), v = ops.randn([n, dh], T.rng(13));
+    for (const causal of [true, false]) {
+      const want = reference(q, k, v, causal);
+      for (const bs of [1, 5, 16, 64, 100]) {
+        const got = m.tiledAttention(q, k, v, bs, { causal });
+        T.shape(got, [n, dh], 'tiledAttention returns one output row of dh values per query');
+        T.close(got, want, 1e-5, `causal=${causal}, blockSize=${bs}: the online softmax must give exactly softmax(q·kᵀ/sqrt(dh))·v; a block of 1, a block that does not divide T and a block larger than T are all the same maths`);
+      }
+    }
+    // An empty sequence, so that a kernel that forgets the check fails here instead of looping forever.
+    const empty = { shape: [0, dh], data: new Float32Array(0) };
+    T.throws(() => m.tiledAttention(empty, empty, empty, 0), 'blockSize 0 would never advance through the keys: check it before any loop and throw');
+  } },
+  { step: 'hierarchy', name: 'tiledAttention rescales by exp(mOld - mNew) when a later block raises the max', run(m, T) {
+    // Scores rise by 50 per key: key 15 scores 750, where exp(750) overflows to Infinity. The early
+    // blocks are summed against a max that later blocks beat, so their l and acc must be rescaled.
+    const n = 16, dh = 4;
+    const q = { shape: [n, dh], data: new Float32Array(n * dh) };
+    const k = { shape: [n, dh], data: new Float32Array(n * dh) };
+    const v = ops.randn([n, dh], T.rng(21));
+    for (let i = 0; i < n; i++) q.data[i * dh] = 10;
+    for (let j = 0; j < n; j++) { k.data[j * dh] = 10 * j; k.data[j * dh + 1] = Math.sin(j); }
+    for (const causal of [true, false]) {
+      const got = m.tiledAttention(q, k, v, 4, { causal });
+      T.ok(Array.from(got.data).every(Number.isFinite), `causal=${causal}: scores of 750 overflow exp(); subtract the running max m before exponentiating, never the raw score`);
+      T.close(got, reference(q, k, v, causal), 1e-5, `causal=${causal}, blockSize 4: when a new block raises the max, multiply the old l and acc by exp(mOld - mNew) before adding the block, or the early blocks are weighted against the wrong max`);
+    }
+    // Softer scores, so a missing rescale shows up as a wrong answer rather than an overflow.
+    for (let j = 0; j < n; j++) k.data[j * dh] = 0.3 * j;
+    T.close(m.tiledAttention(q, k, v, 3, { causal: false }), reference(q, k, v, false), 1e-5,
+      'scores rising from 0 to 22.5 across blocks of 3: every block raises the max, so every block needs the exp(mOld - mNew) correction');
+  } },
+  { step: 'hierarchy', name: 'tiledAttention streams K and V block by block instead of scoring every key first', run(m, T) {
+    // One query row, 32 keys, blocks of 8. Record which rows of K and V are read, in order.
+    const n = 32, dh = 4, bs = 8, reads = [];
+    const watch = (raw, name) => ({ shape: raw.shape, data: new Proxy(Array.from(raw.data), {
+      get(t, key) { if (typeof key === 'string' && /^\d+$/.test(key)) reads.push([name, Math.floor(+key / dh)]); return t[key]; },
+    }) });
+    const q = ops.randn([1, dh], T.rng(31)), k = ops.randn([n, dh], T.rng(32)), v = ops.randn([n, dh], T.rng(33));
+    const got = m.tiledAttention(q, watch(k, 'k'), watch(v, 'v'), bs, { causal: false });
+    T.close(got, reference(q, k, v, false), 1e-5, 'reading the data by index (data[j * dh + c]) must still give the reference answer');
+    const firstV = reads.findIndex(([name]) => name === 'v');
+    T.ok(firstV >= 0, 'tiledAttention must read V');
+    const kBefore = reads.slice(0, firstV).filter(([name]) => name === 'k').map(([, row]) => row);
+    T.ok(kBefore.length > 0 && Math.max(...kBefore) < bs,
+      `before touching V a streaming kernel has scored only the first block of ${bs} keys; got K rows up to ${Math.max(-1, ...kBefore)}. Scoring all ${n} keys first is the naive kernel, whose [T, T] scores are what attentionCost({ flash: false }) charges to HBM`);
+    const vRows = new Set(reads.filter(([name]) => name === 'v').map(([, row]) => row));
+    T.eq(vRows.size, n, 'every value row contributes once the non-causal query has seen all its keys');
   } },
 ];

@@ -215,3 +215,95 @@ export function bitsPerParam(opts) {
 export function kvCacheBytes({ nLayer, nKvHeads, headDim }, { contextLen, batch = 1, bits = 16 } = {}) {
   return 2 * nLayer * nKvHeads * headDim * contextLen * batch * (bits / 8);
 }
+
+// ---------- step 6: floating-point formats and microscaling ----------
+
+// Sign, `exp` exponent bits, `man` mantissa bits; value = ±1.m · 2^(e − bias), subnormal below 2^(1 − bias).
+// `max` is the largest finite value. bf16, fp16 and E5M2 follow IEEE and keep the top exponent for
+// infinity and NaN. The OCP fp8 E4M3 format uses that exponent for values up to 448 (only S.1111.111 is
+// NaN), and FP4 E2M1 has no special values at all; both saturate instead of overflowing to Infinity.
+export const FORMATS = {
+  bf16: { name: 'bf16', exp: 8, man: 7, bias: 127, max: (2 - 2 ** -7) * 2 ** 127, saturate: false },
+  fp16: { name: 'fp16', exp: 5, man: 10, bias: 15, max: 65504, saturate: false },
+  e4m3: { name: 'fp8 E4M3', exp: 4, man: 3, bias: 7, max: 448, saturate: true },
+  e5m2: { name: 'fp8 E5M2', exp: 5, man: 2, bias: 15, max: 57344, saturate: false },
+  e2m1: { name: 'FP4 E2M1', exp: 2, man: 1, bias: 1, max: 6, saturate: true },
+};
+
+/**
+ * Turn the result of mxQuantize or nvfp4Quantize back into floats:
+ * elems[i] · scales[floor(i / block)] · tensorScale (tensorScale is 1 when absent).
+ */
+export function dequantizeBlocks({ elems, scales, block, tensorScale = 1 }) {
+  const out = new Float32Array(elems.length);
+  for (let i = 0; i < elems.length; i++) out[i] = elems[i] * scales[Math.floor(i / block)] * tensorScale;
+  return out;
+}
+
+/** The exponent of the largest power of two not above a (a > 0); corrects Math.log2's rounding. */
+function floorLog2(a) {
+  let e = Math.floor(Math.log2(a));
+  if (2 ** e > a) e--;
+  else if (2 ** (e + 1) <= a) e++;
+  return e;
+}
+
+function roundHalfEven(v) {
+  const f = Math.floor(v), d = v - f;
+  if (d > 0.5) return f + 1;
+  if (d < 0.5) return f;
+  return f % 2 === 0 ? f : f + 1;
+}
+
+/** Round x to the nearest value of the format, ties to even; subnormals, saturation or overflow to ±Infinity. */
+export function fpRound(x, { exp, man, bias = 2 ** (exp - 1) - 1, max = (2 - 2 ** -man) * 2 ** (2 ** exp - 2 - bias), saturate = false } = {}) {
+  if (Number.isNaN(x)) return NaN;
+  const a = Math.abs(x);
+  if (a === 0) return x;
+  const sign = x < 0 ? -1 : 1;
+  if (a === Infinity) return saturate ? sign * max : x;
+  const e = Math.max(floorLog2(a), 1 - bias);
+  const ulp = 2 ** (e - man);
+  let r = roundHalfEven(a / ulp) * ulp;
+  if (r > max) r = saturate ? max : Infinity;
+  return sign * r;
+}
+
+/** OCP MX: one power-of-two (E8M0) scale per block of `block` values, elements in FORMATS[elem]. */
+export function mxQuantize(x, { block = 32, elem = 'e2m1' } = {}) {
+  const data = flat(x);
+  const fmt = FORMATS[elem];
+  const emax = floorLog2(fmt.max);
+  const nBlocks = Math.ceil(data.length / block);
+  const elems = new Float32Array(data.length), scales = new Float32Array(nBlocks);
+  for (let b = 0; b < nBlocks; b++) {
+    const lo = b * block, hi = Math.min(lo + block, data.length);
+    let amax = 0;
+    for (let i = lo; i < hi; i++) if (Math.abs(data[i]) > amax) amax = Math.abs(data[i]);
+    const scale = amax > 0 ? 2 ** clamp(floorLog2(amax) - emax, -127, 127) : 1;
+    scales[b] = scale;
+    for (let i = lo; i < hi; i++) elems[i] = fpRound(data[i] / scale, fmt);
+  }
+  return { elems, scales, block };
+}
+
+/** NVFP4: E2M1 elements in blocks of 16, an E4M3 scale per block, one fp32 scale per tensor. */
+export function nvfp4Quantize(x) {
+  const data = flat(x);
+  const block = 16;
+  let amax = 0;
+  for (let i = 0; i < data.length; i++) if (Math.abs(data[i]) > amax) amax = Math.abs(data[i]);
+  const tensorScale = amax > 0 ? Math.fround(amax / (6 * 448)) : 1;
+  const nBlocks = Math.ceil(data.length / block);
+  const elems = new Float32Array(data.length), scales = new Float32Array(nBlocks);
+  for (let b = 0; b < nBlocks; b++) {
+    const lo = b * block, hi = Math.min(lo + block, data.length);
+    let bmax = 0;
+    for (let i = lo; i < hi; i++) if (Math.abs(data[i]) > bmax) bmax = Math.abs(data[i]);
+    const s = fpRound(bmax / 6 / tensorScale, FORMATS.e4m3);
+    scales[b] = s;
+    if (s === 0) continue;
+    for (let i = lo; i < hi; i++) elems[i] = fpRound(data[i] / (s * tensorScale), FORMATS.e2m1);
+  }
+  return { elems, scales, tensorScale, block };
+}

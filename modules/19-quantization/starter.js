@@ -170,3 +170,59 @@ export function kvCacheBytes({ nLayer, nKvHeads, headDim }, { contextLen, batch 
   // TODO: step 5
   return 0;
 }
+
+// ---------- step 6: floating-point formats and microscaling ----------
+
+// Sign, `exp` exponent bits, `man` mantissa bits; value = ±1.m · 2^(e − bias), subnormal below 2^(1 − bias).
+// `max` is the largest finite value. bf16, fp16 and E5M2 follow IEEE and keep the top exponent for
+// infinity and NaN. The OCP fp8 E4M3 format uses that exponent for values up to 448 (only S.1111.111 is
+// NaN), and FP4 E2M1 has no special values at all; both saturate instead of overflowing to Infinity.
+export const FORMATS = {
+  bf16: { name: 'bf16', exp: 8, man: 7, bias: 127, max: (2 - 2 ** -7) * 2 ** 127, saturate: false },
+  fp16: { name: 'fp16', exp: 5, man: 10, bias: 15, max: 65504, saturate: false },
+  e4m3: { name: 'fp8 E4M3', exp: 4, man: 3, bias: 7, max: 448, saturate: true },
+  e5m2: { name: 'fp8 E5M2', exp: 5, man: 2, bias: 15, max: 57344, saturate: false },
+  e2m1: { name: 'FP4 E2M1', exp: 2, man: 1, bias: 1, max: 6, saturate: true },
+};
+
+/**
+ * Turn the result of mxQuantize or nvfp4Quantize back into floats:
+ * elems[i] · scales[floor(i / block)] · tensorScale (tensorScale is 1 when absent).
+ */
+export function dequantizeBlocks({ elems, scales, block, tensorScale = 1 }) {
+  const out = new Float32Array(elems.length);
+  for (let i = 0; i < elems.length; i++) out[i] = elems[i] * scales[Math.floor(i / block)] * tensorScale;
+  return out;
+}
+
+/**
+ * Round x to the nearest value of the format { exp, man, bias?, max?, saturate? }, ties to even.
+ * bias defaults to 2^(exp−1) − 1 and max to (2 − 2^−man) · 2^(2^exp − 2 − bias). Values below
+ * 2^(1 − bias) are subnormal (same spacing as the smallest normal binade). Overflow gives ±max when
+ * saturate is true, ±Infinity otherwise. 0 and NaN come back unchanged.
+ */
+export function fpRound(x, { exp, man, bias = 2 ** (exp - 1) - 1, max = (2 - 2 ** -man) * 2 ** (2 ** exp - 2 - bias), saturate = false } = {}) {
+  // TODO: step 6
+  return x;
+}
+
+/**
+ * OCP MX block quantisation: one power-of-two scale 2^(floor(log2 amax) − emax) per block of `block`
+ * values, emax = floor(log2 FORMATS[elem].max); elements are fpRound(x / scale, FORMATS[elem]).
+ * Returns { elems: Float32Array, scales: Float32Array, block }.
+ */
+export function mxQuantize(x, { block = 32, elem = 'e2m1' } = {}) {
+  // TODO: step 6
+  const data = flat(x);
+  return { elems: Float32Array.from(data), scales: new Float32Array(Math.ceil(data.length / block)).fill(1), block };
+}
+
+/**
+ * NVFP4: blocks of 16 E2M1 elements, an E4M3 scale per block and one fp32 scale per tensor,
+ * tensorScale = max|x| / (6 · 448). Returns { elems, scales, tensorScale, block: 16 }.
+ */
+export function nvfp4Quantize(x) {
+  // TODO: step 6
+  const data = flat(x);
+  return { elems: new Float32Array(data.length), scales: new Float32Array(Math.ceil(data.length / 16)), tensorScale: 1, block: 16 };
+}

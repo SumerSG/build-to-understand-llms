@@ -1,4 +1,7 @@
-import { fmt, now } from 'lib/util.js';
+import { fmt, now, rng } from 'lib/util.js';
+import * as ops from 'lib/ops.js';
+import { Tensor } from 'lib/tensor.js';
+import { attention } from 'lib/attention.js';
 
 export default async function demo(m, lab) {
   const hw = m.H100, L = m.LLAMA3_8B;
@@ -58,6 +61,7 @@ export default async function demo(m, lab) {
       { name: m.H100.name, values: curve(m.H100) },
       { name: m.A100.name, values: curve(m.A100) },
       { name: m.RTX_4090.name, values: curve(m.RTX_4090) },
+      { name: m.B200.name, values: curve(m.B200) },
       { name: 'Llama-3-8B ops (H100)', values: markValues },
     ],
     xlabel: 'log2(arithmetic intensity, FLOP/byte)',
@@ -68,6 +72,31 @@ export default async function demo(m, lab) {
     const pct = 100 * m.attainable(p.intensity, hw.flops, hw.bandwidth) / hw.flops;
     lab.log(`${p.label}: ${p.intensity.toFixed(2)} FLOP/byte -> ${pct.toFixed(2)}% of ${hw.name} peak (${p.intensity < ridge ? 'memory' : 'compute'}-bound)`);
   }
+
+  const b200Ridge = m.ridgePoint(m.B200.flops, m.B200.bandwidth);
+  lab.log(`${m.B200.name}: ${fmt(m.B200.flops)}FLOP/s bf16, ${fmt(m.B200.bandwidth)}B/s HBM3e -> ridge point ${b200Ridge.toFixed(1)} FLOP/byte ` +
+    `(${(m.B200.flops / hw.flops).toFixed(2)}x the ${hw.name}'s FLOP/s, ${(m.B200.bandwidth / hw.bandwidth).toFixed(2)}x its bandwidth)`);
+
+  // ---------- 2b. your online-softmax attention against module 05's ----------
+  const seq = 256, dh = 64;
+  const q = ops.randn([seq, dh], rng(71)), k = ops.randn([seq, dh], rng(72)), v = ops.randn([seq, dh], rng(73));
+  const refOut = attention(new Tensor(q), new Tensor(k), new Tensor(v), { causal: true }).out;
+  const flashRows = [];
+  let flashWorst = 0;
+  for (const bs of [16, 64, seq]) {
+    const got = m.tiledAttention(q, k, v, bs);
+    let diff = 0;
+    for (let i = 0; i < got.data.length; i++) diff = Math.max(diff, Math.abs(got.data[i] - refOut.data[i]));
+    lab.check(diff < 1e-4, `tiledAttention with blockSize ${bs} disagrees with lib/attention.js by ${diff}`);
+    flashWorst = Math.max(flashWorst, diff);
+    flashRows.push([bs, `${bs} scores`, `${seq} scores`, diff.toExponential(1)]);
+  }
+  await lab.tick();
+  lab.table({
+    title: `Your tiledAttention vs lib/attention.js, one causal head, T = ${seq}, dh = ${dh}`,
+    columns: ['blockSize', 'score state per query row', 'naive kernel holds', 'max |difference|'],
+    rows: flashRows,
+  });
 
   // ---------- 3. your own matmul: naive vs tiled ----------
   const sizes = [256, 512, 1024];
@@ -128,7 +157,8 @@ Your roofline calculator puts one **${L.name}** decode step at **${decode[1].int
 against a ridge point of **${ridge.toFixed(0)} FLOP/byte** — **${(100 * decode[1].fractionOfPeak).toFixed(2)}% of peak bf16**.
 Summing the four matmuls over ${L.layers} layers gives **${(perLayer * L.layers * 1e3).toFixed(2)} ms/token**, about **${tokPerSec.toFixed(0)} tokens/s**,
 and the whole-model estimate is **${single.tokensPerSecond.toFixed(0)} tokens/s** for a single stream (${single.bound}-bound): the layer sum comes out
-about ${(100 * (tokPerSec / single.tokensPerSecond - 1)).toFixed(0)}% high because it leaves out the embedding and output-projection weights, which every decode step also reads.
+about ${(100 * (tokPerSec / single.tokensPerSecond - 1)).toFixed(0)}% high because it leaves out the embedding table and the output projection (together **${(2 * L.vocab * L.dModel / 1e9).toFixed(2)}B** parameters) that the whole-model estimate counts.
+A real step reads all of the output projection, about **${(L.vocab * L.dModel * b / 1e9).toFixed(2)} GB** in bf16, but only one row of the embedding table, so its weight traffic lies between the two estimates (before counting the KV cache).
 The same matmuls at prefill 2048 sit at **${analysed[2048][1].intensity.toFixed(0)} FLOP/byte** and reach **100% of peak**;
 the crossover is a batch of **${minBatch.toFixed(0)}** once the activations are counted (**${(ridge * b / 2).toFixed(0)}** if you count only the weight stream). Quantising the weights to int4 raises the single-stream ceiling to
 **${int4.tokensPerSecond.toFixed(0)} tokens/s** without changing a single FLOP.
@@ -136,6 +166,9 @@ the crossover is a batch of **${minBatch.toFixed(0)}** once the activations are 
 Attention at 4096 tokens moves **${fmt(attn.bytes / 1e6)} MB** per head naively and **${fmt(flash.bytes / 1e6)} MB** when the
 score tiles stay in SRAM — **${(attn.bytes / flash.bytes).toFixed(0)}x less traffic** for identical arithmetic, which is FlashAttention's
 whole argument; at headDim ${L.headDim} in bf16, 228 KB of shared memory holds a block of **${sram}** rows.
+Your online-softmax \`tiledAttention\` matched module 05's attention to within **${flashWorst.toExponential(1)}** at every block size
+while holding only one block of scores per query row. On the plot, the ${m.B200.name} line sits higher on both roofs, but its
+ridge of **${b200Ridge.toFixed(0)} FLOP/byte** is close to the H100's, so a batch-1 decode stays just as far on the memory side.
 
 Your own kernels, measured just now: naive **${naiveGf.at(-1).toFixed(2)} GFLOP/s** and tiled(${blockSize}) **${tiledGf.at(-1).toFixed(2)} GFLOP/s**
 at n=${big} (**${speedup.toFixed(2)}x**) — ${smallRatio < 1

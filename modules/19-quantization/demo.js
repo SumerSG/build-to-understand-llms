@@ -1,8 +1,9 @@
 // Module 19 demo — quantise the pre-trained checkpoint with YOUR quantisers, run the model through YOUR
 // weight-only kernel, and measure what the integers cost: reconstruction error against group size,
-// next-token agreement with fp32 over 100 positions, the memory arithmetic for Llama 3, and what a single
-// outlier weight does to each scheme. If the checkpoint cannot be loaded (mid-retrain, or a browser
-// without JSON imports) a random-weight model stands in; the mechanics are identical, the text is noise.
+// next-token agreement with fp32 over 100 positions, the memory arithmetic for Llama 3, what a single
+// outlier weight does to each scheme, and how the MXFP4 and NVFP4 block-float formats compare with int4 g128.
+// If the checkpoint cannot be loaded (mid-retrain, or a browser without JSON imports) a random-weight model
+// stands in; the mechanics are identical, the text is noise.
 import * as ops from 'lib/ops.js';
 import { loadModel, forward } from 'lib/infer.js';
 import { BPETokenizer } from 'lib/tokenizer.js';
@@ -152,6 +153,9 @@ export default async function demo(m, lab) {
     { name: 'int8', opts: { bits: 8, groupSize: Infinity } },
     { name: 'int4 g128', opts: { bits: 4, groupSize: 128, scaleBits: 16 } },
     { name: 'int4 g32 + zero', opts: { bits: 4, groupSize: 32, scaleBits: 16, zeroBits: 4 } },
+    { name: 'fp8', opts: { bits: 8, groupSize: Infinity } },
+    { name: 'MXFP4', opts: { bits: 4, groupSize: 32, scaleBits: 8 } },
+    { name: 'NVFP4', opts: { bits: 4, groupSize: 16, scaleBits: 8 } },
   ];
   const memLabels = [], memValues = [];
   for (const md of models) for (const p of precisions) { memLabels.push(`${md.name.replace('Llama-3-', '')} ${p.name}`); memValues.push(+(m.weightBytes(md.params, p.opts) / GB).toFixed(2)); }
@@ -194,10 +198,46 @@ export default async function demo(m, lab) {
   lab.table({ title: 'One planted outlier (50x the largest weight) in a [256, 64] matrix: MSE of the other 16,383 weights', columns: ['scheme', 'MSE without outlier', 'MSE with outlier', 'damage (x)', '% of weights rounded to 0'], rows: outRows });
   lab.bar({ title: 'How much one outlier multiplies the error of everyone else (log10 of the MSE ratio)', labels: outlierSchemes.map((s) => s.name), values: ratios.map((r) => +Math.log10(Math.max(r, 1)).toFixed(2)) });
 
+  // ---------- 4. floating-point formats and microscaling ----------
+  // mlp.proj's W is [K, N] = [256, 64]; transposed to [64, 256] (one row per output channel, as section 1 does)
+  // its rows run along K = 256, so int4 g128 groups and the MX/NVFP4 blocks all fall inside a row and every
+  // scheme below sees the same contiguous runs of values.
+  const fpBase = ops.transpose(model.w['blocks.0.mlp.proj.weight']);
+  let fpAmax = 0;
+  for (let i = 0; i < fpBase.data.length; i++) fpAmax = Math.max(fpAmax, Math.abs(fpBase.data[i]));
+  const fpSpiked = ops.clone(fpBase);
+  for (let i = 0; i < fpSpiked.data.length; i += 509) fpSpiked.data[i] = (i % 2 ? -1 : 1) * 10 * fpAmax; // 33 scattered outliers
+  const fp8Tensor = (t) => { // fp8 E4M3 with one per-tensor scale that maps max|x| to 448
+    let a = 0;
+    for (let i = 0; i < t.data.length; i++) a = Math.max(a, Math.abs(t.data[i]));
+    const s = a > 0 ? a / 448 : 1;
+    return Float32Array.from(t.data, (v) => m.fpRound(v / s, m.FORMATS.e4m3) * s);
+  };
+  const fpSchemes = [
+    { name: 'bf16', opts: { bits: 16 }, run: (t) => Float32Array.from(t.data, (v) => m.fpRound(v, m.FORMATS.bf16)) },
+    { name: 'fp8 E4M3, per-tensor scale', opts: { bits: 8 }, run: fp8Tensor },
+    { name: 'int4 g128 (step 3)', opts: { bits: 4, groupSize: 128, scaleBits: 16 }, run: (t) => m.dequantize(m.quantizeGroups(t, { bits: 4, groupSize: 128 })).data },
+    { name: 'int4 g32 (step 3)', opts: { bits: 4, groupSize: 32, scaleBits: 16 }, run: (t) => m.dequantize(m.quantizeGroups(t, { bits: 4, groupSize: 32 })).data },
+    { name: 'MXFP4 (E2M1, E8M0 scale per 32)', opts: { bits: 4, groupSize: 32, scaleBits: 8 }, run: (t) => m.dequantizeBlocks(m.mxQuantize(t)) },
+    { name: 'NVFP4 (E2M1, E4M3 scale per 16)', opts: { bits: 4, groupSize: 16, scaleBits: 8 }, run: (t) => m.dequantizeBlocks(m.nvfp4Quantize(t)) },
+  ];
+  const fpRows = [], fpClean = [], fpHit = [];
+  for (const s of fpSchemes) {
+    const clean = m.errorStats(fpBase, s.run(fpBase)).mse;
+    const hit = m.errorStats(fpSpiked, s.run(fpSpiked)).mse;
+    fpClean.push(clean); fpHit.push(hit);
+    fpRows.push([s.name, +m.bitsPerParam(s.opts).toFixed(3), clean.toExponential(2), hit.toExponential(2)]);
+    await lab.tick();
+  }
+  lab.table({ title: 'Float formats vs int4 on blocks.0.mlp.proj (transposed to [64, 256], blocks along K), without and with 33 scattered outliers of 10x the largest weight (bits/weight excludes the one per-tensor scale)', columns: ['scheme', 'bits/weight', 'MSE', 'MSE with outliers'], rows: fpRows });
+  lab.bar({ title: 'MSE with scattered outliers, relative to int4 g128 (lower is better)', labels: fpSchemes.map((s) => s.name), values: fpHit.map((h) => +(h / fpHit[2]).toFixed(3)) });
+  lab.md(`With scattered outliers, MXFP4 at 4.25 bits per weight has **${(fpHit[2] / fpHit[4]).toFixed(1)}x** less error than int4 g128 at 4.125, and NVFP4 at 4.5 bits **${(fpHit[2] / fpHit[5]).toFixed(1)}x** less: each outlier coarsens only its own block of 32 or 16. int4 g32 from step 3, the same block size as MXFP4, reaches ${(fpHit[2] / fpHit[3]).toFixed(1)}x at 4.5 bits: most of the gain is the small block, which MX buys with an 8-bit power-of-two scale instead of a 16-bit one. Without the planted outliers the MXFP4 and NVFP4 ratios are ${(fpClean[2] / fpClean[4]).toFixed(1)}x and ${(fpClean[2] / fpClean[5]).toFixed(1)}x: the block formats gain most where step 3's outlier problem bites.${fpHit[1] < Math.min(...fpHit.slice(2)) ? ' fp8 E4M3 with a single per-tensor scale, at about twice the bits, beats every 4-bit scheme: each value carries its own exponent.' : ''}`);
+
   lab.done(
     `Your quantisers ran the checkpoint through your weight-only kernel: **int8 per-channel** agreed with fp32 on **${agree[0].toFixed(0)}%** of ${positions} next-token predictions, **int4 g32** on **${agree[2].toFixed(0)}%** and **int2 g16** on **${agree[6].toFixed(0)}%**. ` +
     `Shrinking int4 groups from 64 to 8 lowered weight MSE ${(mse[1] / mse[4]).toFixed(1)}x (from ${mse[1].toExponential(2)} to ${mse[4].toExponential(2)}) for ${extraBits.toFixed(2)} more bits per weight. ` +
     `Llama-3-70B needs **${w70bf16.toFixed(1)} GB** in bf16 and **${w70int4.toFixed(1)} GB** in int4 g128 (4.125 bits/param), so it fits one 80 GB H100 only quantised; Llama-3-8B's KV cache for 32 sequences of 8k tokens is **${kv8b32.toFixed(0)} GiB** in fp16, more than its ${(m.weightBytes(m.LLAMA3_8B.params, { bits: 16 }) / GB).toFixed(1)} GB of weights. ` +
-    `A single outlier weight multiplied the int4 error of all other weights by **${ratios[0].toFixed(0)}x** with one tensor-wide scale, **${ratios[1].toFixed(1)}x** per-channel and **${ratios[2].toFixed(1)}x** with groups of 16.`,
+    `A single outlier weight multiplied the int4 error of all other weights by **${ratios[0].toFixed(0)}x** with one tensor-wide scale, **${ratios[1].toFixed(1)}x** per-channel and **${ratios[2].toFixed(1)}x** with groups of 16. ` +
+    `With scattered outliers in mlp.proj, **MXFP4** had **${(fpHit[2] / fpHit[4]).toFixed(1)}x** and **NVFP4** **${(fpHit[2] / fpHit[5]).toFixed(1)}x** less weight error than int4 g128.`,
   );
 }

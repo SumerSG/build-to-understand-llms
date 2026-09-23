@@ -7,8 +7,9 @@ import { rng } from 'lib/util.js';
 
 // ---------- hardware constants (done for you) ----------
 // All figures are approximate. GPU FLOP/s are dense (non-sparse) bf16 with fp32 accumulate
-// from NVIDIA's H100 and A100 datasheets and the Ada/RTX 4090 datasheet; the CPU row is a
-// rough figure for one 32-core AVX-512 server socket, not a measurement.
+// from NVIDIA's H100 and A100 datasheets and the Ada/RTX 4090 datasheet; the B200 row is per GPU,
+// derived from NVIDIA's 8-GPU DGX B200 figures. The CPU row is a rough figure for one 32-core
+// AVX-512 server socket, not a measurement.
 
 export const DTYPE_BYTES = { fp32: 4, tf32: 4, fp16: 2, bf16: 2, fp8: 1, int8: 1, int4: 0.5 };
 
@@ -16,7 +17,11 @@ export const H100 = { name: 'H100 SXM', flops: 989e12, bandwidth: 3.35e12, memor
 export const A100 = { name: 'A100 SXM 80GB', flops: 312e12, bandwidth: 2.04e12, memory: 80e9, dtype: 'bf16' };
 export const RTX_4090 = { name: 'RTX 4090', flops: 165e12, bandwidth: 1.01e12, memory: 24e9, dtype: 'bf16' };
 export const CPU = { name: 'server CPU (32 cores)', flops: 2e12, bandwidth: 0.2e12, memory: 512e9, dtype: 'fp32' };
-export const HARDWARE = [H100, A100, RTX_4090, CPU];
+// Blackwell: about 2.3x the H100's bf16 FLOP/s and about 2.4x its bandwidth, so the ridge barely
+// moves (about 281 FLOP/byte). At FP4, approximately 9 PFLOP/s dense on the same 8 TB/s, the ridge is
+// 4x higher (about 1125 FLOP/byte), so even more of inference sits on the memory side.
+export const B200 = { name: 'B200', flops: 2.25e15, bandwidth: 8e12, memory: 180e9, dtype: 'bf16' };
+export const HARDWARE = [H100, A100, RTX_4090, B200, CPU];
 
 /** Llama-3-8B shapes (Meta's model card): grouped-query attention with 8 key/value heads. */
 export const LLAMA3_8B = {
@@ -226,4 +231,55 @@ export function attentionCost(seqLen, headDim, { bytesPerElement = 2, flash = fa
 export function flashBlockSize(sramBytes, headDim, bytesPerElement = 2) {
   if (!(headDim > 0)) throw new Error(`flashBlockSize: headDim must be > 0, got ${headDim}`);
   return Math.max(1, Math.floor(sramBytes / (4 * headDim * bytesPerElement)));
+}
+
+/**
+ * Attention for one head without ever holding a full row of scores: FlashAttention's online softmax.
+ * q is a raw tensor { shape: [Tq, dh], data }, k and v are { shape: [Tk, dh], data }, row-major.
+ * Keys and values are streamed in blocks of blockSize rows. For each query row the kernel keeps only
+ * a running max m, a running sum l of exp(score - m) and an unnormalised output accumulator acc;
+ * when a block raises the max, the old l and acc are rescaled by exp(mOld - mNew) so that every term
+ * is measured against the same max. Dividing acc by l at the end gives exactly softmax(q·kᵀ/sqrt(dh))·v.
+ * causal (default true, as in lib/attention.js) lets query i see keys j <= i only.
+ * Returns { shape: [Tq, dh], data: Float32Array }.
+ */
+export function tiledAttention(q, k, v, blockSize, { causal = true } = {}) {
+  if (!(blockSize >= 1)) throw new Error(`tiledAttention: blockSize must be >= 1, got ${blockSize}`);
+  const [Tq, dh] = q.shape, Tk = k.shape[0];
+  if (causal && Tq !== Tk) throw new Error(`tiledAttention: causal masking needs as many queries as keys (${Tq} vs ${Tk})`);
+  const scale = 1 / Math.sqrt(dh);
+  const out = new Float32Array(Tq * dh);
+  const acc = new Float64Array(dh);
+  const s = new Float64Array(blockSize);
+  for (let i = 0; i < Tq; i++) {
+    const kEnd = causal ? i + 1 : Tk;
+    let m = -Infinity, l = 0;
+    acc.fill(0);
+    for (let j0 = 0; j0 < kEnd; j0 += blockSize) {
+      const jMax = Math.min(j0 + blockSize, kEnd);
+      // 1. Scores for this block only, and the block's own max.
+      let blockMax = -Infinity;
+      for (let j = j0; j < jMax; j++) {
+        let dot = 0;
+        for (let c = 0; c < dh; c++) dot += q.data[i * dh + c] * k.data[j * dh + c];
+        s[j - j0] = dot * scale;
+        if (s[j - j0] > blockMax) blockMax = s[j - j0];
+      }
+      // 2. Move the running statistics onto the new max. On the first block m is -Infinity,
+      //    so the correction is exp(-Infinity) = 0 and multiplies an l and acc that are already 0.
+      const mNew = Math.max(m, blockMax);
+      const correction = Math.exp(m - mNew);
+      l *= correction;
+      for (let c = 0; c < dh; c++) acc[c] *= correction;
+      // 3. Add this block's contribution, measured against the new max.
+      for (let j = j0; j < jMax; j++) {
+        const p = Math.exp(s[j - j0] - mNew);
+        l += p;
+        for (let c = 0; c < dh; c++) acc[c] += p * v.data[j * dh + c];
+      }
+      m = mNew;
+    }
+    for (let c = 0; c < dh; c++) out[i * dh + c] = acc[c] / l;
+  }
+  return { shape: [Tq, dh], data: out };
 }

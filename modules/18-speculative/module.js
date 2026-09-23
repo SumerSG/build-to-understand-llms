@@ -190,7 +190,7 @@ Check the three regimes yourself before running the tests: α = 0.8, K = 4, c = 
     'Implement prompt-lookup drafting (Saxena 2023; `prompt_lookup_num_tokens` in Hugging Face `generate`): find the last 3 tokens earlier in the context and propose the tokens that followed them. Measure α on a prompt that repeats a passage.',
     'Add a KV cache to the target (lib/infer.js `forwardStep`) and roll it back to the last accepted token on rejection, as vLLM and TensorRT-LLM do; count the forward FLOPs saved versus the recompute used in the demo.',
     'Verify a tree of drafts instead of a chain: draft the top-2 tokens at each of 3 positions, build the causal mask that lets one pass score every path, and accept the longest surviving path. This is the mechanism in Medusa (Cai et al. 2024), EAGLE (Li et al. 2024) and SpecInfer (Miao et al. 2023).',
-    'Batch it: run 8 sequences through the target at once with K = 4 and let `rho` rise with batch size in your speedup model. Find the batch at which speculation stops paying: the crossover a serving engine has to tune around.',
+    'Batch it: run 8 sequences through the target at once with K = 4 and let `rho` rise with batch size in your speedup model. Find the batch at which speculation stops paying: the crossover a serving engine has to tune around. (The vLLM batch-size cutoff mentioned in the lesson is a hand-set version of this crossover.)',
   ],
   timeouts: { tests: 20000, demo: 120000 },
 };

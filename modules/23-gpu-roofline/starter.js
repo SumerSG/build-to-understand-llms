@@ -7,8 +7,9 @@ import { rng } from 'lib/util.js';
 
 // ---------- hardware constants (done for you) ----------
 // All figures are approximate. GPU FLOP/s are dense (non-sparse) bf16 with fp32 accumulate
-// from NVIDIA's H100 and A100 datasheets and the Ada/RTX 4090 datasheet; the CPU row is a
-// rough figure for one 32-core AVX-512 server socket, not a measurement.
+// from NVIDIA's H100 and A100 datasheets and the Ada/RTX 4090 datasheet; the B200 row is per GPU,
+// derived from NVIDIA's 8-GPU DGX B200 figures. The CPU row is a rough figure for one 32-core
+// AVX-512 server socket, not a measurement.
 
 export const DTYPE_BYTES = { fp32: 4, tf32: 4, fp16: 2, bf16: 2, fp8: 1, int8: 1, int4: 0.5 };
 
@@ -16,7 +17,11 @@ export const H100 = { name: 'H100 SXM', flops: 989e12, bandwidth: 3.35e12, memor
 export const A100 = { name: 'A100 SXM 80GB', flops: 312e12, bandwidth: 2.04e12, memory: 80e9, dtype: 'bf16' };
 export const RTX_4090 = { name: 'RTX 4090', flops: 165e12, bandwidth: 1.01e12, memory: 24e9, dtype: 'bf16' };
 export const CPU = { name: 'server CPU (32 cores)', flops: 2e12, bandwidth: 0.2e12, memory: 512e9, dtype: 'fp32' };
-export const HARDWARE = [H100, A100, RTX_4090, CPU];
+// Blackwell: about 2.3x the H100's bf16 FLOP/s and about 2.4x its bandwidth, so the ridge barely
+// moves (about 281 FLOP/byte). At FP4, approximately 9 PFLOP/s dense on the same 8 TB/s, the ridge is
+// 4x higher (about 1125 FLOP/byte), so even more of inference sits on the memory side.
+export const B200 = { name: 'B200', flops: 2.25e15, bandwidth: 8e12, memory: 180e9, dtype: 'bf16' };
+export const HARDWARE = [H100, A100, RTX_4090, B200, CPU];
 
 /** Llama-3-8B shapes (Meta's model card): grouped-query attention with 8 key/value heads. */
 export const LLAMA3_8B = {
@@ -157,4 +162,14 @@ export function attentionCost(seqLen, headDim, { bytesPerElement = 2, flash = fa
 export function flashBlockSize(sramBytes, headDim, bytesPerElement = 2) {
   // TODO: step 5
   return 0;
+}
+
+/**
+ * Attention for one head via the online softmax: stream k and v in blocks of blockSize rows, keeping
+ * a running max m, a running sum l and an output accumulator per query row. q is { shape: [Tq, dh], data },
+ * k and v are { shape: [Tk, dh], data }. causal defaults to true. Returns { shape: [Tq, dh], data }.
+ */
+export function tiledAttention(q, k, v, blockSize, { causal = true } = {}) {
+  // TODO: step 5
+  return { shape: [q.shape[0], q.shape[1]], data: new Float32Array(q.shape[0] * q.shape[1]) };
 }

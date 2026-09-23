@@ -75,7 +75,7 @@ Per layer, the four projections cost about \`8·T·C²\` FLOPs (2 FLOPs per mult
 
 ## Where this toy differs from production
 
-Your layer has the same maths and weight layout as GPT-2, and the demo loads the lab's pre-trained checkpoint into it. But: it materialises the whole score matrix (no FlashAttention tiling); it has no notion of position (GPT-2-style learned position embeddings arrive in module 06; rotary embeddings, as in Llama, are not covered); every head has its own keys and values (Llama 3 uses grouped-query attention, where several query heads share one key/value head to shrink the KV cache); there is no dropout; and everything is float32.
+Your layer has the same maths and weight layout as GPT-2, and the demo loads the lab's pre-trained checkpoint into it. But: it materialises the whole score matrix (no FlashAttention tiling); it has no notion of position (GPT-2-style learned position embeddings arrive in module 06; rotary embeddings, as in Llama, arrive in module 29); every head has its own keys and values (Llama 3 uses grouped-query attention, where several query heads share one key/value head to shrink the KV cache; module 29 builds it); there is no dropout; and everything is float32.
 `,
   steps: [
     {
@@ -176,9 +176,9 @@ Two checks that every attention implementation should ship with.
     'Your layer stores a [B, H, T, T] weight matrix. Write down its size in bytes for the lab model (T = 64, H = 4) and for a 128k-context model with 32 heads, and say which of the two later ideas (KV cache, FlashAttention) addresses which cost.',
   ],
   stretch: [
-    'Add grouped-query attention: keep H query heads but only G < H key/value heads, each shared by H / G query heads (Llama 3 uses H = 32, G = 8 for the 8B model). Count the parameters and the KV-cache size before and after.',
+    'Add grouped-query attention: keep H query heads but only G < H key/value heads, each shared by H / G query heads (Llama 3 uses H = 32, G = 8 for the 8B model). Count the parameters and the KV-cache size before and after. Module 29 builds this properly; treat this as a preview.',
     'Implement the attention forward as a single-pass "online softmax" that never materialises the [T, T] matrix: for each query, stream over keys keeping a running max, a running sum of exponentials and a running weighted sum of values, rescaling the last two whenever the max grows. This is the core of FlashAttention (Dao et al. 2022); compare outputs with your attention() to 1e-5.',
-    'Add rotary position embeddings (RoPE, Su et al. 2021), as in Llama: rotate pairs of q and k channels by an angle proportional to the position before the score matmul, and verify that the score depends only on the relative distance i − j.',
+    'Add rotary position embeddings (RoPE, Su et al. 2021), as in Llama: rotate pairs of q and k channels by an angle proportional to the position before the score matmul, and verify that the score depends only on the relative distance i − j. Module 29 builds this properly; treat this as a preview.',
     'Load lib/checkpoints/tiny-gpt.json, run your layer on a sentence, and find the head whose weights most often peak on the previous token. Previous-token heads are the first half of the induction-head circuit described by Olsson et al. (2022), and Wang et al. (2022) located two of them in GPT-2 small in their indirect-object-identification circuit.',
   ],
   timeouts: { tests: 20000, demo: 60000 },

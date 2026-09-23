@@ -3,8 +3,8 @@ export default {
   title: 'GPUs, memory bandwidth & the roofline',
   track: 'systems',
   minutes: 90,
-  threshold: 'Every kernel is limited either by arithmetic or by memory traffic, and the ratio FLOPs-per-byte decides which; LLM decoding at small batch sits far on the memory side, so the fixes are batching, quantisation and fusion rather than faster maths.',
-  goal: 'A roofline calculator and a tiled matmul: you put every matmul of a Llama-3-8B decode and prefill step on an H100 roofline, compute the batch size that reaches the ridge, and measure your own naive-versus-tiled GFLOP/s in the page.',
+  threshold: 'Every kernel is limited either by arithmetic or by memory traffic, and the ratio FLOPs-per-byte decides which; the roofline tells you in advance which fix can help any kernel: more reuse per byte (batching, tiling, fusion, lower precision) below the ridge, faster arithmetic above it.',
+  goal: 'A roofline calculator and a tiled matmul: you put every matmul of a Llama-3-8B decode and prefill step on an H100 roofline, compute the batch size that reaches the ridge, measure your own naive-versus-tiled GFLOP/s in the page, and rebuild attention with FlashAttention\'s online softmax.',
   prereqs: ['01-tensors', '08-scaling', '15-kv-cache'],
   recall: [
     { q: 'In module 08 you counted a forward pass as roughly how many FLOPs per parameter per token?',
@@ -48,6 +48,8 @@ time = max(flops / peakFlops, bytes / bandwidth)
 
 That is the whole roofline model (Williams, Waterman & Patterson, 2009). Rearranged as achieved FLOP/s against **arithmetic intensity** \`intensity = flops / bytes\`, it becomes two straight lines: a sloped memory roof \`intensity * bandwidth\` and a flat compute roof \`peakFlops\`. They meet at the **ridge point** \`peakFlops / bandwidth\`, which for the H100 is \`989e12 / 3.35e12 = 295\` FLOP/byte. A kernel below 295 FLOP/byte is **memory-bound**: the tensor cores wait for HBM. Above it, it is **compute-bound**.
 
+Per GPU, NVIDIA's DGX B200 figures give approximately 2.25 PFLOP/s dense bf16 and 8 TB/s of HBM3e: a ridge of about 281 FLOP/byte, almost the H100's. At FP4, approximately 9 PFLOP/s dense on the same bandwidth, the ridge is 4 times higher, so even more of inference sits on the memory side.
+
 :::predict
 A decode step multiplies one token's activations, a \`[1, 4096]\` row, by a \`[4096, 4096]\` bf16 weight matrix. That is 33.6 MFLOP. How many bytes must move, and what intensity does that give?
 ---
@@ -68,7 +70,7 @@ An H100 holds Llama-3-8B in bf16, which is 16.06 GB of weights. Every generated 
 
 ## The hierarchy under the roof
 
-"Bandwidth" is not one number. On an H100 each streaming multiprocessor has approximately 256 KB of registers and up to 228 KB of shared memory (SRAM), backed by a 50 MB L2 cache, then 80 GB of HBM3, then host DRAM across PCIe at roughly 64 GB/s. Aggregate shared-memory bandwidth is roughly an order of magnitude above HBM. Every optimisation in this module is the same move: **keep data in a faster level and reuse it there.** Tiling a matmul into \`blockSize x blockSize\` blocks reuses each loaded tile \`blockSize\` times, cutting slow-memory traffic by that same factor. Kernel fusion avoids a round trip to HBM between two elementwise ops. FlashAttention (Dao et al., 2022) tiles attention so that the score matrix, which is \`[seqLen, seqLen]\` for a sequence of \`seqLen\` tokens, is never written to HBM at all: same FLOPs, roughly 30 times fewer bytes at 4096 tokens.
+"Bandwidth" is not one number. On an H100 each streaming multiprocessor has approximately 256 KB of registers and up to 228 KB of shared memory (SRAM), backed by a 50 MB L2 cache, then 80 GB of HBM3, then host DRAM across PCIe at roughly 64 GB/s. Aggregate shared-memory bandwidth is roughly an order of magnitude above HBM. Every optimisation in this module is the same move: **keep data in a faster level and reuse it there.** Tiling a matmul into \`blockSize x blockSize\` blocks reuses each loaded tile \`blockSize\` times, cutting slow-memory traffic by that same factor. Kernel fusion avoids a round trip to HBM between two elementwise ops. FlashAttention (Dao et al., 2022) tiles attention so that the score matrix, which is \`[seqLen, seqLen]\` for a sequence of \`seqLen\` tokens, is never written to HBM at all: same FLOPs, roughly 30 times fewer bytes at 4096 tokens. The enabling trick is the **online softmax**: process keys a block at a time, keep a running max and sum, and rescale the accumulated output whenever a block raises the max (step 5).
 
 ## Where this toy differs from production
 
@@ -200,11 +202,34 @@ Multiply the element count by \`bytesPerElement\` at the end.
 \`flashBlockSize(sramBytes, headDim, bytesPerElement = 2)\` returns the largest block of rows whose four
 tiles (\`Q\`, \`K\`, \`V\` and the running output \`O\`, each \`blockSize x headDim\`) fit in \`sramBytes\`.
 Floor it, and never return less than 1.
+
+Now build the kernel that byte count describes. \`tiledAttention(q, k, v, blockSize, { causal = true } = {})\`
+computes the same output as module 05's attention (\`lib/attention.js\`) for one head, the way FlashAttention
+does (Dao et al., 2022): it never holds more than \`blockSize\` scores for a query at once. \`q\` is a raw tensor
+\`{ shape: [Tq, dh], data }\` of \`Tq\` query rows with head dimension \`dh\`; \`k\` and \`v\` are
+\`{ shape: [Tk, dh], data }\` for \`Tk\` keys; all are row-major. Return \`{ shape: [Tq, dh], data }\` with a
+\`Float32Array\`. The score of query \`i\` against key \`j\` is \`s = q_i · k_j / sqrt(dh)\`. With \`causal\`
+(the default, as in lib/attention.js) query \`i\` sees keys \`j <= i\` only. Throw if \`blockSize\` is below 1.
+
+For each query row keep three things: the running max \`m\` of the scores seen so far (start at \`-Infinity\`),
+the running sum \`l\` of \`exp(s - m)\`, and an accumulator \`acc\` of \`dh\` values holding the sum of
+\`exp(s - m) * v_j\`. Walk the keys in blocks of \`blockSize\` rows. When a block raises the max from
+\`mOld\` to \`mNew\`, every term already in \`l\` and \`acc\` was measured against the old max. Multiplying both
+by \`exp(mOld - mNew)\` corrects all of them at once, because \`exp(s - mOld) * exp(mOld - mNew) = exp(s - mNew)\`.
+After the last block the output row is \`acc / l\`. Read elements by index (\`k.data[j * dh + c]\`): one test
+passes plain arrays so that it can watch the order in which you read \`K\` and \`V\`.
+
+This is what \`attentionCost(seqLen, headDim, { flash: true })\` was pricing: the only score state is
+\`blockSize\` numbers per query row, small enough for SRAM, so the \`4 * seqLen^2\` term never reaches HBM.
+The byte model is still optimistic. A real kernel cannot hold every row it needs in SRAM at once, so it
+re-reads some inputs from HBM once per block: FlashAttention-2 gives each block of query rows to one thread
+block, which streams all of \`K\` and \`V\`. The FlashAttention paper's HBM count, which grows as
+\`seqLen^2 * headDim^2 / sramSize\`, includes re-reads like these; \`attentionCost\` leaves them out.
 `,
       hints: [
-        'Write the element counts before you multiply by bytesPerElement; the linear term and the quadratic term are easier to see that way.',
-        'The whole point is that flash keeps the linear term and drops the quadratic one. At seqLen 4096 and headDim 128 the quadratic term is 32 times the linear one.',
-        'flashBlockSize: count the elements in one tile (`blockSize * headDim`), remember there are four of them (Q, K, V and the running O), convert to bytes, and solve for `blockSize`. Then ask what a fractional row of SRAM would mean, and what a block of 0 would do downstream.',
+        'For attentionCost, write the element counts before you multiply by bytesPerElement: flash keeps the linear term and drops the quadratic one. For tiledAttention, suppose you have added up `exp(s - 3)` over a first block of keys and the next block contains a score of 5. What single number, multiplied into everything you already added, turns each `exp(s - 3)` into `exp(s - 5)`?',
+        'flashBlockSize: four tiles of `blockSize * headDim` elements must fit in `sramBytes`; floor, and never go below 1. tiledAttention: for each query row set `m = -Infinity`, `l = 0` and `acc` to dh zeros. For each block of keys, compute its scores and their max, set `mNew = Math.max(m, blockMax)`, multiply `l` and every `acc[c]` by `exp(m - mNew)`, add each `exp(s - mNew)` to `l` and `exp(s - mNew) * v_j` to `acc`, then set `m = mNew`. The output row is `acc / l`. Under causal masking the key loop for row i stops at i + 1.',
+        'The block update inside tiledAttention, with the rescale left for you:\n\n```\nconst mNew = Math.max(m, blockMax);\n// ... rescale l and every acc[c] onto mNew here ...\nfor (let j = j0; j < jMax; j++) {\n  const p = Math.exp(s[j - j0] - mNew);\n  l += p;\n  for (let c = 0; c < dh; c++) acc[c] += p * v.data[j * dh + c];\n}\nm = mNew;\n```\n\nOn the first block `m` is `-Infinity`, so the rescale factor is `exp(-Infinity) = 0`, which is harmless because `l` and `acc` are still 0.',
       ],
     },
   ],
@@ -216,7 +241,7 @@ Floor it, and never return less than 1.
   stretch: [
     'Add an fp8 row to the analysis: the H100 datasheet lists approximately 1979 TFLOP/s dense fp8, double the bf16 figure, with no change in bandwidth. Recompute the ridge point and the batch needed to reach it, and explain why DeepSeek-V3 reports training in fp8 as a bandwidth win as much as a FLOPs win.',
     'Model chunked prefill as vLLM and SGLang implement it: split an 8192-token prefill into chunks of 512 and interleave them with decode steps of batch 64, then compare the intensity and the time of the mixed batch with running the two phases separately.',
-    'Extend `attentionCost` to grouped-query attention with `nKvHeads` smaller than `nHeads` (Llama-3-8B uses 8 and 32) and to a KV cache read during decode, then show why GQA is a bandwidth optimisation for decoding rather than a quality one.',
+    'Extend `attentionCost` to grouped-query attention with `nKvHeads` smaller than `nHeads` (Llama-3-8B uses 8 and 32) and to a KV cache read during decode, then show why GQA is a bandwidth optimisation for decoding rather than a quality one (you built GQA itself in module 29; here you only count its bytes).',
     'Autotune your tiled matmul the way Triton and CUTLASS autotune real kernels: sweep `blockSize` over 8, 16, 32, 64, 128 at several `n`, plot GFLOP/s, and see whether the best block size matches the one your L2 cache size predicts.',
   ],
   timeouts: { tests: 20000, demo: 90000 },

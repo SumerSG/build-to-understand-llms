@@ -78,7 +78,7 @@ Every weight matrix is used in one multiply-add per weight per token, so a forwa
 
 ## Where the toy differs from production
 
-Your model is GPT-2's architecture at 1/1000 scale; the differences are mostly what Llama-style models changed later: **RMSNorm** instead of LayerNorm (no mean subtraction, no beta), **SwiGLU** instead of GELU with a 4× hidden (three matrices; Llama 1 and 2 use a hidden width of about 8C/3 ≈ 2.7C so the MLP still costs about 8C², and Llama 3 8B widens it to 3.5C = 14,336), **rotary position embeddings** applied inside attention instead of a learned \`wpe\` table, **no biases**, grouped-query attention, and an untied head. None of these change the threshold idea: a residual stream, and blocks that alternately mix across positions and transform within them. Production code also fuses LayerNorm, GELU and the residual add into single kernels, and FlashAttention-style kernels never materialise the \`[T, T]\` score matrix; your version runs plain JavaScript loops, one op at a time.
+Your model is GPT-2's architecture at 1/1000 scale; the differences are mostly what Llama-style models changed later: **RMSNorm** instead of LayerNorm (no mean subtraction, no beta), **SwiGLU** instead of GELU with a 4× hidden (three matrices; Llama 1 and Llama 2 7B/13B use a hidden width of about 8C/3 ≈ 2.7C so the MLP still costs about 8C², and Llama 3 8B widens it to 3.5C = 14,336), **rotary position embeddings** applied inside attention instead of a learned \`wpe\` table, **no biases**, grouped-query attention, and an untied head. None of these change the threshold idea: a residual stream, and blocks that alternately mix across positions and transform within them. Production code also fuses LayerNorm, GELU and the residual add into single kernels, and FlashAttention-style kernels never materialise the \`[T, T]\` score matrix; your version runs plain JavaScript loops, one op at a time.
 `,
   steps: [
     {
@@ -118,7 +118,7 @@ Attention is permutation-invariant: without \`wpe\`, "dog bites man" and "man bi
       id: 'block',
       title: 'The MLP and the pre-LN block',
       instructions: `
-\`new MLP(nEmbd, { next })\`: \`fc = Linear(C, 4C)\`, \`proj = Linear(4C, C)\`; \`forward(x)\` is \`proj(gelu(fc(x)))\` (Tensor has \`.gelu()\`); \`parameters()\` is fc's then proj's. The 4× widening is GPT-2's ratio, and it is where two thirds of every block's parameters live.
+\`new MLP(nEmbd, { next })\`: \`fc = Linear(C, 4C)\`, \`proj = Linear(4C, C)\`; \`forward(x)\` is \`proj(gelu(fc(x)))\` (Tensor has \`.gelu()\`); \`parameters()\` is fc's then proj's. GELU is a smooth ReLU, \`x·Φ(x)\` with Φ the standard normal CDF (Hendrycks & Gimpel 2016), and \`.gelu()\` computes the tanh approximation of it that GPT-2 uses; the MLP needs some nonlinearity, or its two Linears would collapse into a single Linear. The 4× widening is GPT-2's ratio, and it is where two thirds of every block's parameters live.
 
 \`new Block({ nEmbd, nHead }, { next })\`: \`ln1\`, \`attn = new MultiHeadAttention({ nEmbd, nHead, next })\` from \`lib/attention.js\`, \`ln2\`, \`mlp\`, constructed **in that order** so the seeded initialisation is reproducible (the tests compare your initial weights with \`lib/gpt.js\`'s Block built from the same seed). \`forward(x)\` is the two lines from the file header, \`x [B, T, C] → [B, T, C]\`; the MLP branch reads the stream *after* the attention update. \`parameters()\` returns ln1, attn, ln2, mlp in order (this is the order \`lib/gpt.js\` and the checkpoints use).
 
@@ -172,8 +172,8 @@ The tests compare \`countParams\` with \`numParams()\` of the reference model fo
     'The head is tied to the token table. Write down one argument for tying (GPT-2) and one for untying (Llama 3), and say which you would choose for a 256-token vocabulary and why.',
   ],
   stretch: [
-    'Replace the learned `wpe` with rotary position embeddings applied to q and k inside attention (Su et al. 2021), as GPT-J, GPT-NeoX, Llama and most open models since do; check that `countParams` drops by exactly T·C.',
-    'Swap `LayerNorm` for RMSNorm and the GELU MLP for SwiGLU with a hidden width of `round(8C/3)`, the Llama 1/2 block (Llama 3 8B uses 3.5C). Recompute the per-block budget and confirm it against `numParams()`.',
+    'Replace the learned `wpe` with rotary position embeddings applied to q and k inside attention (Su et al. 2021), as GPT-J, GPT-NeoX, Llama and most open models since do; check that `countParams` drops by exactly T·C. Module 29 later builds RoPE properly.',
+    'Swap `LayerNorm` for RMSNorm and the GELU MLP for SwiGLU with a hidden width of `round(8C/3)`, the Llama 1 and Llama 2 7B/13B block (Llama 2 70B and Llama 3 8B use 3.5C). Recompute the per-block budget and confirm it against `numParams()`.',
     'Add `generate(ids, { maxNewTokens, temperature, next })` that recomputes the full prefix at each step inside `noGrad`, as `lib/gpt.js` does; time it against sequence length, then read module 15 to see what the KV cache in vLLM and llama.cpp removes.',
     'Scale the output projections by `1/sqrt(2L)` at initialisation, as GPT-2 does for the residual branches, and measure the per-block growth of the residual stream norm the demo plots, before and after.',
   ],

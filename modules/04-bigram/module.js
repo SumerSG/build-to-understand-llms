@@ -7,7 +7,7 @@ export default {
   goal: 'A count-based and a neural bigram language model on the character-level corpus; you measure perplexity for both, watch the neural table converge to the counts, and sample text from each.',
   prereqs: ['01-tensors', '02-autograd', '03-tokenizer'],
   recall: [
-    { q: 'The `CharTokenizer` from module 03 builds its vocabulary from…', options: ['The 256 byte values', 'The sorted distinct characters of the training text', 'A fixed list of English letters'], answer: 1,
+    { q: 'lib/tokenizer.js\'s `CharTokenizer` (the character-level baseline to module 03\'s BPE) builds its vocabulary from…', options: ['The 256 byte values', 'The sorted distinct characters of the training text', 'A fixed list of English letters'], answer: 1,
       why: 'On the lab corpus that is 71 characters, so both bigram tables in this module are 71 × 71 and every id is a row index.' },
     { q: 'In module 01, entry (i, j) of a row-major `[V, V]` table lives at flat offset…', options: ['`i + j`', '`i * V + j`', '`j * V + i`'], answer: 1,
       why: 'Every count, probability and logit lookup in this module is this one offset; getting it backwards transposes the model.' },
@@ -147,14 +147,14 @@ The neural model is one parameter, a \`[V, V]\` \`Tensor\` of logits \`W\`, and 
 
 \`initNeural(V, next, std = 0.01)\`: return \`{ V, W }\` where \`W\` is Gaussian noise with the given standard deviation and \`requiresGrad = true\`. Small noise means every row starts close to uniform, so the first loss is close to \`log V\`.
 
-\`neuralLogits(model, xs)\`: for an array of context ids \`xs\`, the logits are the rows \`W[xs[i]]\`, as a \`Tensor\` of shape \`[xs.length, V]\`. This is an embedding lookup, and it must stay attached to the autograd graph so that gradients flow back into the rows that were used. \`Tensor.prototype.embed(ids)\` from \`lib/tensor.js\` does exactly that (its backward scatter-adds into \`W.grad\`); \`ops.embed\` from module 01 would silently break the chain.
+\`neuralLogits(model, xs)\`: for an array of context ids \`xs\`, the logits are the rows \`W[xs[i]]\`, as a \`Tensor\` of shape \`[xs.length, V]\`. This is an embedding lookup, and it must stay attached to the autograd graph so that gradients flow back into the rows that were used. \`Tensor.prototype.embed(ids)\` from \`lib/tensor.js\` does exactly that (its backward scatter-adds into \`W.grad\`); the raw \`embed\` from \`lib/ops.js\` returns a plain \`{ shape, data }\` object with no graph, so it would silently break the chain.
 
 \`neuralLoss(model, xs, ys)\`: the mean cross-entropy of the targets \`ys\` under those logits, as a scalar \`Tensor\`. \`crossEntropy(logits, targets)\` from \`lib/tensor.js\` computes \`mean(−log softmax(logits)[target])\` with a fused, stable log-softmax. Compare it with step 2: it is the same number, with the table replaced by \`softmax(W)\`.
 
 Why the lookup is a matmul in disguise: \`W[x]\` equals \`onehot(x) · W\`, a \`[1, V] × [V, V]\` product. GPT's output layer is \`h · Wᵀ\` with \`h\` a learned vector instead of a one-hot; the one-hot is the special case where the context is a single token and nothing is learned about it.
 `,
       hints: [
-        'The whole model is one Tensor. The row lookup you wrote as a raw op in module 01 has an autograd twin on `Tensor` that records which rows were read, so backward can add gradient into just those rows.',
+        'The whole model is one Tensor. A raw row lookup such as lib/ops.js\'s `embed` has an autograd twin on `Tensor` that records which rows were read, so backward can add gradient into just those rows.',
         '`Tensor.randn(shape, next, std, opts)` builds the parameter when `opts` marks it trainable; `model.W.embed(xs)` gives `[xs.length, V]` logits; `crossEntropy(logits, ys)` gives the mean NLL as a scalar Tensor.',
         '`initNeural`: `return { V, W: Tensor.randn([V, V], next, std, { … }) };` with the option that makes W a trainable leaf elided. `neuralLoss`: `return crossEntropy(…, ys);`, where the first argument comes from the function you just wrote.',
       ],
@@ -165,7 +165,7 @@ Why the lookup is a matmul in disguise: \`W[x]\` equals \`onehot(x) · W\`, a \`
       instructions: `
 \`trainStep(model, opt, xs, ys)\`: one optimiser step on one batch. Zero the gradients, compute \`neuralLoss\`, call \`backward()\`, call \`opt.step()\`, and return the loss as a plain number (\`loss.item()\`). The order matters: gradients accumulate (module 02), so a step that forgets to zero them steps on the sum of every gradient so far; the tests compare two steps against a reference that zeroes correctly.
 
-\`trainNeural(model, ids, { steps = 200, batchSize = 512, lr = 0.1, next })\`: build **one** \`new AdamW([model.W], { lr })\` (from \`lib/optim.js\`, default betas, no weight decay) before the loop, then for each step draw a fresh batch with the worked helper \`makeBatch(ids, batchSize, next)\` and call \`trainStep\`. Return the array of per-step losses. The tests compare your losses with an independent reference loop built exactly this way, so a new optimiser per step (which throws away Adam's moment estimates), a hard-coded learning rate or a reused batch all show up.
+\`trainNeural(model, ids, { steps = 200, batchSize = 512, lr = 0.1, next })\`: build **one** \`new AdamW([model.W], { lr })\` (from \`lib/optim.js\`, default betas, no weight decay) before the loop, then for each step draw a fresh batch with the worked helper \`makeBatch(ids, batchSize, next)\` and call \`trainStep\`. AdamW is gradient descent with a separate, adaptive step size for every parameter, computed from running averages of the gradient and of its square. Module 07 derives it; here it is a black box that makes the 71-row table train quickly. Return the array of per-step losses. The tests compare your losses with an independent reference loop built exactly this way, so a new optimiser per step (which throws away Adam's moment estimates), a hard-coded learning rate or a reused batch all show up.
 
 \`neuralProbs(model)\`: the trained model as a probability table, \`softmax\` of every row of \`W\`, returned as a raw \`{ shape, data }\` tensor so that \`negLogLikelihood\`, \`perplexity\` and \`generate\` from the earlier steps accept it unchanged. Wrap the softmax in \`noGrad\` so evaluation does not record a graph.
 

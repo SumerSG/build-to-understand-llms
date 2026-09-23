@@ -18,6 +18,20 @@ function gaussian(shape, seed, std = 1) {
   const next = (function (s) { let a = s >>> 0; return () => { a = (a + 0x6d2b79f5) >>> 0; let t = a; t = Math.imul(t ^ (t >>> 15), t | 1); t ^= t + Math.imul(t ^ (t >>> 7), t | 61); return ((t ^ (t >>> 14)) >>> 0) / 4294967296; }; })(seed);
   return ops.randn(shape, next, std);
 }
+// int4 symmetric absmax with groups of G consecutive values, independent of the learner's quantizeGroups.
+function refInt4Groups(data, G) {
+  const out = new Float32Array(data.length);
+  for (let b = 0; b < data.length; b += G) {
+    let amax = 0;
+    for (let i = b; i < b + G; i++) amax = Math.max(amax, Math.abs(data[i]));
+    const s = amax > 0 ? amax / 7 : 1;
+    for (let i = b; i < b + G; i++) out[i] = Math.max(-8, Math.min(7, Math.round(data[i] / s))) * s;
+  }
+  return out;
+}
+const E2M1_GRID = [-6, -4, -3, -2, -1.5, -1, -0.5, 0, 0.5, 1, 1.5, 2, 3, 4, 6];
+const onGrid = (v) => E2M1_GRID.includes(v + 0);
+const isPow2 = (s) => s > 0 && Number.isInteger(Math.log2(s)) && 2 ** Math.log2(s) === s;
 const isIntArray = (q) => (ArrayBuffer.isView(q) || Array.isArray(q)) && Array.from(q).every((v) => Number.isInteger(v));
 
 export const tests = [
@@ -176,6 +190,8 @@ export const tests = [
     T.close(m.bitsPerParam({ bits: 4, groupSize: 128, scaleBits: 16 }), 4.125, 1e-9, '4 + 16/128 = 4.125 bits per parameter');
     T.close(m.bitsPerParam({ bits: 4, groupSize: 32, scaleBits: 16, zeroBits: 4 }), 4.625, 1e-9, '4 + (16 + 4)/32 = 4.625: small groups cost real bits');
     T.close(m.bitsPerParam({ bits: 4 }), 4, 1e-9, 'a single per-tensor scale adds nothing measurable (groupSize defaults to Infinity)');
+    T.close(m.bitsPerParam({ bits: 4, groupSize: 32, scaleBits: 8 }), 4.25, 1e-9, 'MXFP4: 4-bit elements plus one 8-bit power-of-two scale per 32 = 4.25 bits per weight');
+    T.close(m.bitsPerParam({ bits: 4, groupSize: 16, scaleBits: 8 }), 4.5, 1e-9, 'NVFP4: 4-bit elements plus one 8-bit E4M3 scale per 16 = 4.5 bits per weight');
   } },
   { step: 'memory', name: 'kvCacheBytes = 2 * layers * kvHeads * headDim * context * batch * bytes', run(m, T) {
     T.ok(m.LLAMA3_8B && m.LLAMA3_8B.nLayer === 32 && m.LLAMA3_8B.nKvHeads === 8 && m.LLAMA3_8B.headDim === 128, 'LLAMA3_8B must record 32 layers, 8 KV heads (GQA), head dim 128');
@@ -184,5 +200,78 @@ export const tests = [
     T.close(m.kvCacheBytes(m.LLAMA3_8B, { contextLen: 8192, bits: 8 }), 536870912, 1e-9, 'int8 or fp8 KV halves it');
     T.close(m.kvCacheBytes(m.LLAMA3_8B, { contextLen: 1, batch: 16, bits: 16 }), 16 * 131072, 1e-9, 'batch multiplies it: 16 sequences x 128 KB per token');
     T.close(m.kvCacheBytes(m.LLAMA3_70B, { contextLen: 8192, bits: 16 }), 2.5 * 1073741824, 1e-9, '70B has 80 layers vs 32 and the same 8 KV heads of dimension 128: exactly 2.5x the 8B cache (without GQA its 64 heads would make it 20x)');
+  } },
+  // ---------- step 6: floating-point formats and microscaling ----------
+  { step: 'floats', name: 'fpRound rounds to nearest, ties to even, and fp16 overflows at 65520', run(m, T) {
+    const { bf16, fp16 } = m.FORMATS;
+    T.eq(m.fpRound(1 + 2 ** -8, bf16), 1, 'bf16 has 7 mantissa bits, so 1 + 2^-8 is exactly halfway between 1 and 1 + 2^-7; ties go to the even neighbour, 1 (Math.round would send it up)');
+    T.eq(m.fpRound(1 + 3 * 2 ** -8, bf16), 1 + 2 ** -6, '1 + 3·2^-8 is halfway between 1 + 2^-7 (odd last bit) and 1 + 2^-6 (even): it must round to 1 + 2^-6');
+    T.eq(m.fpRound(1 + 2 ** -8 + 2 ** -20, bf16), 1 + 2 ** -7, 'just above the halfway point rounds up to 1 + 2^-7');
+    T.eq(m.fpRound(-1 - 2 ** -8, bf16), -1, 'rounding is symmetric: work on |x| and restore the sign');
+    T.eq(m.fpRound(0.1, fp16), 0.0999755859375, 'fp16 keeps 10 mantissa bits: 0.1 becomes 1638 · 2^-14 = 0.0999755859375');
+    T.eq(m.fpRound(65519, fp16), 65504, '65519 is below the halfway point 65520, so it rounds to fp16\'s largest value 65504');
+    T.eq(m.fpRound(65520, fp16), Infinity, '65520 is halfway between 65504 and 65536; the tie goes to the even 65536, which does not exist in fp16, so the result overflows to Infinity');
+    T.eq(m.fpRound(-1e5, fp16), -Infinity, 'fp16 does not saturate: large negative values overflow to -Infinity');
+    const big = m.fpRound(3e38, bf16);
+    T.ok(Number.isFinite(big) && Math.abs(big - 3e38) / 3e38 < 2 ** -8, `bf16 keeps fp32's 8-bit exponent, so 3e38 must stay finite and within half a bf16 step (got ${big})`);
+    T.eq(m.fpRound(1e5, { exp: 5, man: 10 }), Infinity, 'with bias and max omitted, { exp: 5, man: 10 } must default to fp16 (bias 15, max 65504)');
+    T.eq(m.fpRound(0, bf16), 0, 'zero stays zero');
+  } },
+  { step: 'floats', name: 'fp8 E4M3 saturates at 448 and has subnormals; the FP4 E2M1 grid is exact', run(m, T) {
+    const { e4m3, e5m2, e2m1 } = m.FORMATS;
+    T.eq(m.fpRound(1000, e4m3), 448, 'E4M3 has no infinities: anything beyond 448 saturates to 448');
+    T.eq(m.fpRound(-1e6, e4m3), -448, 'saturation is symmetric: -1e6 becomes -448');
+    T.eq(m.fpRound(464, e4m3), 448, '464 is halfway between 448 (mantissa 110, even) and 480 (not representable); ties to even gives 448');
+    T.eq(m.fpRound(0.3, e4m3), 0.3125, 'near 0.3 the E4M3 spacing is 2^(-2-3) = 1/32, and the nearest multiple is 10/32 = 0.3125');
+    T.eq(m.fpRound(0.001, e4m3), 2 ** -9, 'below 2^-6 E4M3 is subnormal with spacing 2^-9; 0.001 rounds to 2^-9 (keep the exponent at 1 - bias or you will invent finer values)');
+    T.eq(m.fpRound(60000, e5m2), 57344, 'E5M2 has 2 mantissa bits: its largest value is 1.75 · 2^15 = 57344');
+    T.eq(m.fpRound(61440, e5m2), Infinity, 'E5M2 is IEEE-like: 61440 is the tie between 57344 and 65536 and overflows to Infinity');
+    const seen = new Set();
+    for (let v = -8; v <= 8; v += 1 / 64) seen.add(m.fpRound(v, e2m1) + 0);
+    const got = [...seen].sort((a, b) => a - b);
+    T.eq(got, E2M1_GRID, 'sweeping [-8, 8] through E2M1 must produce exactly its 15 values: 0 and ±{0.5, 1, 1.5, 2, 3, 4, 6}');
+    T.eq([0.25, 0.75, 1.25, 1.75, 2.5, 3.5, 5, 7].map((v) => m.fpRound(v, e2m1) + 0), [0, 1, 1, 2, 2, 4, 4, 6], 'E2M1 midpoints: every tie goes to the neighbour with an even mantissa, and 7 saturates to 6');
+  } },
+  { step: 'floats', name: 'mxQuantize: one power-of-two scale per 32 values, elements on the E2M1 grid', run(m, T) {
+    const x = new Float32Array(70);
+    for (let i = 0; i < 32; i++) x[i] = (i % 2 ? -1 : 1) * 5 * (i + 1) / 32; // block 0: largest |x| = 5
+    for (let i = 32; i < 64; i++) x[i] = 0.3 * (i - 31) / 32; // block 1: largest |x| = 0.3
+    x[64] = 7; x[65] = -0.5; // block 2: 6 values, largest 7
+    const r = m.mxQuantize(x);
+    T.eq(r.block, 32, 'the MX block size defaults to 32');
+    T.eq(r.scales.length, 3, '70 values in blocks of 32 make 3 blocks (the last one short)');
+    T.ok(Array.from(r.scales).every(isPow2), `every MX scale is a power of two (an E8M0 exponent); got ${Array.from(r.scales)}`);
+    T.eq(Array.from(r.scales), [1, 2 ** -4, 1], 'scale = 2^(floor(log2 amax) - 2) as in the OCP MX spec: amax 5 -> 2^(2-2) = 1, amax 0.3 -> 2^(-2-2), amax 7 -> 2^(2-2) = 1 (not rounded up to 2)');
+    T.ok(Array.from(r.elems).every(onGrid), 'every element must be an E2M1 value, i.e. fpRound(x / scale, FORMATS.e2m1)');
+    T.eq(r.elems[31], -4, 'the block maximum |-5| at scale 1 is a tie between 4 and 6 and rounds to 4 (even mantissa)');
+    T.eq(r.elems[63], 4, '0.3 at scale 2^-4 is 4.8, nearest E2M1 value 4');
+    T.eq(r.elems[64], 6, 'the floor rule leaves amax / scale anywhere in [4, 8): 7 at scale 1 saturates to E2M1\'s largest value, 6');
+    T.eq(m.mxQuantize([100, 1], { block: 2, elem: 'e4m3' }).scales[0], 2 ** -2, 'with E4M3 elements emax = floor(log2 448) = 8, so amax 100 gives scale 2^(6-8)');
+  } },
+  { step: 'floats', name: 'nvfp4Quantize: E4M3 block scales of 16 under a per-tensor scale; both FP4 formats beat int4 g128 on outliers', run(m, T) {
+    const w = gaussian([4096], 31, 0.02).data;
+    for (let i = 0; i < w.length; i += 97) w[i] *= 20; // scattered outliers, about one per 97 weights
+    let amax = 0;
+    for (const v of w) amax = Math.max(amax, Math.abs(v));
+    const nv = m.nvfp4Quantize(w);
+    T.eq(nv.block, 16, 'NVFP4 blocks hold 16 values');
+    T.eq(nv.scales.length, 256, '4096 values in blocks of 16 make 256 block scales');
+    T.close(nv.tensorScale, amax / (6 * 448), 1e-6, 'tensorScale = max|x| / (6 · 448), so the block holding the largest value gets scale 448');
+    T.ok(Array.from(nv.scales).every((s) => s >= 0 && s <= 448 && m.fpRound(s, m.FORMATS.e4m3) === s), 'every block scale must itself be an E4M3 value in [0, 448]');
+    T.eq(Math.max(...nv.scales), 448, 'the block with the tensor maximum must use the top of E4M3\'s range, 448');
+    T.ok(Array.from(nv.elems).every(onGrid), 'every NVFP4 element must be an E2M1 value');
+    const y = new Float32Array(64);
+    y[0] = 2688; y[1] = -1000; // block 0 holds the tensor maximum 6 · 448, so tensorScale = 1
+    y[16] = 6; y[17] = -3; y[18] = 0.5; // block 1: amax 6
+    y[32] = 7.5; y[33] = -2.5; // block 2: amax 7.5; block 3 stays all zero
+    const q = m.nvfp4Quantize(y);
+    T.close(q.tensorScale, 1, 1e-9, 'max|x| = 2688 = 6 · 448 gives tensorScale 1');
+    T.eq(Array.from(q.scales), [448, 1, 1.25, 0], 'each block scale is amax / 6 / tensorScale rounded to E4M3: 448, 1, 1.25 (exact in E4M3), and 0 for the all-zero block');
+    T.eq([q.elems[16], q.elems[17], q.elems[32], q.elems[33]].map((v) => v + 0), [6, -3, 6, -2], 'each block maximum lands on 6, the top of E2M1: 7.5 / 1.25 = 6 exactly, where MXFP4\'s power-of-two scale would saturate it');
+    const eNv = mse(w, m.dequantizeBlocks(nv));
+    const eMx = mse(w, m.dequantizeBlocks(m.mxQuantize(w)));
+    const eG128 = mse(w, refInt4Groups(w, 128));
+    T.ok(eMx * 1.5 < eG128, `MXFP4 (4.25 bits) should beat int4 g128 (4.125 bits) by >1.5x when outliers are scattered, since each outlier coarsens only its block of 32 (MXFP4 ${eMx.toExponential(2)}, int4 g128 ${eG128.toExponential(2)})`);
+    T.ok(eNv * 2 < eMx, `NVFP4's blocks of 16 with E4M3 scales should give less than half MXFP4's error here (NVFP4 ${eNv.toExponential(2)}, MXFP4 ${eMx.toExponential(2)})`);
   } },
 ];
