@@ -65,7 +65,9 @@ export const tests = [
     T.ok(r.records[0].end > r.records[0].firstToken + 0.1,
       `the short request finished generating at ${r.records[0].firstToken.toFixed(3)} s but must leave at ${r.records[0].end.toFixed(3)} s`);
     T.eq(r.iterations, 20, 'one prefill iteration plus 19 decode iterations, sized by the LONGEST request');
-    T.ok(r.batchTokens >= 32 + 19 * 2, 'finished slots are padded and still cost a token every iteration');
+    T.eq(r.batchTokens, 32 + 19 * 2, 'finished slots are padded and still cost a token every iteration: 32 prompt tokens + 19 decodes × 2 slots');
+    T.close(r.records[1].end, 0.042 + 19 * 0.012, 1e-9,
+      'the clock pays for the padding too: prefill 0.01 + 32·0.001, then 19 decodes of 0.01 + 2·0.001 each (the finished slot still counts); cost the whole batch, not just the unfinished members');
   } },
   { step: 'static', name: 'the next batch cannot start until the current one is completely done', run(m, T) {
     const reqs = [
@@ -91,6 +93,19 @@ export const tests = [
     T.ok(r.records[1].end > r.records[0].end + 0.15,
       'the long request keeps running afterwards; the short one must not have waited for it');
     T.eq(r.iterations, 20, 'still 20 iterations, but the later ones run a batch of 1 instead of a padded batch of 2');
+  } },
+  { step: 'continuous', name: 'a late arrival joins the running batch at the next iteration, prefill mixed with decode', run(m, T) {
+    const reqs = [
+      { id: 0, arrival: 0, promptLen: 16, outputLen: 3, key: 'a' },
+      { id: 1, arrival: 0.015, promptLen: 16, outputLen: 2, key: 'b' },
+    ];
+    const r = m.runContinuous(reqs, CFG);
+    T.close(r.records[0].firstToken, 0.026, 1e-9, 'iteration 1: only request 0 has arrived; it prefills 16 tokens (0.01 + 0.016)');
+    T.close(r.records[1].firstToken, 0.053, 1e-9,
+      'iteration 2: request 1 arrived at 0.015, so it is admitted while request 0 is still running and its 16-token prefill shares the iteration with request 0\'s decode (0.01 + 17·0.001); it must not wait for the batch to drain, nor get an iteration of its own');
+    T.close(r.makespan, 0.065, 1e-9, 'iteration 3: both decode (0.01 + 2·0.001) and both finish');
+    T.eq(r.iterations, 3);
+    T.eq(r.batchTokens, 16 + 17 + 2);
   } },
   { step: 'continuous', name: 'no padding: every token processed is either a prompt token or a real decode', run(m, T) {
     const reqs = skewed(T, 12);
@@ -201,6 +216,40 @@ export const tests = [
     T.ok(p.recomputedTokens > 0, 'a request preempted by recomputation has to re-process its prompt and its own generated tokens');
     T.ok(p.peakBlocks <= 14, `the allocator handed out ${p.peakBlocks} of 14 blocks`);
     T.ok(p.makespan > m.runPaged(reqs, roomy).makespan, 'the recomputed tokens are real work: the tight run must take longer');
+  } },
+  { step: 'paged', name: 'preemption evicts the newest request, keeps its progress, and readmits it first', run(m, T) {
+    // 4 blocks of 16. A and B each grow to 35 KV entries (3 blocks); together they need 6. C waits for a slot.
+    const reqs = [
+      { id: 0, arrival: 0, promptLen: 16, outputLen: 20, key: 'a' },
+      { id: 1, arrival: 0, promptLen: 16, outputLen: 20, key: 'b' },
+      { id: 2, arrival: 0, promptLen: 32, outputLen: 2, key: 'c' },
+    ];
+    const p = m.runPaged(reqs, { ...CFG, maxBatch: 2, numBlocks: 4 });
+    const [a, b, c] = p.records;
+    T.eq(p.completed, 3);
+    T.eq(p.preemptions, 1, 'A and B both need a third block once they hold 32 entries; exactly one of them must be preempted');
+    T.eq([a.restarts, b.restarts, c.restarts], [0, 1, 0],
+      'the victim is the MOST RECENTLY ADMITTED running request (B, admitted after A), not the one whose append happened to fail');
+    T.eq(p.recomputedTokens, 33, 'B was preempted after emitting 17 tokens, so its re-prefill processes promptLen + generated = 16 + 17 tokens');
+    T.close(b.firstToken, 0.042, 1e-9, 'B\'s first token was already delivered in iteration 1; a re-prefill must not overwrite firstToken');
+    T.ok(b.end > a.end, 'B needs allocate(16 + 17) = 3 blocks to come back, and only 1 is free until A finishes');
+    T.ok(c.firstToken > b.end, 'a preempted request goes to the FRONT of the waiting queue: B is readmitted before C, even though C would fit first');
+    T.close(p.makespan, 0.385, 1e-9,
+      'hand-computed timeline: 17 iterations with A and B, 3 with A alone, B re-prefills 33 tokens and decodes 2 more (it keeps generated = 17, it does not restart from 1), then C runs');
+    T.eq(p.iterations, 25);
+  } },
+  { step: 'paged', name: 'admission is first-come-first-served: a small request does not jump a blocked one', run(m, T) {
+    const reqs = [
+      { id: 0, arrival: 0, promptLen: 100, outputLen: 20, key: 'a' },
+      { id: 1, arrival: 0.001, promptLen: 100, outputLen: 2, key: 'b' },
+      { id: 2, arrival: 0.002, promptLen: 16, outputLen: 2, key: 'c' },
+    ];
+    const p = m.runPaged(reqs, { ...CFG, numBlocks: 10 });
+    const [a, b, c] = p.records;
+    T.eq(p.completed, 3);
+    T.ok(b.firstToken > a.end - 1e-9, 'B needs 7 blocks and only 3 are free while A runs, so it waits for A');
+    T.ok(c.firstToken >= b.firstToken - 1e-9,
+      `C would fit in the 3 free blocks, but it arrived after B: stop admitting at the first request that does not fit. C got its first token at ${c.firstToken.toFixed(3)} s, B at ${b.firstToken.toFixed(3)} s`);
   } },
   { step: 'paged', name: 'a request larger than the whole cache is rejected, not livelocked', run(m, T) {
     const reqs = [{ id: 0, arrival: 0, promptLen: 200, outputLen: 200, key: 'a' }];
