@@ -8,18 +8,42 @@ Either the well was very deep, or she fell very slowly, for she had plenty of ti
 "Well!" thought Alice to herself, "after such a fall as this, I shall think nothing of tumbling down stairs! How brave they'll all think me at home! Why, I wouldn't say anything about it, even if I fell off the top of the house!" (Which was very likely true.)
 Down, down, down. Would the fall never come to an end? "I wonder how many miles I've fallen by this time?" she said aloud. "I must be getting somewhere near the centre of the earth. Let me see: that would be four thousand miles down, I think—" (for, you see, Alice had learnt several things of this sort in her lessons in the schoolroom, and though this was not a very good opportunity for showing off her knowledge, as there was no one to listen to her, still it was good practice to say it over) "—yes, that's about the right distance—but then I wonder what Latitude or Longitude I've got to?" (Alice had no idea what Latitude was, or Longitude either, but thought they were nice grand words to say.)`;
 
+// Least-squares slope of log(count) against log(rank). This is the demo's own code, not a build step.
+function logLogSlope(counts) {
+  const xs = counts.map((_, i) => Math.log(i + 1)), ys = counts.map((c) => Math.log(c));
+  const mx = xs.reduce((s, v) => s + v, 0) / xs.length, my = ys.reduce((s, v) => s + v, 0) / ys.length;
+  let num = 0, den = 0;
+  for (let i = 0; i < xs.length; i++) { num += (xs[i] - mx) * (ys[i] - my); den += (xs[i] - mx) ** 2; }
+  return { slope: num / den, intercept: my - (num / den) * mx };
+}
+
 export default async function demo(m, lab) {
   const words = m.tokenizeWords(PASSAGE);
+  lab.check(Array.isArray(words) && words.length > 100, 'tokenizeWords returned too few words');
   const counts = m.countFrequencies(words);
-  lab.check(words.length > 100, 'tokenizeWords returned too few words');
+  lab.check(counts instanceof Map && counts.size > 50, 'countFrequencies should return a Map with one key per distinct word');
   const top = m.topK(counts, 40);
-  lab.check(top.length >= 20, 'topK returned too few entries');
+  lab.check(top.length === 40, 'topK(counts, 40) should return 40 entries');
+  for (let i = 1; i < top.length; i++) lab.check(top[i - 1][1] >= top[i][1], `topK is not sorted by count at rank ${i + 1}`);
   const actual = top.map(([, c]) => c);
   const predicted = m.zipfPredicted(actual[0], actual.length);
+  lab.check(predicted.length === actual.length, 'zipfPredicted(topCount, n) should return n values');
   const err = m.zipfLogError(actual, predicted);
+  lab.check(Number.isFinite(err), 'zipfLogError returned a non-finite number');
+  const { slope, intercept } = logLogSlope(actual);
+  const fitted = actual.map((_, i) => Math.exp(intercept + slope * Math.log(i + 1)));
   const once = [...counts.values()].filter((c) => c === 1).length;
-  lab.table({ title: 'Top 10 words', columns: ['rank', 'word', 'count', 'Zipf prediction'], rows: top.slice(0, 10).map(([w, c], i) => [i + 1, w, c, +predicted[i].toFixed(1)]) });
-  lab.plot({ title: 'Word frequency vs rank (log scale)', x: actual.map((_, i) => i + 1), series: [{ name: 'actual', values: actual }, { name: 'Zipf: f(1)/rank', values: predicted }], xlabel: 'rank', ylabel: 'count', yscale: 'log' });
-  lab.bar({ title: 'How many words appear n times', labels: ['1', '2', '3', '4', '5+'], values: [1, 2, 3, 4].map((n) => [...counts.values()].filter((c) => c === n).length).concat([[...counts.values()].filter((c) => c >= 5).length]) });
-  lab.done(`Your counter found **${words.length}** words, **${counts.size}** distinct. The top word "${top[0][0]}" appears ${top[0][1]} times; **${once}** words (${(100 * once / counts.size).toFixed(0)}% of the vocabulary) appear exactly once. Mean log-error from ideal Zipf over the top ${actual.length} ranks: **${err.toFixed(3)}**.`);
+  lab.table({ title: 'Top 10 words', columns: ['rank', 'word', 'count', 'Zipf prediction', 'actual / predicted'], rows: top.slice(0, 10).map(([w, c], i) => [i + 1, w, c, +predicted[i].toFixed(1), +(c / predicted[i]).toFixed(2)]) });
+  lab.plot({
+    title: 'Word count vs rank, log–log (an ideal Zipf law is a straight line of slope −1)',
+    x: actual.map((_, i) => +Math.log10(i + 1).toFixed(4)),
+    series: [
+      { name: 'actual', values: actual },
+      { name: 'ideal Zipf: f(1)/rank', values: predicted },
+      { name: `least-squares fit: slope ${slope.toFixed(2)}`, values: fitted },
+    ],
+    xlabel: 'log10(rank)', ylabel: 'count (log scale)', yscale: 'log',
+  });
+  lab.bar({ title: 'How many distinct words appear n times', labels: ['1', '2', '3', '4', '5+'], values: [1, 2, 3, 4].map((n) => [...counts.values()].filter((c) => c === n).length).concat([[...counts.values()].filter((c) => c >= 5).length]) });
+  lab.done(`Your counter found **${words.length}** words, **${counts.size}** distinct. The top word "${top[0][0]}" appears ${top[0][1]} times; **${once}** words (${(100 * once / counts.size).toFixed(0)}% of the vocabulary) appear exactly once. Over the top ${actual.length} ranks the fitted log–log slope is **${slope.toFixed(2)}** (ideal Zipf: −1) and the mean log-error from the ideal line is **${err.toFixed(3)}** (an average factor of ${Math.exp(err).toFixed(1)}).`);
 }

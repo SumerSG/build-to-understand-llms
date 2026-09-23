@@ -20,6 +20,11 @@ export const tests = [
   { step: 'topk', name: 'returns the k most frequent, most frequent first', run(m, T) {
     T.eq(m.topK(new Map([['b', 2], ['a', 2], ['c', 5], ['d', 1]]), 2), [['c', 5], ['a', 2]]);
   } },
+  { step: 'topk', name: 'compares counts as numbers, so 10 ranks above 9', run(m, T) {
+    T.eq(m.topK(new Map([['nine', 9], ['ten', 10], ['two', 2], ['eleven', 11]]), 3), [['eleven', 11], ['ten', 10], ['nine', 9]],
+      'a string comparison puts "9" above "10" and "11"; subtract the counts instead');
+    T.eq(m.topK(new Map([['a', 3]]), 0), [], 'k = 0 asks for no words');
+  } },
   { step: 'topk', name: 'breaks ties alphabetically and copes with k larger than the vocabulary', run(m, T) {
     T.eq(m.topK(new Map([['pear', 1], ['apple', 1], ['fig', 1]]), 10), [['apple', 1], ['fig', 1], ['pear', 1]]);
   } },
@@ -31,5 +36,12 @@ export const tests = [
     const ideal = m.zipfPredicted(64, 6);
     T.close(m.zipfLogError(ideal, ideal), 0, 1e-9);
     T.close(m.zipfLogError([64, 64, 64], m.zipfPredicted(64, 3)), (Math.log(2) + Math.log(3)) / 3, 1e-6, 'mean of |log a - log p|');
+  } },
+  { step: 'zipf', name: 'log error takes the absolute value, so points above and below the line do not cancel', run(m, T) {
+    // actual[1] is half the prediction (below the line), actual[2] is 3x the prediction (above it).
+    const got = m.zipfLogError([60, 15, 60], m.zipfPredicted(60, 3));
+    T.close(got, (Math.log(2) + Math.log(3)) / 3, 1e-6,
+      'expected (log 2 + log 3) / 3 ≈ 0.597; without Math.abs the -log 2 and +log 3 partly cancel to ≈ 0.135');
+    T.close(m.zipfLogError([10], [5]), Math.log(2), 1e-9, 'one pair off by a factor of 2 gives natural log 2 ≈ 0.693 (use Math.log, not Math.log10)');
   } },
 ];
