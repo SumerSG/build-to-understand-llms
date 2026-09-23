@@ -9,8 +9,8 @@
 
 /**
  * Per-message overhead in tokens: the role marker and end-of-message framing (`<|user|>` … `<|end|>` in
- * lib/data.js's template) cost tokens on the wire, not just the text. OpenAI's cookbook counts
- * approximately 4 such tokens per chat message; the exact figure depends on the template.
+ * lib/data.js's template) cost tokens on the wire, not just the text. OpenAI's token-counting cookbook
+ * uses 3 or 4 such tokens per chat message depending on the model; the exact figure depends on the template.
  */
 export const TOKENS_PER_MESSAGE = 4;
 
@@ -114,9 +114,11 @@ export function extractFacts(text) {
 }
 
 /**
- * Replace every message older than the last `keepLast` non-system messages (and any earlier summary)
- * by ONE pinned summary message that carries the facts forward in `remember:` form, so a later
- * compaction reads them again. Returns a new array; the input is not modified.
+ * Replace every non-system message older than the last `keepLast` of them (and any earlier summary)
+ * by ONE summary message, placed where the span began:
+ *   { role: 'system', summary: true, count, content: 'Summary of <count> earlier messages.\nremember: …' }
+ * The role 'system' pins it (dropOldest never removes it); the facts are written back in `remember:`
+ * form so a later compaction reads them again. Returns a new array; the input is not modified.
  */
 export function compact(messages, { keepLast = 4 } = {}) {
   const candidates = [];

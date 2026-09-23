@@ -86,7 +86,15 @@ export const tests = [
     T.ok(cut.startsWith('w0 w1 w2 w3'), `head must be kept (the first ceil((11-3)/2) = 4 words); got ${JSON.stringify(cut)}`);
     T.ok(cut.endsWith('w16 w17 w18 w19'), `tail must be kept (the last 4 words); got ${JSON.stringify(cut)}`);
     T.eq(m.countTokens(tok, cut), 11, 'the result must cost at most maxTokens INCLUDING the marker, or the budget arithmetic upstream is wrong');
-    T.eq(m.countTokens(tok, m.truncateText(tok, text, 10)), 10, 'odd keep counts: head gets the extra token');
+    T.eq(m.countTokens(tok, m.truncateText(tok, text, 10)), 10, 'odd keep counts still cost exactly maxTokens');
+  } },
+  { step: 'truncate', name: 'truncateText splits odd keeps head-first and handles an empty tail', run(m, T) {
+    const tok = wordTokenizer();
+    const text = wordsOf(20);
+    const M = m.TRUNCATION_MARKER;
+    T.eq(m.truncateText(tok, text, 10), 'w0 w1 w2 w3' + M + 'w17 w18 w19', 'keep = 10 − 3 = 7: the head gets ceil(7 / 2) = 4 tokens and the tail the other 3');
+    T.eq(m.truncateText(tok, text, 4), 'w0' + M, 'keep = 1: one head token and an EMPTY tail; `ids.slice(-0)` is the whole array, so a tail of 0 needs its own case');
+    T.eq(m.countTokens(tok, m.truncateText(tok, text, 3)), 3, 'keep = 0: only the marker remains');
   } },
   { step: 'truncate', name: 'truncateToolResults touches only long tool messages and never mutates the input', run(m, T) {
     const tok = wordTokenizer();
@@ -158,12 +166,15 @@ export const tests = [
   } },
   { step: 'compact', name: 'compacting twice keeps every fact and yields a single, cumulative summary', run(m, T) {
     const once = m.compact(sampleHistory(), { keepLast: 2 });
-    const more = [...once, { role: 'user', content: 'remember: lunch is at noon' }, { role: 'assistant', content: 'sure' }];
+    const more = [...once,
+      { role: 'user', content: 'remember: lunch is at noon' }, { role: 'assistant', content: 'sure' },
+      { role: 'user', content: 'thanks' }, { role: 'assistant', content: 'welcome' }];
     const twice = m.compact(more, { keepLast: 2 });
+    T.eq(twice.length, 4, 'system prompt + one summary + the last 2 messages');
     T.eq(twice.filter((x) => x.summary).length, 1, 'an earlier summary is folded into the new one, not left as a second pinned message');
-    T.eq(m.extractFacts(twice[1].content), ['the deploy key is in vault slot 7', 'the build server is called atlas', 'lunch is at noon'], 'facts from the first summary AND the newly compacted turns');
-    T.ok(twice[1].content.includes('6 earlier messages'), `the count accumulates (4 + 2); got ${JSON.stringify(twice[1].content)}`);
-    T.eq(twice.slice(2).map((x) => x.content), ['remember: lunch is at noon', 'sure']);
+    T.eq(m.extractFacts(twice[1].content), ['the deploy key is in vault slot 7', 'the build server is called atlas', 'lunch is at noon'], 'facts from the first summary AND the newly compacted turns, oldest first; losing the old summary\'s facts is how agents forget after their second compaction');
+    T.ok(twice[1].content.includes('8 earlier messages'), `the count accumulates (4 from the old summary + 4 new); got ${JSON.stringify(twice[1].content)}`);
+    T.eq(twice.slice(2).map((x) => x.content), ['thanks', 'welcome']);
   } },
   { step: 'compact', name: 'nothing older than keepLast means nothing to compact', run(m, T) {
     const msgs = sampleHistory();
@@ -172,6 +183,21 @@ export const tests = [
     const out = m.compact(msgs, { keepLast: 5 });
     T.eq(out.length, 7, 'one message compacted still produces a summary (6 → 1 + 5)');
     T.eq(out.filter((x) => x.summary).length, 1);
+  } },
+
+  { step: 'compact', name: 'compact leaves plain system messages in place and only folds summaries', run(m, T) {
+    const msgs = [
+      { role: 'system', content: 'You are terse.' },
+      { role: 'user', content: 'remember: lunch is at noon' },
+      { role: 'system', content: 'Never run rm -rf.' },
+      { role: 'user', content: 'hi' },
+      { role: 'assistant', content: 'hello' },
+      { role: 'user', content: 'bye' },
+    ];
+    const out = m.compact(msgs, { keepLast: 2 });
+    T.eq(out.map((x) => x.content.split('\n')[0]), ['You are terse.', 'Summary of 2 earlier messages.', 'Never run rm -rf.', 'hello', 'bye'],
+      'a system message that is not a summary is an instruction, not conversation: it stays where it was and is not counted; the summary goes where the span began');
+    T.eq(m.extractFacts(out[1].content), ['lunch is at noon']);
   } },
 
   // ---------- step 4 ----------
@@ -230,7 +256,7 @@ export const tests = [
     T.eq(retrieved, [], 'retrieval is off by default (topK = 0)');
     T.eq(cm.history.length, 3, 'assemble is a view: the full history is kept');
   } },
-  { step: 'assemble', name: 'drop policy: every one of 50 turns fits the budget and ends with the latest user message', run(m, T) {
+  { step: 'assemble', name: 'drop policy: every one of 50 turns fits the budget and keeps the latest user message', run(m, T) {
     const tok = wordTokenizer();
     const cm = new m.ContextManager({ tokenizer: tok, budget: 80, system: 'You are a careful assistant.', policy: 'drop', maxToolTokens: 20 });
     const raw = new m.ContextManager({ tokenizer: tok, budget: 80, system: 'You are a careful assistant.', policy: 'none' });
@@ -243,7 +269,9 @@ export const tests = [
       maxTokens = Math.max(maxTokens, a.tokens);
       T.ok(a.tokens <= 80, `turn ${t}: assembled context costs ${a.tokens} > budget 80`);
       T.eq(a.messages[0].role, 'system', 'system prompt first, always');
-      T.eq(a.messages[a.messages.length - 1], user, 'the newest user message is what the model must answer; it is never the one dropped');
+      const newest = a.messages[a.messages.length - 1];
+      T.ok(a.messages.includes(user), `turn ${t}: the newest user message is what the model must answer; it is never the one dropped`);
+      T.ok(newest === user || (t % 5 === 0 && newest.role === 'tool'), `turn ${t}: order must be preserved, so the context ends with the newest history message (the user turn, or the tool result that followed it)`);
       for (const msg of a.messages) if (msg.role === 'tool') T.ok(m.countTokens(tok, msg.content) <= 20, 'tool results are truncated to maxToolTokens before anything else');
       rawMax = Math.max(rawMax, raw.assemble().tokens);
       cm.add({ role: 'assistant', content: `reply ${t}` }); raw.add({ role: 'assistant', content: `reply ${t}` });
@@ -268,16 +296,18 @@ export const tests = [
     const notes = ['the deploy key is in vault slot 7', 'the build server is called atlas', 'lunch is at noon on fridays', 'the office plant is named fern'];
     const cm = new m.ContextManager({ tokenizer: tok, budget: 60, system: 'You are terse.', policy: 'drop', topK: 2, notes });
     for (let t = 0; t < 10; t++) cm.add({ role: 'user', content: `turn ${t} ${wordsOf(6, 'x')}` }).add({ role: 'assistant', content: `reply ${t}` });
-    cm.add({ role: 'user', content: 'when is lunch?' });
+    cm.add({ role: 'user', content: 'when do we eat lunch?' });
     const a = cm.assemble();
     T.eq(a.retrieved, ['lunch is at noon on fridays'], 'BM25 over the note store with the latest user message as the query; only the one matching note scores > 0');
     const n = a.messages.length;
-    T.eq(a.messages[n - 1].content, 'when is lunch?');
+    T.eq(a.messages[n - 1].content, 'when do we eat lunch?');
     T.ok(a.messages[n - 2].retrieved === true && a.messages[n - 2].content.includes('lunch is at noon on fridays'), 'the retrieval message sits immediately before the latest user message, where the model attends to it best and where it does not break the cached prefix');
     T.ok(a.tokens <= 60, `the retrieval message must be paid for out of the budget BEFORE the history is trimmed (got ${a.tokens} > 60)`);
     T.eq(a.messages[0].role, 'system');
-    cm.add({ role: 'assistant', content: 'noon' }).add({ role: 'user', content: 'what is the plant called and where is the key?' });
-    T.eq(cm.assemble().retrieved.slice().sort(), ['the deploy key is in vault slot 7', 'the office plant is named fern'].sort(), 'top-2 for a two-topic query');
+    cm.add({ role: 'assistant', content: 'noon' }).add({ role: 'user', content: 'what is the plant named and where is the deploy key?' });
+    T.eq(cm.assemble().retrieved, ['the office plant is named fern', 'the deploy key is in vault slot 7'], 'top-2 for a two-topic query, best first: the fern note matches two rare terms ("plant", "named") and is shorter, so it outranks the deploy-key note');
+    cm.add({ role: 'assistant', content: 'checking' }).add({ role: 'user', content: 'when do we eat lunch?' }).add({ role: 'tool', name: 'search', content: 'plant fern plant fern office named' });
+    T.eq(cm.assemble().retrieved, ['lunch is at noon on fridays'], 'the query is the newest USER message, not the newest message: a tool result that follows the question is not what the user asked about');
     const off = new m.ContextManager({ tokenizer: tok, budget: 60, system: 'You are terse.', policy: 'drop', topK: 0, notes });
     off.add({ role: 'user', content: 'when is lunch?' });
     T.eq(off.assemble().messages.length, 2, 'topK = 0 means no retrieval message at all');
@@ -295,5 +325,24 @@ export const tests = [
     T.eq(forgetful.notes, [], 'memory: false leaves the store alone');
     cm.remember(fact);
     T.eq(cm.notes.filter((x) => x === fact).length, 1, 'remember() deduplicates');
+    cm.add({ role: 'assistant', content: 'vault slot 7' }).add({ role: 'user', content: 'ok.\nremember: the heron database runs on port 5432' });
+    cm.add({ role: 'assistant', content: 'noted' }).add({ role: 'user', content: 'which port does heron use?' });
+    T.eq(cm.assemble().retrieved, ['the heron database runs on port 5432'], 'a fact harvested AFTER an earlier assemble() must be searchable: rebuild the index whenever it is null (remember() resets it), do not build it once and keep it');
+  } },
+  { step: 'assemble', name: 'compact policy compacts only when the history does not fit, and still truncates tool results', run(m, T) {
+    const tok = wordTokenizer();
+    const roomy = new m.ContextManager({ tokenizer: tok, budget: 1000, system: 'You are terse.', policy: 'compact', keepLast: 2 });
+    for (let t = 0; t < 6; t++) roomy.add({ role: 'user', content: `turn ${t}` }).add({ role: 'assistant', content: `reply ${t}` });
+    const a = roomy.assemble();
+    T.eq(a.messages.filter((x) => x.summary).length, 0, 'the history fits the budget, so nothing is compacted: compaction loses verbatim text and changes the cached prefix, so it only runs when needed');
+    T.eq(a.messages.length, 13, 'system prompt + all 12 history messages');
+    const tight = new m.ContextManager({ tokenizer: tok, budget: 60, system: 'You are terse.', policy: 'compact', keepLast: 4, maxToolTokens: 10 });
+    for (let t = 0; t < 6; t++) tight.add({ role: 'user', content: `turn ${t} ${wordsOf(4, 'x')}` }).add({ role: 'assistant', content: `reply ${t}` });
+    tight.add({ role: 'user', content: 'search please' }).add({ role: 'tool', name: 'search', content: wordsOf(30, 'r') });
+    const b = tight.assemble();
+    T.ok(b.tokens <= 60, `over budget: ${b.tokens} > 60`);
+    T.eq(b.messages.filter((x) => x.summary).length, 1, 'this history does not fit, so it is compacted');
+    const tool = b.messages.find((x) => x.role === 'tool');
+    T.ok(tool && m.countTokens(tok, tool.content) <= 10, 'compact the TRUNCATED history: a kept tool result must still be cut to maxToolTokens');
   } },
 ];
