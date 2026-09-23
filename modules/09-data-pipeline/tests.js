@@ -271,6 +271,10 @@ export const tests = [
     T.eq(r.index.map((e) => e.docId), r.mix.order, 'the shards must be packed in the order the mixer chose (mix.order), not in input order');
     const loose = m.runPipeline(docs, { tokenizer: STUB, quality: { ...m.QUALITY_DEFAULTS, minWords: 1, boilerplate: [] }, near: { threshold: 0.99, numHashes: 64 }, mix: { weights: { books: 0.5, web: 0.5 }, maxEpochs: 1 }, shardSize: 32 });
     T.eq(loose.report.map((s) => s.removed), [0, 1, 0, 0], 'config.quality and config.near must be passed to their stages: with minWords 1, no boilerplate list and threshold 0.99, only the exact duplicate goes');
+    const twice = m.runPipeline(docs, { tokenizer: STUB, near: { threshold: 0.6, numHashes: 64 }, mix: { weights: { books: 0.5, web: 0.5 }, maxEpochs: 2 }, shardSize: 32 });
+    const last = twice.report[twice.report.length - 1];
+    T.eq([last.stage, last.in, last.out, last.removed], ['mix+shard', 3, twice.index.length, 0], `with maxEpochs 2 the mixer packs ${twice.index.length} documents from 3 survivors: the mix+shard row counts index entries as out (repeats included) and removes nothing, because mixing samples rather than filters`);
+    T.eq(twice.removed.length, 4, 'mixing adds nothing to the flat removed list: only the quality, exact-dedup and near-dedup removals appear');
     T.throws(() => m.runPipeline(docs, {}), 'a tokenizer is required');
   } },
 ];

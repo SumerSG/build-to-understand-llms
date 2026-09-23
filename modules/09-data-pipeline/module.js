@@ -94,7 +94,7 @@ Complete \`qualityReason(text, cfg)\`: return the name of the **first** rule the
 - \`repeated_lines\`: \`(lines − distinct lines) / lines\` is above \`cfg.maxDuplicateLineFraction\`.
 - \`boilerplate\`: the lowercased text contains any phrase in \`cfg.boilerplate\`.
 
-Then write \`qualityFilter(docs, cfg)\`: \`{ kept, removed }\` where \`removed\` holds \`{ id, reason }\`. Pass \`cfg\` through; the tests change thresholds.
+Then write \`qualityFilter(docs, cfg)\`: \`{ kept, removed }\` where \`removed\` holds \`{ id, reason }\`. Pass \`cfg\` through; the tests change thresholds. They always pass a complete config (for example \`{ ...QUALITY_DEFAULTS, minWords: 5 }\`), so you do not need to merge defaults yourself.
 
 The word-count, word-length, symbol and repeated-line rules are Gopher's (Rae et al. 2021, Appendix A) with smaller word counts; \`terminal_punct\` is a document-level version of C4's line rule, and \`boilerplate\` is a C4-style phrase blocklist. The reason string is not decoration: the report at the end of the pipeline is built from it.
 `,
@@ -111,7 +111,7 @@ The word-count, word-length, symbol and repeated-line rules are Gopher's (Rae et
       instructions: `
 Three functions.
 
-\`normalizeText(text)\`: lowercase, replace every run of characters that is not a letter or digit with a single space, trim. \`"  Hello,   World! "\` becomes \`"hello world"\`.
+\`normalizeText(text)\`: lowercase, replace every run of characters that is not a letter or digit with a single space, trim. \`"  Hello,   World! "\` becomes \`"hello world"\`. ASCII letters and digits are enough (the reference keeps only \`a\`–\`z\` and \`0\`–\`9\` after lowercasing); the tests contain no accented letters, so a Unicode letter-or-digit class passes too.
 
 \`docHash(text)\`: \`hash32(normalizeText(text))\`, the 32-bit FNV-1a fingerprint from \`lib/util.js\`.
 
@@ -135,7 +135,7 @@ Five functions. \`hashFamily(numHashes, seed)\` is already written: it returns \
 - \`jaccard(a, b)\`: exact \`|a ∩ b| / |a ∪ b|\` for two sets (1 if both are empty).
 - \`minhash(shingleSet, numHashes = 32, seed = 1)\`: for each hash function \`i\`, the minimum over all shingles \`s\` of \`(Math.imul(a_i, hash32(s)) + b_i) >>> 0\`. Start every position at \`4294967295\` (the largest 32-bit value).
 - \`estimateJaccard(sigA, sigB)\`: the fraction of positions where the signatures agree; throw if the lengths differ.
-- \`nearDedup(docs, { k, numHashes, threshold, seed, minReport })\`: compare each document's signature against every earlier **kept** document; remove it on the first estimate \`>= threshold\`, recording \`{ id, nearOf, estimate }\`. Also collect \`pairs\`: every pair with estimate \`>= minReport\`, as \`{ a, b, estimate, jaccard }\` with the exact Jaccard alongside, sorted by estimate descending.
+- \`nearDedup(docs, { k, numHashes, threshold, seed, minReport })\`: compare each document's signature against every earlier **kept** document; remove it on the first estimate \`>= threshold\`, recording \`{ id, nearOf, estimate }\`. Also collect \`pairs\`: every comparison you actually make (a new document against an earlier kept one, whether or not the new one is then removed) with estimate \`>= minReport\`, as \`{ a, b, estimate, jaccard }\` where \`a\` is the kept document's id, \`b\` the new one's, and \`jaccard\` the exact Jaccard of their shingle sets. Do not add extra comparisons against removed documents. Sort \`pairs\` by estimate descending; the reference breaks ties by exact Jaccard descending, and the tests check only the estimate order.
 
 The signature is built inside \`minhash\` from the family, so the same seed always gives the same signature; that is what makes the tests reproducible.
 `,
@@ -152,14 +152,14 @@ The signature is built inside \`minhash\` from the family, so the same seed alwa
       instructions: `
 Implement \`mixDomains(docs, { weights, budget = Infinity, maxEpochs = 1, seed = 1, size = wordCount })\`. Throw if \`weights\` is missing.
 
-For each domain with a positive weight and at least one document, keep a state \`{ domain, weight, docs, queue, ptr, draws, epochs, size }\`. Then loop while \`total < budget\`:
+For each domain with a positive weight and at least one document, keep a state \`{ domain, weight, docs, queue, ptr, draws, epochs, size }\`, built in the key order of \`weights\` (\`docs\` keeps input order within the domain). Then loop while \`total < budget\`:
 
 1. The **active** domains are those with \`draws < maxEpochs × docs.length\`. Stop when none is active.
 2. Normalise the weights over the active domains only, so an exhausted domain's weight goes to the others.
-3. Pick the active domain with the largest deficit \`(weight / sumW) × total − size\` (Megatron-LM's blending rule: the domain furthest below its target share).
+3. Pick the active domain with the largest deficit \`(weight / sumW) × total − size\` (Megatron-LM's blending rule: the domain furthest below its target share). Scan in state order and replace the best only on a strictly larger deficit, so ties, including the first draw when every deficit is 0, go to the earlier domain.
 4. If its queue is used up, refill it with \`shuffle(next, docs.slice())\` from a single \`rng(seed)\` and count an epoch. Draw the next document, add \`size(doc)\` to the domain's size and to \`total\`, push its id to \`order\`.
 
-Return \`{ order, total, report }\` where \`report[domain] = { docs, draws, epochs: draws / docs, size, share: size / total, weight }\`.
+Return \`{ order, total, report }\` where \`report[domain] = { docs, draws, epochs: draws / docs, size, share: size / total, weight }\` for every domain that has a state, with \`weight\` the weight as given (not normalised) and \`share\` 0 when \`total\` is 0.
 
 \`size\` defaults to the word count; the pipeline in step 5 passes the token count instead. Weights are shares of size, not of document counts.
 `,
@@ -177,7 +177,7 @@ Return \`{ order, total, report }\` where \`report[domain] = { docs, draws, epoc
 
 Implement \`packShards(docs, order, { shardSize = 1024, eos })\`: walk \`order\` (document ids, possibly repeated), and for each one append its \`ids\` followed by one \`eos\` to a running shard; whenever the shard reaches exactly \`shardSize\` tokens, push it and start a new one. Before appending a document, record \`{ docId, shard, offset, length }\` in the index, where \`shard\` and \`offset\` say where its first token lands and \`length\` is its own token count (without the \`eos\`). Push a non-empty final shard. Throw on an unknown id, a non-positive \`shardSize\`, or a missing \`eos\`.
 
-Then \`runPipeline(docs, config)\` with \`config = { tokenizer, quality?, near?, mix?, shardSize? }\`: run \`qualityFilter\`, \`exactDedup\`, \`nearDedup(kept, near)\`, \`tokenizeDocs\`, \`mixDomains(toks, { ...mix, size: d => d.ids.length })\`, \`packShards(toks, order, { shardSize, eos: tokenizer.eos })\`. Return \`{ shards, index, tokens, report, removed, pairs, mix }\`: \`report\` is one row \`{ stage, in, out, removed }\` per stage (\`quality\`, \`exact-dedup\`, \`near-dedup\`, \`mix+shard\`), \`removed\` is one \`{ id, stage, reason }\` per removed document, \`tokens\` is the total over all shards, and \`pairs\` comes from \`nearDedup\`.
+Then \`runPipeline(docs, config)\` with \`config = { tokenizer, mix, quality?, near?, shardSize? }\`. \`tokenizer\` and \`mix\` (at least \`mix.weights\`) are required: throw without a tokenizer, and let \`mixDomains\` throw without weights. The optional ones default to \`QUALITY_DEFAULTS\`, \`{}\` (so \`nearDedup\` uses its own defaults) and \`1024\`. Run \`qualityFilter\`, \`exactDedup\`, \`nearDedup(kept, near)\`, \`tokenizeDocs\`, \`mixDomains(toks, { ...mix, size: d => d.ids.length })\`, \`packShards(toks, order, { shardSize, eos: tokenizer.eos })\`. Return \`{ shards, index, tokens, report, removed, pairs, mix }\`: \`report\` is one row \`{ stage, in, out, removed }\` per stage (\`quality\`, \`exact-dedup\`, \`near-dedup\`, \`mix+shard\`), \`removed\` is one \`{ id, stage, reason }\` per removed document, \`tokens\` is the total over all shards, and \`pairs\` comes from \`nearDedup\`. For the first three rows, \`in\` and \`out\` are document counts before and after the stage. Mixing samples rather than filters, so the \`mix+shard\` row has \`in\` = the number of tokenised documents, \`out\` = the number of index entries (documents packed, a document drawn twice counting twice) and \`removed\` = 0; documents the mixer never draws are not added to the flat \`removed\` list.
 
 \`readDoc(shards, entry)\` (written) reads a document back through the index; the tests use it to check that nothing was lost across shard boundaries.
 `,

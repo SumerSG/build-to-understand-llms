@@ -177,7 +177,7 @@ export function packShards(docs, order, { shardSize = 1024, eos } = {}) {
 
 /**
  * The whole pipeline: quality → exact dedup → near dedup → tokenise → mix → shard.
- * config = { tokenizer, quality?, near?, mix?, shardSize? }.
+ * config = { tokenizer, mix: { weights, ... }, quality?, near?, shardSize? }; tokenizer and mix.weights are required.
  * Returns { shards, index, tokens, report: [{ stage, in, out, removed }], removed: [{ id, stage, reason }], pairs, mix }.
  */
 export function runPipeline(docs, config) {
