@@ -87,12 +87,18 @@ prerequisite.
 ## Sequencing logic
 
 Tracks follow the life of a model: the numerical substrate (tensors, autograd), the data interface
-(tokenizers), the architecture (attention, transformer), how it is trained (pre-training, scaling,
-data), how it is shaped (SFT, preference optimisation, RL with verifiable rewards, evals), how it is
-served (decoding, KV cache, batching, prefix caching, speculative decoding, quantisation), how it is
-wrapped (agent harnesses, context management, constrained decoding), and where it physically runs
-(GPUs, parallelism, nodes and interconnects, serving clusters). The capstone assembles the pieces into a
-chat you can talk to.
+(tokenizers), the architecture (attention, transformer), how it is built and trained (pre-training,
+scaling, data, mixture of experts, image tokens), how it is shaped (SFT, LoRA, distillation, preference
+optimisation, RL with verifiable rewards, evals), how it is served (decoding, KV cache, batching, prefix
+caching, speculative decoding, attention variants, long context, quantisation), how it is wrapped
+(agent harnesses, context management, constrained decoding), and where it physically runs (GPUs,
+parallelism, nodes and interconnects, serving clusters). The capstone assembles the pieces into a chat
+you can talk to.
+
+Modules keep their original ids when the path is reordered, so a module's number is a name, not its
+position. `prereqs` and recall questions must point backwards in the path: a module may build on, and
+quiz, only modules that come before it in `MODULES` (modules/index.js). A pointer to a later module
+belongs in concept text or a stretch goal, phrased as a forward pointer.
 
 ## Authoring rule of thumb
 

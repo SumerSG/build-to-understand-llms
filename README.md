@@ -6,16 +6,17 @@ draws what your code just did. Nothing counts as learned until it runs.
 
 | Track | You build |
 |---|---|
-| Foundations | a tensor library, an autograd engine, a BPE tokenizer, a bigram language model |
+| Foundations | a Zipf word counter (the lab loop), a tensor library, an autograd engine, a BPE tokenizer, a bigram language model |
 | Transformer & pre-training | attention, a GPT, the training loop, a compute/scaling planner, a data pipeline, a mixture-of-experts layer, a tiny multimodal model |
 | Post-training | SFT with loss masking, LoRA adapters, knowledge distillation, reward models and DPO, GRPO with verifiable rewards, an eval harness |
-| Inference | sampling, a KV cache, continuous batching with paged attention, prefix/prompt caching, speculative decoding, RoPE/GQA/MLA/sliding-window attention, long-context evaluation, quantisation |
+| Inference | sampling, a KV cache, continuous batching with paged attention, prefix/prompt caching, speculative decoding, test-time compute (voting, verifiers, reward-guided search; planned), RoPE/GQA/MLA/sliding-window attention, long-context evaluation, quantisation |
 | Harnesses & agents | an agent tool loop, context management with BM25 retrieval, grammar-constrained decoding |
 | Systems & data centers | roofline analysis, data/tensor/pipeline parallelism simulators, node & interconnect placement, a serving cluster with disaggregated prefill/decode |
 | Capstone | a chat with a model trained in this lab |
 
-Planned next: a data-center deep dive (programming the collectives, a simulated network fabric, and
-cluster operations). The design is in [docs/ROADMAP.md](docs/ROADMAP.md).
+Planned next: module 34, reasoning and test-time compute, placed after speculative decoding (brief in
+[docs/CURRICULUM_BRIEFS.md](docs/CURRICULUM_BRIEFS.md)); and a data-center deep dive: programming the
+collectives, a simulated network fabric, and cluster operations (design in [docs/ROADMAP.md](docs/ROADMAP.md)).
 
 ## Run it
 
@@ -68,7 +69,7 @@ The sidebar's **Chat playground** runs the lab's own model in the page: the BPE 
 by `tools/pretrain.mjs`, a KV cache reused across turns, and the sampling pipeline, wrapped in the chat
 template. It is a ~100k-parameter model trained on a toy corpus, so it produces corpus-like text rather than
 answers; the point is that every piece of it is something you built in the modules. You can load a
-checkpoint you trained yourself (module 07 lets you download one).
+checkpoint you trained yourself: the model JSON that `node tools/pretrain.mjs` writes.
 
 ## Writing a module
 

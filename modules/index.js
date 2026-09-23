@@ -2,9 +2,9 @@
 
 export const TRACKS = [
   { id: 'foundations', title: 'Foundations', blurb: 'The numerical substrate and the data interface: tensors, gradients, tokens, and the simplest language model.' },
-  { id: 'transformer', title: 'Transformer & pre-training', blurb: 'Attention, the GPT architecture, the training loop, and the arithmetic of scale and data.' },
-  { id: 'posttraining', title: 'Post-training', blurb: 'Turning a text predictor into an assistant: SFT, preference optimisation, RL with verifiable rewards, and evals.' },
-  { id: 'inference', title: 'Inference', blurb: 'Serving tokens fast: decoding, KV caches, batching, prefix caching, speculative decoding, quantisation.' },
+  { id: 'transformer', title: 'Transformer & pre-training', blurb: 'Attention, the GPT architecture, the training loop, the arithmetic of scale and data, mixture-of-experts layers and image tokens.' },
+  { id: 'posttraining', title: 'Post-training', blurb: 'Turning a text predictor into an assistant: SFT, LoRA adapters, distillation, preference optimisation, RL with verifiable rewards, and evals.' },
+  { id: 'inference', title: 'Inference', blurb: 'Serving tokens fast: decoding, KV caches, batching, prefix caching, speculative decoding, test-time compute, modern attention variants, long context, quantisation.' },
   { id: 'harness', title: 'Harnesses & agents', blurb: 'The code around the model: tool loops, context management, constrained decoding.' },
   { id: 'systems', title: 'Systems & data centers', blurb: 'Where it physically runs: GPUs, parallelism, nodes and interconnects, serving clusters.' },
   { id: 'capstone', title: 'Capstone', blurb: 'Assemble everything into a chat you can talk to.' },
@@ -13,7 +13,7 @@ export const TRACKS = [
 
 export const MODULES = [
   { id: '00-hello-lab', track: 'foundations', title: "Zipf's law: learn the lab loop", minutes: 20, status: 'ready',
-    goal: 'A word-frequency counter that plots Zipf\'s law on the training corpus, built through the Recall → Concept → Build → Goal → Reflect loop.' },
+    goal: 'A word-frequency counter that plots Zipf\'s law on a passage of Alice\'s Adventures in Wonderland, built through the Recall → Concept → Build → Goal → Reflect loop.' },
   { id: '01-tensors', track: 'foundations', title: 'Tensors from scratch', minutes: 90, status: 'ready',
     goal: 'A tiny tensor library (matmul, transpose, broadcasting, softmax, layernorm) whose outputs match the reference bit-for-bit within tolerance.' },
   { id: '02-autograd', track: 'foundations', title: 'Autograd from scratch', minutes: 120, status: 'ready',
@@ -58,12 +58,14 @@ export const MODULES = [
     goal: 'A radix-tree prefix cache with LRU eviction and a prompt-caching cost model; you measure hit rates and cost savings on realistic traffic.' },
   { id: '18-speculative', track: 'inference', title: 'Speculative decoding', minutes: 90, status: 'ready',
     goal: 'Draft-and-verify decoding with the rejection-sampling acceptance rule that provably preserves the target distribution, with measured speedup.' },
+  { id: '34-test-time-compute', track: 'inference', title: 'Reasoning & test-time compute', minutes: 105, status: 'planned',
+    goal: 'Self-consistency voting, best-of-N with outcome and process reward models, step-level beam search and thinking budgets on a verifiable reasoning task, with the accuracy each buys per GPU-second.' },
   { id: '29-attention-variants', track: 'inference', title: 'Modern attention: RoPE, GQA, MLA, sliding windows', minutes: 105, status: 'ready',
     goal: 'Rotary positions, grouped-query and multi-head latent attention, and a sliding-window ring cache, each proven equivalent to plain attention where it should be, with the KV-cache bytes each one saves.' },
   { id: '33-long-context', track: 'inference', title: 'Long-context evaluation', minutes: 90, status: 'ready',
     goal: 'A needle-in-a-haystack and retrieval eval suite over lengths and depths, an effective-context estimator, and the compute and memory price of long prompts.' },
-  { id: '19-quantization', track: 'inference', title: 'Quantisation', minutes: 90, status: 'ready',
-    goal: 'Absmax, per-channel and group-wise int8/int4 quantisers with error analysis and a memory calculator for weights and KV cache.' },
+  { id: '19-quantization', track: 'inference', title: 'Quantisation', minutes: 105, status: 'ready',
+    goal: 'Absmax, per-channel and group-wise int8/int4 quantisers, rounding into bf16, fp16, fp8 and FP4 with MXFP4 and NVFP4 block scales, error analysis and a memory calculator for weights and KV cache.' },
   { id: '20-agent-loop', track: 'harness', title: 'The agent loop harness', minutes: 90, status: 'ready',
     goal: 'A tool-use harness (schemas, call parsing, execution, stop conditions, error handling) that completes a multi-step task with a scripted model.' },
   { id: '21-context', track: 'harness', title: 'Context management & retrieval', minutes: 90, status: 'ready',
@@ -96,9 +98,11 @@ export function moduleById(id) {
   return MODULES.find((m) => m.id === id) || null;
 }
 
+// The next module on the path that can be taken now (planned modules are skipped).
 export function nextModule(id) {
   const i = MODULES.findIndex((m) => m.id === id);
-  return i >= 0 && i + 1 < MODULES.length ? MODULES[i + 1] : null;
+  if (i < 0) return null;
+  return MODULES.slice(i + 1).find((m) => m.status === 'ready') || null;
 }
 
 export async function loadModule(id) {

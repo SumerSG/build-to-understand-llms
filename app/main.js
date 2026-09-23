@@ -22,6 +22,14 @@ const LOG_DOM_MAX = 2000;          // console lines kept in the DOM per run
 const cache = new Map();           // module id -> { def, starter }
 const READY = MODULES.filter((m) => m.status === 'ready');   // planned modules are shown but not counted
 const failedLoads = new Set();     // module ids whose module.js could not be imported (shown as planned)
+// Module ids are names, not positions: modules keep their ids when the path is reordered, and module text
+// cites other modules by id ("module 28"). So lists show the position on the path (planned modules not
+// counted) as the number, and show the id beside it wherever the two differ. Positions count from 00 like
+// the ids do, so the modules that were never moved (00-09) show the same number the text uses.
+const POSITION = new Map(READY.map((m, i) => [m.id, i]));
+const LAST_POS = String(READY.length - 1).padStart(2, '0');
+const pathNum = (id) => (POSITION.has(id) ? String(POSITION.get(id)).padStart(2, '0') : '');
+const idNum = (id) => id.slice(0, 2);
 
 let renderSeq = 0;                 // bumped on every route(); async renders bail out when superseded
 let currentPage = null;            // { id, def, starter, phase, phasesEl } for the module page on screen
@@ -146,7 +154,7 @@ function renderSidebar(activeId = null) {
     const mods = MODULES.filter((m) => m.track === t.id);
     parts.push(`<div class="nav-track"><div class="nav-track-title">${esc(t.title)}</div>${mods.map((m) => {
       const st = m.status !== 'ready' ? 'planned' : moduleStatus(m.id);
-      return `<a class="nav-item ${m.id === activeId ? 'active' : ''}" href="#/m/${m.id}"><span class="dot ${st}"></span><span class="num">${m.id.slice(0, 2)}</span><span>${esc(m.title)}</span></a>`;
+      return `<a class="nav-item ${m.id === activeId ? 'active' : ''}" href="#/m/${m.id}" title="Module id ${idNum(m.id)}${m.status !== 'ready' ? ' (planned)' : ''}"><span class="dot ${st}"></span><span class="num">${pathNum(m.id) || '··'}</span><span class="nav-title">${esc(m.title)}</span>${pathNum(m.id) !== idNum(m.id) ? `<span class="nav-id">id ${idNum(m.id)}</span>` : ''}</a>`;
     }).join('')}</div>`);
   }
   const due = dueReviews().length;
@@ -192,12 +200,13 @@ function renderHome() {
   const grid = h(`<div class="grid-2 tracks"></div>`);
   for (const t of TRACKS) {
     const mods = MODULES.filter((m) => m.track === t.id);
+    const nReady = mods.filter((m) => m.status === 'ready').length;   // planned modules are listed but not counted
     const done = mods.filter((m) => isComplete(m.id)).length;
     grid.appendChild(h(`<div class="card track-card">
       <h3>${esc(t.title)}</h3>
       <div class="blurb">${esc(t.blurb)}</div>
-      <div class="progress-bar" title="${done} of ${mods.length} complete"><i style="width:${mods.length ? (100 * done) / mods.length : 0}%"></i></div>
-      <div class="mods">${mods.map((m) => `<a href="#/m/${m.id}" class="${isComplete(m.id) ? 'done' : ''}"><span class="num">${m.id.slice(0, 2)}</span><span class="title">${esc(m.title)}</span><span class="mins">${m.minutes} min</span><span class="check" aria-hidden="true"></span></a>`).join('')}</div>
+      <div class="progress-bar" title="${done} of ${nReady} complete"><i style="width:${nReady ? (100 * done) / nReady : 0}%"></i></div>
+      <div class="mods">${mods.map((m) => `<a href="#/m/${m.id}" class="${isComplete(m.id) ? 'done' : ''}"><span class="num">${pathNum(m.id) || '··'}</span><span class="title">${esc(m.title)}</span>${pathNum(m.id) !== idNum(m.id) ? `<span class="mid" title="Other modules refer to this one by its id">id ${idNum(m.id)}</span>` : ''}<span class="mins">${m.status === 'ready' ? `${m.minutes} min` : 'planned'}</span><span class="check" aria-hidden="true"></span></a>`).join('')}</div>
     </div>`));
   }
   $app.appendChild(grid);
@@ -317,7 +326,7 @@ async function renderModulePage(id, phaseArg, seq) {
   $app.innerHTML = '';
   $app.appendChild(sidebarButton());
   if (meta.status !== 'ready') {
-    $app.appendChild(h(`<div class="mod-head" data-num="${id.slice(0, 2)}"><nav class="crumbs"><span>Planned</span></nav><h1>${esc(meta.title)}</h1><div class="goal-banner"><p class="goal">${esc(meta.goal)}</p><p class="threshold">This module is planned and not yet written. Its design is in <code>docs/CURRICULUM_BRIEFS.md</code> and the shared pieces it needs are in <code>docs/ROADMAP.md</code>.</p></div></div>`));
+    $app.appendChild(h(`<div class="mod-head" data-num=""><nav class="crumbs"><span>Planned</span><span class="sep"></span><span class="num">id ${idNum(id)}</span></nav><h1>${esc(meta.title)}</h1><div class="goal-banner"><p class="goal">${esc(meta.goal)}</p><p class="threshold">This module is planned and not yet written. Its design is in <code>docs/CURRICULUM_BRIEFS.md</code> and the shared pieces it needs are in <code>docs/ROADMAP.md</code>.</p></div></div>`));
     return;
   }
   let entry;
@@ -325,7 +334,7 @@ async function renderModulePage(id, phaseArg, seq) {
     if (seq !== renderSeq) return;
     failedLoads.add(id);
     renderSidebar(id);
-    $app.appendChild(h(`<div class="mod-head" data-num="${id.slice(0, 2)}"><nav class="crumbs"><span>In progress</span></nav><h1>${esc(meta.title)}</h1><div class="goal-banner"><p class="goal">${esc(meta.goal)}</p><p class="threshold">This module is still being written. It will appear here once it passes its checks.</p></div><p><a class="btn" href="#/">Back to the lab</a></p><p class="muted small">Load error: ${esc(err.message)}</p></div>`));
+    $app.appendChild(h(`<div class="mod-head" data-num="${pathNum(id)}"><nav class="crumbs"><span>In progress</span><span class="sep"></span><span class="num">id ${idNum(id)}</span></nav><h1>${esc(meta.title)}</h1><div class="goal-banner"><p class="goal">${esc(meta.goal)}</p><p class="threshold">This module is still being written. It will appear here once it passes its checks.</p></div><p><a class="btn" href="#/">Back to the lab</a></p><p class="muted small">Load error: ${esc(err.message)}</p></div>`));
     return;
   }
   if (seq !== renderSeq) return;   // the learner navigated on while this module was loading
@@ -337,8 +346,8 @@ async function renderModulePage(id, phaseArg, seq) {
   if (phase === 'recall' && !hasRecall) phase = 'concept';
   const missingPrereqs = (def.prereqs || []).filter((p) => !isComplete(p));
 
-  const head = h(`<div class="mod-head" data-num="${id.slice(0, 2)}">
-    <nav class="crumbs" aria-label="Breadcrumb"><span>${esc(track ? track.title : meta.track)}</span><span class="sep"></span><span class="num">Module ${id.slice(0, 2)}</span><span class="sep"></span><span class="num">About ${meta.minutes} min</span></nav>
+  const head = h(`<div class="mod-head" data-num="${pathNum(id)}">
+    <nav class="crumbs" aria-label="Breadcrumb"><span>${esc(track ? track.title : meta.track)}</span><span class="sep"></span><span class="num">Module ${pathNum(id)} of 00–${LAST_POS}</span><span class="sep"></span><span class="num" title="Other modules refer to this one by its id">id ${idNum(id)}</span><span class="sep"></span><span class="num">About ${meta.minutes} min</span></nav>
     <h1>${esc(def.title)}</h1>
     <div class="goal-banner"><p class="goal">${esc(def.goal)}</p><p class="threshold"><b>The idea to take away.</b> ${esc(def.threshold || '')}</p>${missingPrereqs.length ? `<p class="prereq-note">Builds on ${missingPrereqs.map((p) => `<a href="#/m/${p}">${esc(moduleById(p)?.title || p)}</a>`).join(', ')}.</p>` : ''}</div>
   </div>`);

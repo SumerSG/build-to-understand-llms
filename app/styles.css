@@ -187,6 +187,8 @@ hr { border: 0; border-top: 1px solid var(--border); margin: var(--s6) 0; }
 .nav-item .dot.done { background: var(--good); border-color: var(--good); }
 .nav-item .dot.progress { border-color: var(--accent); background: linear-gradient(90deg, var(--accent) 50%, transparent 50%); }
 .nav-item .dot.planned { border-style: dashed; }
+.nav-item .nav-title { flex: 1; min-width: 0; }
+.nav-item .nav-id { flex: none; color: var(--muted); font-size: var(--text-caption); font-variant-numeric: tabular-nums; }
 .nav-links { margin-top: var(--s6); padding: var(--s4) var(--s2) 0; border-top: 1px solid var(--border); display: flex; flex-direction: column; gap: var(--s2); font-size: var(--text-secondary); }
 .nav-links a { color: var(--ink-2); }
 .nav-links a:hover { color: var(--accent); text-decoration: none; }
@@ -270,6 +272,7 @@ label.small input { width: 72px; padding: 6px var(--s2); font-size: var(--text-s
 .track-card .mods .num { flex: none; width: 22px; color: var(--muted); font-size: var(--text-secondary); font-variant-numeric: tabular-nums; }
 .track-card .mods .title { flex: 1; min-width: 0; }
 .track-card .mods .mins { flex: none; color: var(--muted); font-size: var(--text-caption); font-variant-numeric: tabular-nums; }
+.track-card .mods .mid { flex: none; color: var(--muted); font-size: var(--text-caption); font-variant-numeric: tabular-nums; opacity: 0.75; }
 .track-card .mods .check { display: none; flex: none; width: 18px; height: 18px; border-radius: 50%; position: relative; }
 .track-card .mods a.done .check { display: block; background: var(--good); }
 .track-card .mods a.done .check::after { content: ''; position: absolute; left: 5px; top: 2px; width: 4px; height: 8px; border: solid #fff; border-width: 0 2px 2px 0; transform: rotate(45deg); }
@@ -638,7 +641,7 @@ h3 { font-size: 15px; font-weight: 600; letter-spacing: 0.02em; }
 .goal-banner .threshold { font-family: var(--font); font-size: 14px; line-height: 1.55; color: var(--ink-2); margin-top: var(--s4); }
 .goal-banner .threshold b { font-weight: 400; text-transform: uppercase; letter-spacing: 0.12em; font-size: 11px; color: var(--muted); display: block; margin-bottom: 4px; }
 .mod-head { position: relative; }
-.mod-head .crumbs, .nav-track-title, .brand .sub, .predict-label, .step-panel > .muted.small, .editor-bar, .chart-title, .chart-toggle, .goal-banner .label, .done-banner > b, .chat-role, .loop li b, .track-card .mods .mins, .btn, .step-chip, .phase, .hint > button, .quiz-why::before, .test .ms, .results-head, th {
+.mod-head .crumbs, .nav-track-title, .brand .sub, .predict-label, .step-panel > .muted.small, .editor-bar, .chart-title, .chart-toggle, .goal-banner .label, .done-banner > b, .chat-role, .loop li b, .track-card .mods .mins, .track-card .mods .mid, .nav-item .nav-id, .btn, .step-chip, .phase, .hint > button, .quiz-why::before, .test .ms, .results-head, th {
   font-family: var(--font); text-transform: uppercase; letter-spacing: 0.12em; font-size: 11px; font-weight: 500;
 }
 .mod-head .crumbs { margin-bottom: var(--s4); color: var(--muted); }
