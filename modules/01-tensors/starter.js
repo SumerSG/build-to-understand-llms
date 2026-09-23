@@ -3,20 +3,27 @@
 // Everything below the "worked examples" line is yours to implement.
 
 // ---------- worked examples (done for you; read them, they set the conventions) ----------
+// The comments marked "JS:" explain JavaScript that module 35 may not have shown you.
 
 /** Number of elements in a shape: size([2, 3]) === 6. */
 export function size(shape) {
   let n = 1;
-  for (const d of shape) n *= d;
+  for (const d of shape) n *= d;          // JS: n *= d is short for n = n * d
   return n;
 }
 
 /** Create a tensor. `data` defaults to zeros; arrays are converted to Float32Array. */
 export function raw(shape, data) {
   const n = size(shape);
+  // JS: a parameter the caller left out is undefined. `x instanceof Float32Array` asks "is x a Float32Array?",
+  // and `!` turns the answer around. Float32Array.from([1, 2]) copies a plain array into a Float32Array.
   if (data === undefined) data = new Float32Array(n);
   else if (!(data instanceof Float32Array)) data = Float32Array.from(data);
+  // JS: `throw new Error(message)` stops the function and reports the message. The backtick string is a
+  // template literal: ${...} inside it is replaced by the value of the expression.
   if (data.length !== n) throw new Error(`raw: data length ${data.length} != size(shape) ${n}`);
+  // JS: { shape: ..., data } is short for { shape: ..., data: data }. shape.slice() copies the array, so the
+  // caller changing their array later cannot change this tensor's shape.
   return { shape: shape.slice(), data };
 }
 
@@ -24,14 +31,19 @@ export function raw(shape, data) {
 export function fromArray(nested) {
   const shape = [];
   let cur = nested;
+  // Walk into the first element again and again, recording each level's length: [[1, 2], [3, 4]] gives [2, 2].
   while (Array.isArray(cur)) { shape.push(cur.length); cur = cur[0]; }
+  // JS: .flat(Infinity) flattens every level of nesting: [[1, 2], [3, 4]] becomes [1, 2, 3, 4].
   return raw(shape, nested.flat(Infinity));
 }
 
 /** Tensor -> nested JS arrays (handy for printing and for tests). */
 export function toArray(t) {
+  // JS: const { shape, data } = t; is short for const shape = t.shape; const data = t.data;
   const { shape, data } = t;
   let i = 0;
+  // JS: build is a function stored in a constant (an arrow function), and it calls itself for the next axis.
+  // cond ? x : y means "x if cond is true, otherwise y". data[i++] reads data[i], then adds 1 to i.
   const build = (d) => {
     const out = [];
     for (let j = 0; j < shape[d]; j++) out.push(d === shape.length - 1 ? data[i++] : build(d + 1));

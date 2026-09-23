@@ -22,6 +22,28 @@ function numericGrad(fn, t, eps = 1e-3) {
   return out;
 }
 
+/** The untouched gradCheck skeleton loops over nothing it has filled in, so it returns no details at all. */
+function gradCheckNotYet(T, res, expected) {
+  if (res && Array.isArray(res.details) && res.details.length === 0 && expected > 0) {
+    T.fail(`gradCheck is not implemented yet: it returned no details (expected ${expected} ${expected === 1 ? 'entry' : 'entries'}, one per element of every input). Fill in part 1 (the backward pass) and part 2 (one comparison per element inside the loops)`);
+  }
+}
+
+/** Run root.backward(), translating the crash a leaves-first walk produces into what went wrong. */
+function runBackward(T, root) {
+  try { root.backward(); } catch (e) {
+    if (/null/.test(String(e && e.message))) {
+      T.fail(`backward() crashed with "${e.message}": a node's _backward ran while its own .grad was still null, which happens when the closures run from the leaves towards the root. topoSort puts the root LAST, so walk the order from the last element back to the first`);
+    }
+    throw e;
+  }
+}
+
+/** numericDerivative's starter placeholder returns NaN. */
+function numericNotYet(T, v) {
+  if (Number.isNaN(v)) T.fail('numericDerivative returned NaN: if you have not written it yet, it is not implemented yet (the starter placeholder returns NaN). Otherwise check that you call fn(...inputs).item() on both sides and divide by hi − lo, which must not be 0');
+}
+
 export const tests = [
   // ---------- step 1: graph ----------
   { step: 'graph', name: 'topoSort lists every node once, children before parents, root last', run(m, T) {
@@ -39,7 +61,7 @@ export const tests = [
     const a = m.Tensor.from(2, { requiresGrad: true }), b = m.Tensor.from(3, { requiresGrad: true });
     const x = a.add(b);
     const y = x.add(a);        // y = 2a + b, and a is used twice
-    y.backward();
+    runBackward(T, y);
     T.ok(y.grad !== null && a.grad !== null, 'after backward() the root and every leaf that requires a gradient must hold a Float32Array in .grad, not null: seed the root with 1 and run every _backward');
     T.eq(Array.from(y.grad), [1], 'the root gradient dy/dy is 1');
     T.eq(Array.from(x.grad), [1], 'x feeds y once, so x.grad = 1');
@@ -56,7 +78,7 @@ export const tests = [
     const a = m.Tensor.from(2, { requiresGrad: true }), b = m.Tensor.from(3, { requiresGrad: true });
     const x = a.add(b);
     const y = x.add(a);
-    y.backward();
+    runBackward(T, y);
     y.backward();
     T.ok(a.grad !== null, 'backward() must fill a.grad');
     T.eq(Array.from(a.grad), [4], 'two backward passes on the same graph must give exactly twice the leaf gradient: intermediates (x, y) are scratch space and must be reset each pass, leaves accumulate');
@@ -114,6 +136,7 @@ export const tests = [
   // ---------- step 3: broadcasting ----------
   { step: 'broadcast', name: 'unbroadcast sums a gradient back to the shape it was broadcast from', run(m, T) {
     const g = new Float32Array([1, 2, 3, 4, 5, 6]);
+    T.ok(m.unbroadcast(g, [2, 3], [3]) !== g, 'unbroadcast is not implemented yet: it returned the gradient unchanged (the starter placeholder), but a [3] target needs the 6 values summed down to 3');
     T.close(m.unbroadcast(g, [2, 3], [3]), [5, 7, 9], 1e-6, 'a [3] bias added to every row of a [2,3] tensor collects one gradient per row: sum over the leading axis');
     T.close(m.unbroadcast(g, [2, 3], [2, 1]), [6, 15], 1e-6, 'a [2,1] column stretched to 3 columns collects the row sums');
     T.close(m.unbroadcast(g, [2, 3], [2, 3]), [1, 2, 3, 4, 5, 6], 1e-6, 'same shape: nothing to sum');
@@ -185,7 +208,7 @@ export const tests = [
     T.throws(() => m.crossEntropy(logits, [0, 1, 2]), '3 targets for 2 rows of logits must throw');
     const huge = m.Tensor.from([[1000, 0, 0], [0, 1000, 1000]], { requiresGrad: true });
     m.crossEntropy(huge, [1, 2]).backward();
-    T.ok(huge.grad !== null && Array.from(huge.grad).every(Number.isFinite), 'the gradient for logits of 1000 must be finite: take softmax from exp(logProbs), which is already stable, not from exp(logits)');
+    T.ok(huge.grad !== null && Array.from(huge.grad).every(Number.isFinite), `the gradient for logits of 1000 must be finite${huge.grad !== null && Array.from(huge.grad).every(Number.isNaN) ? ' (every entry is NaN: check that you read logProbs.data[i * V + j], not logProbs[i * V + j], which does not exist)' : ''}: take each probability from Math.exp(logProbs.data[i * V + j]), which is already stable, not from Math.exp of the logits`);
     T.close(huge.grad, [0.5, -0.5, 0, 0, 0.25, -0.25], 1e-5, '(softmax − onehot) / N with N = 2: row 0 puts all its probability on class 0, row 1 splits it evenly between classes 1 and 2');
   } },
   { step: 'nonlinear', name: 'crossEntropy gradient is (softmax − onehot) / N', run(m, T) {
@@ -198,6 +221,7 @@ export const tests = [
     const expect = new Float32Array(20);
     for (let i = 0; i < 4; i++) for (let j = 0; j < 5; j++) expect[i * 5 + j] = (p.data[i * 5 + j] - (j === targets[i] ? 1 : 0)) / 4;
     T.eq(logits.grad.length, 20, 'logits.grad is a flat Float32Array with one entry per logit');
+    if (Array.from(logits.grad).every(Number.isNaN)) T.fail('every entry of logits.grad is NaN: read the log-probabilities as logProbs.data[i * V + j] (logProbs is a { shape, data } object, so logProbs[i * V + j] does not exist and turns into NaN)');
     T.close(logits.grad, expect, 1e-5, 'dL/dlogits = (softmax − onehot) / N with N = 4 rows; without the 1/N the gradient is 4× too large, so every learning rate acts 4× bigger');
     for (let i = 0; i < 4; i++) {
       let rowSum = 0;
@@ -211,7 +235,38 @@ export const tests = [
     T.close(logits.grad, expect.map((v) => 8 * v), 1e-4, 'the incoming gradient (8) must multiply the result; do not assume the loss is the root');
   } },
 
-  // ---------- step 5: gradCheck ----------
+  // ---------- step 5: numericDerivative ----------
+  { step: 'numgrad', name: 'central difference of one element, with the value restored', run(m, T) {
+    const x = m.Tensor.from([2, -1, 0.5], { requiresGrad: true });
+    const before = Array.from(x.data);
+    const cube = (t) => t.mul(t).mul(t).sum();
+    const d0 = m.numericDerivative(cube, [x], 0, 0, 0.1);
+    numericNotYet(T, d0);
+    T.eq(Array.from(x.data), before, 'numericDerivative must put the perturbed value back exactly (save it first, restore it last)');
+    const oneSided = 12.61;
+    T.close(d0, 12.01, 1e-3, Math.abs(d0 - oneSided) < 0.02
+      ? 'you got the one-sided difference (fn(x + eps) − fn(x)) / eps ≈ 12.61; the central difference moves x both ways, (fn(x + eps) − fn(x − eps)) / (hi − lo), and gives 12.01'
+      : 'd(x³)/dx at 2 is 12; the central difference with eps = 0.1 gives 12.01 (the error is eps²)');
+    T.close(m.numericDerivative(cube, [x], 0, 1, 0.1), 3.01, 1e-3, 'element 1 of x is −1: 3·(−1)² = 3, and the central difference adds eps² = 0.01 (only element index moves)');
+    T.close(m.numericDerivative(cube, [x], 0, 2), 0.75, 1e-3, 'element 2 is 0.5: 3·0.25 = 0.75, with the default eps of 1e-3');
+    T.eq(Array.from(x.data), before, 'every call must leave x unchanged');
+  } },
+  { step: 'numgrad', name: 'perturbs the right input and divides by the perturbation that actually landed in float32', run(m, T) {
+    const a = m.Tensor.from([2, 3], { requiresGrad: true }), b = m.Tensor.from([5, 7], { requiresGrad: true });
+    const dot = (a, b) => a.mul(b).sum();
+    const db0 = m.numericDerivative(dot, [a, b], 1, 0);
+    numericNotYet(T, db0);
+    T.close(db0, 2, 1e-3, 'd(Σ a·b)/d b[0] is a[0] = 2: k = 1 selects the second input, and fn must receive every input, fn(...inputs)');
+    T.close(m.numericDerivative(dot, [a, b], 0, 1), 7, 1e-3, 'd(Σ a·b)/d a[1] is b[1] = 7');
+    // Near 1000 float32 values are 6.1e-5 apart, so 1000.3 ± 1e-3 lands on ± 0.000977, not ± 0.001.
+    const big = m.Tensor.from([1000.3], { requiresGrad: true });
+    const saved = big.data[0];
+    const n = m.numericDerivative((t) => t.sum(), [big], 0, 0);
+    T.close(n, 1, 1e-4, `d(sum)/dx is exactly 1, but got ${n}: dividing by 2·eps instead of (hi − lo), the perturbation that float32 actually stored, gives 0.977`);
+    T.ok(big.data[0] === saved, 'the value must be restored exactly');
+  } },
+
+  // ---------- step 6: gradCheck ----------
   { step: 'gradcheck', name: 'passes a correct MLP and restores the inputs it perturbed', run(m, T) {
     const x = randomTensor(m, [3, 4], 10);
     const W1 = randomTensor(m, [4, 6], 11, { requiresGrad: true });
@@ -219,6 +274,7 @@ export const tests = [
     const W2 = randomTensor(m, [6, 3], 12, { requiresGrad: true });
     const before = [W1, b1, W2].map((t) => Float32Array.from(t.data));
     const res = m.gradCheck((W1, b1, W2) => m.crossEntropy(x.matmul(W1).add(b1).relu().matmul(W2), [0, 2, 1]), [W1, b1, W2]);
+    gradCheckNotYet(T, res, 48);
     T.ok(res.ok === true, `a correct gradient must pass; maxRelErr=${res.maxRelErr}`);
     T.ok(res.maxRelErr < 1e-2 && res.maxRelErr >= 0, `maxRelErr must be a small non-negative number, got ${res.maxRelErr}`);
     T.eq(res.details.length, 24 + 6 + 18, 'one detail entry per element of every input (24 + 6 + 18)');
@@ -242,6 +298,7 @@ export const tests = [
       return out;
     };
     const res = m.gradCheck(buggySum, [x]);
+    gradCheckNotYet(T, res, 3);
     T.ok(res.ok === false, 'analytic 2 vs numeric 1 must fail the check');
     T.close(res.maxRelErr, 0.5, 1e-2, 'relErr = |2 − 1| / max(1, 2, 1) = 0.5');
     T.eq(res.details.length, 3);
@@ -263,6 +320,7 @@ export const tests = [
     const x = m.Tensor.from([2], { requiresGrad: true });
     const cube = (t) => t.mul(t).mul(t).sum();
     const res = m.gradCheck(cube, [x], { eps: 0.1, tol: 1e-2 });
+    gradCheckNotYet(T, res, 1);
     T.eq(res.details.length, 1, 'x has one element, so details must have exactly one entry');
     T.close(res.details[0].analytic, 12, 1e-5, 'd(x³)/dx at 2 is 12');
     T.ok(res.ok && res.maxRelErr < 2e-3, `with eps = 0.1 a central difference of x³ at 2 is 12.01 (error 8e-4); a one-sided difference gives 12.61 (error 5%). Got maxRelErr=${res.maxRelErr}`);
@@ -277,6 +335,7 @@ export const tests = [
     const x = m.Tensor.from([0.5, -1.5, 2], { requiresGrad: true });
     x.grad = new Float32Array([100, 100, 100]);    // stale gradient left over from, say, a training step
     const res = m.gradCheck((t) => t.mul(t).sum(), [x]);
+    gradCheckNotYet(T, res, 3);
     T.ok(res.ok, `a stale x.grad must not leak into the analytic gradient: zeroGrad every input before the backward pass (maxRelErr=${res.maxRelErr})`);
     T.close(res.details.map((d) => d.analytic), [1, -3, 4], 1e-5, 'analytic d(Σx²)/dx = 2x, from a fresh backward pass');
     // Near 1000 float32 values are 6.1e-5 apart, so 1000.3 ± 1e-3 lands on ± 0.000977, not ± 0.001.
@@ -286,12 +345,13 @@ export const tests = [
     T.ok(r.ok, 'a correct gradient at a large value must pass');
   } },
 
-  // ---------- step 6: SGD and linear regression ----------
+  // ---------- step 7: SGD and linear regression ----------
   { step: 'train', name: 'sgdStep moves each parameter against its gradient and leaves .grad alone', run(m, T) {
     const p = m.Tensor.from([1, 2, 3], { requiresGrad: true });
     p.grad = new Float32Array([10, -20, 0]);
     const q = m.Tensor.from([5, 5], { requiresGrad: true });   // never had a backward pass: grad is null
     m.sgdStep([p, q], 0.1);
+    T.ok(!(p.data[0] === 1 && p.data[1] === 2 && p.data[2] === 3), 'sgdStep is not implemented yet: p.data is unchanged after the step (the starter placeholder does nothing). Subtract lr * p.grad[i] from every p.data[i]');
     T.close(p.data, [0, 4, 3], 1e-6, 'p -= lr * grad: 1 − 0.1·10 = 0, 2 − 0.1·(−20) = 4, 3 − 0 = 3');
     T.close(p.grad, [10, -20, 0], 1e-6, 'sgdStep must not clear the gradient; zeroGrad is a separate, explicit call');
     T.close(q.data, [5, 5], 1e-6, 'a parameter with grad === null is skipped, not crashed on');
@@ -302,6 +362,7 @@ export const tests = [
     const xs = Array.from({ length: 32 }, (_, i) => -1 + (2 * i) / 31);
     const ys = xs.map((x) => 3 * x + 2);
     const r = m.trainLinear(xs, ys, { steps: 200, lr: 0.1 });
+    T.ok(r.losses.length > 0 || r.w !== 0, 'trainLinear is not implemented yet: it returned the starter placeholder (w = 0, b = 0, no losses)');
     T.eq(r.losses.length, 200, 'one loss per step');
     T.eq(r.ws.length, 200); T.eq(r.bs.length, 200);
     T.ok(Math.abs(r.w - 3) < 0.02, `w should approach 3 (got ${r.w}); check the sign of the update and that zeroGrad runs every step`);

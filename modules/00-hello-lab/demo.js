@@ -42,8 +42,8 @@ export default async function demo(m, lab) {
       { name: 'ideal Zipf: f(1)/rank', values: predicted },
       { name: `least-squares fit: slope ${slope.toFixed(2)}`, values: fitted },
     ],
-    xlabel: 'log10(rank)', ylabel: 'count (log scale)', yscale: 'log',
+    xlabel: 'log10(rank): 0 is rank 1, 1 is rank 10, 1.6 is rank 40', ylabel: 'count (log scale)', yscale: 'log',
   });
   lab.bar({ title: 'How many distinct words appear n times', labels: ['1', '2', '3', '4', '5+'], values: [1, 2, 3, 4].map((n) => [...counts.values()].filter((c) => c === n).length).concat([[...counts.values()].filter((c) => c >= 5).length]) });
-  lab.done(`Your counter found **${words.length}** words, **${counts.size}** distinct. The top word "${top[0][0]}" appears ${top[0][1]} times; **${once}** words (${(100 * once / counts.size).toFixed(0)}% of the vocabulary) appear exactly once. Over the top ${actual.length} ranks the fitted log–log slope is **${slope.toFixed(2)}** (ideal Zipf: −1) and the mean log-error from the ideal line is **${err.toFixed(3)}** (an average factor of ${Math.exp(err).toFixed(1)}).`);
+  lab.done(`Your counter found **${words.length}** words, **${counts.size}** distinct. The top word "${top[0][0]}" appears ${top[0][1]} times; **${once}** words (${(100 * once / counts.size).toFixed(0)}% of the vocabulary) appear exactly once. Over the top ${actual.length} ranks the fitted log–log slope is **${slope.toFixed(2)}** (ideal Zipf: −1) and the mean log-error from the ideal line is **${err.toFixed(3)}** (an average factor of ${Math.exp(err).toFixed(1)}). How to read the chart: if this page followed Zipf's law exactly, the "actual" points would sit on the "ideal" line; here the common words after "${top[0][0]}" are used ${slope > -1 ? 'more often than the law predicts, so the fitted line is flatter than −1' : 'less often than the law predicts, so the fitted line is steeper than −1'}. The long tail of once-only words is the reason module 03 builds its vocabulary from word pieces instead of whole words.`);
 }

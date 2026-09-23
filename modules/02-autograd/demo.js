@@ -107,7 +107,7 @@ export default async function demo(m, lab) {
   for (const y of axis) for (const x of axis) grid.push([x, y]);
   const gl = forward(m.Tensor.from(grid), W1, b1, W2, b2).data;
   const rows = [];
-  for (let gy = 0; gy < G; gy++) {
+  for (let gy = G - 1; gy >= 0; gy--) {                            // top row first, so y increases upwards
     const row = [];
     for (let gx = 0; gx < G; gx++) {
       const i = gy * G + gx;
@@ -116,10 +116,14 @@ export default async function demo(m, lab) {
     }
     rows.push(row);
   }
-  lab.heatmap({ title: 'MLP decision map: P(ring) over the plane (disc inside r < 0.8, ring at r > 1.3)', rows, rowLabels: axis.map((v) => v.toFixed(1)), colLabels: axis.map((v) => v.toFixed(1)), min: 0, max: 1 });
+  // Label every 5th column only (x = -2, -1, 0, 1, 2): 21 labels side by side would overlap.
+  const colLabels = axis.map((v, i) => (i % 5 === 0 ? String(Math.round(v)) : ''));
+  const rowLabels = axis.map((v) => `y = ${v.toFixed(1)}`).reverse();
+  lab.log('The MLP (a multilayer perceptron: two layers of weights with a ReLU, max(x, 0), between them) sees only the two coordinates (x, y) of a point and must say whether it belongs to the disc (distance from the centre below 0.8) or to the ring around it (distance 1.3 to 1.9). The map below shows its answer at every point of the plane.');
+  lab.heatmap({ title: 'MLP decision map: probability the point is "ring" (dark = ring, light = disc; x from −2 to 2 across, y from −2 to 2 upwards)', rows, rowLabels, colLabels, min: 0, max: 1 });
   lab.progress(1, 'done');
 
   lab.done(`Your engine fitted **w = ${r.w.toFixed(3)}, b = ${r.b.toFixed(3)}** (true 3 and 2) in ${steps} SGD steps, taking the MSE from ${r.losses[0].toFixed(3)} to **${r.losses[steps - 1].toFixed(4)}**. ` +
     `gradCheck compared all ${check.details.length} analytic gradients of the ${2 * H + H + H * 2 + 2}-parameter MLP against central differences: max relative error **${check.maxRelErr.toExponential(2)}** (tolerance 1e-2). ` +
-    `Trained with the fused cross-entropy for ${mlpSteps} steps, that MLP went from ${(100 * accBefore).toFixed(0)}% to **${(100 * accAfter).toFixed(0)}%** accuracy on the ring-vs-disc data, loss ${mlpLosses[0].toFixed(3)} → ${mlpLosses[mlpSteps - 1].toFixed(3)}.`);
+    `Trained with the fused cross-entropy for ${mlpSteps} steps, that MLP went from ${(100 * accBefore).toFixed(0)}% to **${(100 * accAfter).toFixed(0)}%** accuracy on the ring-vs-disc data, loss ${mlpLosses[0].toFixed(3)} → ${mlpLosses[mlpSteps - 1].toFixed(3)}: from nothing but gradients, it learned to tell a point in the central disc from a point on the ring around it, which a single straight line could never separate.`);
 }

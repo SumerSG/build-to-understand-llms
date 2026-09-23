@@ -13,6 +13,51 @@ function matmulIJP(a, b) {
   return { shape: [n, m], data: out };
 }
 
+// The recommended i-p-j order, timed next to the learner's loop so the chart compares against both named orders.
+function matmulIPJ(a, b) {
+  const [n, k] = a.shape, m = b.shape[1];
+  const out = new Float32Array(n * m);
+  for (let i = 0; i < n; i++) for (let p = 0; p < k; p++) {
+    const av = a.data[i * k + p];
+    for (let j = 0; j < m; j++) out[i * m + j] += av * b.data[p * m + j];
+  }
+  return { shape: [n, m], data: out };
+}
+
+// Which way does the learner's loop walk through B? Run it once on small matrices whose data arrays record
+// every numbered read, then look at the first few reads of B: consecutive offsets (0, 1, 2, …) mean the inner
+// loop runs along a row of B (the i-p-j pattern); steps of m (0, m, 2m, …) mean it runs down a column (i-j-p).
+function detectOrder(matmul, raw) {
+  const n = 3, k = 4, m = 5;
+  const reads = [];
+  const watch = (t) => {
+    const proxy = new Proxy(t.data, {
+      get(target, key) {
+        if (typeof key === 'string' && /^\d+$/.test(key)) reads.push(+key);
+        const v = Reflect.get(target, key, target);
+        return typeof v === 'function' ? v.bind(target) : v;
+      },
+    });
+    return { shape: t.shape, data: proxy };
+  };
+  try {
+    const a = raw([n, k]), b = raw([k, m]);
+    for (let i = 0; i < a.data.length; i++) a.data[i] = i + 1;
+    for (let i = 0; i < b.data.length; i++) b.data[i] = i + 1;
+    const plainA = a;
+    const bw = watch(b);
+    matmul(plainA, bw);
+    const first = reads.slice(0, 4);
+    if (first.length < 4) return { name: 'your loop order', pattern: 'could not be read' };
+    const steps = first.slice(1).map((v, i) => v - first[i]);
+    if (steps.every((d) => d === 1)) return { name: 'your loop (reads B along rows, the i-p-j pattern)', pattern: 'row', short: 'i-p-j' };
+    if (steps.every((d) => d === m)) return { name: 'your loop (reads B down columns, the i-j-p pattern)', pattern: 'column', short: 'i-j-p' };
+    return { name: 'your loop (reads B in another pattern)', pattern: 'other' };
+  } catch {
+    return { name: 'your loop order', pattern: 'could not be read' };
+  }
+}
+
 function maxAbsDiff(x, y) {
   const a = x.data ?? x, b = y.data ?? y;
   if (a.length !== b.length) return Infinity;
@@ -64,9 +109,9 @@ export default async function demo(m, lab) {
   // 2. matmul throughput: your loop vs the textbook i-j-p order. At n = 512 each matrix is 1 MB, far
   // beyond the L1 cache (tens of KB), which is where loop order starts to matter in JavaScript.
   const sizes = [];
-  const yours = [], naive = [];
+  const yours = [], ipj = [], naive = [];
   const warm = rand([32, 32]);
-  m.matmul(warm, warm); matmulIJP(warm, warm);                  // let the JIT compile both loops
+  m.matmul(warm, warm); matmulIPJ(warm, warm); matmulIJP(warm, warm);   // let the JIT compile all three loops
   for (const n of [64, 128, 256, 512]) {
     const a = rand([n, n]), b = rand([n, n]);
     const t0 = performance.now();
@@ -76,19 +121,23 @@ export default async function demo(m, lab) {
     const rounds = n >= 512 ? 2 : 3;
     sizes.push(n);
     yours.push(gflopsOf(m.matmul, a, b, rounds));
+    ipj.push(gflopsOf(matmulIPJ, a, b, rounds));
     naive.push(gflopsOf(matmulIJP, a, b, rounds));
     lab.progress(sizes.length / 4, `matmul ${n}x${n}`);
     await lab.tick();
   }
-  lab.plot({ title: 'Matmul throughput: your loop vs the i-j-p order', x: sizes,
-    series: [{ name: 'your matmul', values: yours }, { name: 'i-j-p reference loop', values: naive }],
-    xlabel: 'n (n x n matrices)', ylabel: 'GFLOP/s' });
+  // Only after timing: feeding the learner's function a Proxy makes the JIT deoptimise it, which would slow
+  // every later call and make the comparison unfair.
+  const order = detectOrder(m.matmul, m.raw);
+  lab.plot({ title: 'Matmul throughput: your loop vs the two named loop orders', x: sizes,
+    series: [{ name: order.name, values: yours }, { name: 'i-p-j loop (along rows of B)', values: ipj }, { name: 'i-j-p loop (down columns of B)', values: naive }],
+    xlabel: 'n (n x n matrices)', ylabel: 'GFLOP/s (billions of arithmetic operations per second)' });
 
   // 3. softmax temperature
   const row = [2.0, 1.0, 0.5, 0.1, -1.0, -2.0];
   const temps = [0.25, 0.5, 1, 2, 4];
   const rows = temps.map((T) => Array.from(m.softmax(m.fromArray([row.map((l) => l / T)])).data));
-  lab.heatmap({ title: 'softmax(logits / T): low T sharpens, high T flattens', rows, rowLabels: temps.map((t) => `T=${t}`), colLabels: row.map(String), min: 0, max: 1 });
+  lab.heatmap({ title: 'softmax(logits / T), one row per temperature T: darker cells hold more probability (0 to 1); low T sharpens, high T flattens', rows, rowLabels: temps.map((t) => `T=${t}`), colLabels: row.map(String), min: 0, max: 1 });
 
   // 4. layernorm
   const x = rand([4, 8]);
@@ -102,7 +151,11 @@ export default async function demo(m, lab) {
 
   const peak = Math.max(...yours);
   const nPeak = sizes[yours.indexOf(peak)];
-  const r0 = yours[0] / naive[0], r1 = yours[yours.length - 1] / naive[naive.length - 1];
-  const nLast = sizes[sizes.length - 1];
-  lab.done(`**${passed} of ${checks.length}** kernels match \`lib/ops.js\` within ${tol}. Your matmul peaks at **${peak.toFixed(2)} GFLOP/s** at n=${nPeak}. Against the i-j-p loop it runs at **${r0.toFixed(2)}×** the speed at n=${sizes[0]} and **${r1.toFixed(2)}×** at n=${nLast}. An H100 (approximately 989 TFLOP/s dense bf16, NVIDIA datasheet) is about **${(989e3 / peak).toExponential(1)}×** faster. Softmax at T=0.25 puts ${(100 * rows[0][0]).toFixed(0)}% of the mass on the top logit versus ${(100 * rows[4][0]).toFixed(0)}% at T=4. After LayerNorm the worst row mean is ${worstMean.toExponential(1)} and the worst |std − 1| is ${worstStd.toExponential(1)} (eps = 1e-5 makes the std slightly below 1).`);
+  const L = sizes.length - 1, nLast = sizes[L];
+  const ratio = (x) => `${x.toFixed(2)}×`;
+  const orderLine = order.short
+    ? `Your matmul reads B ${order.pattern === 'row' ? 'along rows' : 'down columns'}, so it is an **${order.short}** loop.`
+    : `The demo could not tell which order your loop uses (${order.pattern === 'other' ? 'it reads B in neither pattern' : 'it could not watch its reads'}).`;
+  const fasterNamed = ipj[L] >= naive[L] ? 'i-p-j' : 'i-j-p';
+  lab.done(`**${passed} of ${checks.length}** kernels match \`lib/ops.js\` within ${tol}. ${orderLine} It peaks at **${peak.toFixed(2)} GFLOP/s** at n=${nPeak}, and at n=${nLast} it runs at ${ratio(yours[L] / ipj[L])} the speed of the i-p-j loop and ${ratio(yours[L] / naive[L])} the speed of the i-j-p loop. Between the two named orders, **${fasterNamed}** is faster at n=${nLast} (i-p-j / i-j-p = **${ratio(ipj[L] / naive[L])}**; at n=${sizes[0]} it is ${ratio(ipj[0] / naive[0])}). An H100 (approximately 989 TFLOP/s dense bf16, NVIDIA datasheet) is about **${(989e3 / peak).toExponential(1)}×** faster. Softmax at T=0.25 puts ${(100 * rows[0][0]).toFixed(0)}% of the mass on the top logit versus ${(100 * rows[4][0]).toFixed(0)}% at T=4. After LayerNorm the worst row mean is ${worstMean.toExponential(1)} and the worst |std − 1| is ${worstStd.toExponential(1)} (eps = 1e-5 makes the std slightly below 1).`);
 }

@@ -271,27 +271,51 @@ export function crossEntropy(logits, targets) {
   });
 }
 
-// ---------- step 5: numerical gradient check ----------
+// ---------- step 5: a numeric derivative of one element ----------
 
 /**
- * Compare the analytic gradient of the scalar fn(...inputs) with central differences, element by element:
- *   numeric = (fn(x + eps) − fn(x − eps)) / (2·eps)      for each element x of each input
- *   relErr  = |analytic − numeric| / max(1, |analytic|, |numeric|)
- * Returns { ok: maxRelErr <= tol, maxRelErr, details: [{ input, index, analytic, numeric, relErr }] }.
- * input is the 0-based position of the tensor in `inputs`; index is the flat element index in its data.
- * Throw if an input lacks requiresGrad or fn does not return a size-1 Tensor. Restore every value you perturb.
- * Clear each input's old gradient first, and make a NaN relErr fail the check (NaN > x is always false).
+ * The central-difference derivative of the scalar fn(...inputs) with respect to ONE number,
+ * inputs[k].data[index]:
+ *   (fn(x + eps) − fn(x − eps)) / (hi − lo)
+ * where hi and lo are the perturbed values read back from the Float32Array (float32 rounds, so they can
+ * differ from x ± eps). The value is restored before returning.
  */
-export function gradCheck(fn, inputs, { eps = 1e-3, tol = 1e-2 } = {}) {
+export function numericDerivative(fn, inputs, k, index, eps = 1e-3) {
   // TODO: step 5
-  return { ok: false, maxRelErr: Infinity, details: [] };
+  return NaN;
 }
 
-// ---------- step 6: SGD and linear regression ----------
+// ---------- step 6: the gradient check ----------
+
+/**
+ * Compare the analytic gradient of the scalar fn(...inputs) with numericDerivative, element by element:
+ *   relErr = |analytic − numeric| / max(1, |analytic|, |numeric|)
+ * Returns { ok: maxRelErr <= tol, maxRelErr, details: [{ input, index, analytic, numeric, relErr }] }.
+ * input is the 0-based position of the tensor in `inputs`; index is the flat element index in its data.
+ */
+export function gradCheck(fn, inputs, { eps = 1e-3, tol = 1e-2 } = {}) {
+  const analytic = [];   // analytic[k] will be a copy of inputs[k].grad
+  // TODO: step 6, part 1. Throw an Error if any input has requiresGrad false, and call zeroGrad() on every
+  // input. Run fn(...inputs) once, throw unless the result has size 1, and call backward() on it.
+  // Then push a copy of each input's gradient into `analytic` (zeros when its grad is still null).
+
+  const details = [];
+  let maxRelErr = 0;
+  for (let k = 0; k < inputs.length; k++) {                   // every input tensor...
+    for (let index = 0; index < inputs[k].size; index++) {    // ...and every element of it
+      // TODO: step 6, part 2. Compare analytic[k][index] with numericDerivative(fn, inputs, k, index, eps),
+      // push one { input: k, index, analytic, numeric, relErr } into details, and update maxRelErr so that a
+      // NaN relErr gets in and nothing afterwards can replace it.
+    }
+  }
+  return { ok: maxRelErr <= tol, maxRelErr, details };
+}
+
+// ---------- step 7: SGD and linear regression ----------
 
 /** One gradient-descent update, p.data -= lr * p.grad, for every parameter that has a gradient. Leaves .grad alone. */
 export function sgdStep(params, lr) {
-  // TODO: step 6
+  // TODO: step 7
 }
 
 /**
@@ -300,6 +324,6 @@ export function sgdStep(params, lr) {
  * the loss before the update and w and b after it.
  */
 export function trainLinear(xs, ys, { steps = 200, lr = 0.1 } = {}) {
-  // TODO: step 6
+  // TODO: step 7
   return { w: 0, b: 0, losses: [], ws: [], bs: [] };
 }

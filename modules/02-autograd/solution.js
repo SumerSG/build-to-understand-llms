@@ -295,12 +295,28 @@ export function crossEntropy(logits, targets) {
   });
 }
 
-// ---------- step 5: numerical gradient check ----------
+// ---------- step 5: a numeric derivative of one element ----------
+
+/** Central difference of the scalar fn(...inputs) with respect to inputs[k].data[index]; the value is restored. */
+export function numericDerivative(fn, inputs, k, index, eps = 1e-3) {
+  const t = inputs[k];
+  const saved = t.data[index];
+  // Perturb the float32 storage in place and measure the perturbation that actually landed.
+  t.data[index] = saved + eps;
+  const hi = t.data[index];
+  const fPlus = fn(...inputs).item();
+  t.data[index] = saved - eps;
+  const lo = t.data[index];
+  const fMinus = fn(...inputs).item();
+  t.data[index] = saved;
+  return (fPlus - fMinus) / (hi - lo);
+}
+
+// ---------- step 6: the gradient check ----------
 
 /**
- * Compare the analytic gradient of the scalar fn(...inputs) with central differences, element by element.
- * Data is float32, so eps ≈ 1e-3 and tol ≈ 1e-2 are the useful settings. The error is relative for values
- * above 1 in magnitude and absolute below, where float32 rounding noise dominates.
+ * Compare the analytic gradient of the scalar fn(...inputs) with numericDerivative, element by element.
+ * Returns { ok: maxRelErr <= tol, maxRelErr, details: [{ input, index, analytic, numeric, relErr }] }.
  */
 export function gradCheck(fn, inputs, { eps = 1e-3, tol = 1e-2 } = {}) {
   inputs.forEach((t, k) => {
@@ -314,29 +330,20 @@ export function gradCheck(fn, inputs, { eps = 1e-3, tol = 1e-2 } = {}) {
 
   const details = [];
   let maxRelErr = 0;
-  inputs.forEach((t, k) => {
-    for (let index = 0; index < t.size; index++) {
-      const saved = t.data[index];
-      // Perturb the float32 storage in place and measure the perturbation that actually landed.
-      t.data[index] = saved + eps;
-      const hi = t.data[index];
-      const fPlus = fn(...inputs).item();
-      t.data[index] = saved - eps;
-      const lo = t.data[index];
-      const fMinus = fn(...inputs).item();
-      t.data[index] = saved;
-      const numeric = (fPlus - fMinus) / (hi - lo);
+  for (let k = 0; k < inputs.length; k++) {
+    for (let index = 0; index < inputs[k].size; index++) {
       const a = analytic[k][index];
+      const numeric = numericDerivative(fn, inputs, k, index, eps);
       const relErr = Math.abs(a - numeric) / Math.max(1, Math.abs(a), Math.abs(numeric));
       details.push({ input: k, index, analytic: a, numeric, relErr });
       // NaN compares false with everything: let it in, and once in, nothing larger can replace it.
       if (Number.isNaN(relErr) || relErr > maxRelErr) maxRelErr = relErr;
     }
-  });
+  }
   return { ok: maxRelErr <= tol, maxRelErr, details };
 }
 
-// ---------- step 6: SGD and linear regression ----------
+// ---------- step 7: SGD and linear regression ----------
 
 /** One gradient-descent update, p.data -= lr * p.grad, for every parameter that has a gradient. Leaves .grad alone. */
 export function sgdStep(params, lr) {

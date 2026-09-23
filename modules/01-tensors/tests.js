@@ -57,6 +57,9 @@ export const tests = [
   } },
   { step: 'matmul', name: 'multiplies a 2x3 by a 3x2', run(m, T) {
     const c = m.matmul(m.fromArray([[1, 2, 3], [4, 5, 6]]), m.fromArray([[1, 0], [0, 1], [1, 1]]));
+    if (c && c.data && Array.from(c.data).some(Number.isNaN)) {
+      T.fail(`the result contains NaN ([${Array.from(c.data).join(', ')}]): NaN appears when a number that does not exist is read. The tensor objects a and b have no numbered entries (a[3] is undefined); their numbers are in a.data and b.data, so A[i, p] is a.data[i * k + p]`);
+    }
     T.shape(c, [2, 2]);
     T.eq(m.toArray(c), [[4, 5], [10, 11]]);
   } },
@@ -88,7 +91,11 @@ export const tests = [
   } },
   { step: 'broadcast', name: 'adds same-shape tensors and scalars', run(m, T) {
     const a = m.fromArray([[1, 2], [3, 4]]);
-    T.eq(m.toArray(m.add(a, m.fromArray([[10, 20], [30, 40]]))), [[11, 22], [33, 44]]);
+    let same;
+    try { same = m.add(a, m.fromArray([[10, 20], [30, 40]])); } catch (e) {
+      T.fail(`add threw "${e.message}" for two tensors that both have shape [2,2]. If your code compares the shapes with == or ===, that is the cause: in JavaScript [2, 2] === [2, 2] is false, because arrays compare by identity (the same array object), not by contents. Compare the lengths, then each entry`);
+    }
+    T.eq(m.toArray(same), [[11, 22], [33, 44]]);
     T.eq(m.toArray(m.add(a, 1)), [[2, 3], [4, 5]]);
     T.eq(m.toArray(m.mul(a, 2)), [[2, 4], [6, 8]]);
   } },
