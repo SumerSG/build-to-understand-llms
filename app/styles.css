@@ -676,7 +676,11 @@ td { border-bottom: 1px solid var(--border); }
 .hint:last-child { border-bottom: 1px solid var(--border); }
 .hint > button { padding: 12px 0; letter-spacing: 0.1em; }
 .hint > button:hover:not(:disabled) { background: transparent; text-decoration: underline; text-underline-offset: 4px; }
-.hint-body > div { padding: 0 0 var(--s4); font-size: 15px; }
+/* Padding lives on the element inside the clipping .hint-inner, never on the 0fr grid row itself, so a
+   collapsed or locked hint shows nothing at all (a padded row would keep a 16px strip of text visible). */
+.hint-inner > div { padding: 0 0 var(--s4); font-size: 15px; }
+.hint:not(.open) .hint-body { visibility: hidden; transition: grid-template-rows var(--dur-slow) var(--ease), visibility 0s linear var(--dur-slow); }
+.hint.open .hint-body { visibility: visible; transition: grid-template-rows var(--dur-slow) var(--ease), visibility 0s; }
 .editor-wrap { border: 1px solid var(--border-strong); }
 .editor-bar { background: transparent; border-bottom: 1px solid var(--border-strong); letter-spacing: 0.08em; }
 .editor-bar .mono { text-transform: none; letter-spacing: 0; font-family: var(--mono); font-size: 12px; }
@@ -774,3 +778,127 @@ input:focus, textarea:focus { border-color: var(--ink); box-shadow: none; }
 .swatch.s5 { background: var(--chart-5); } .swatch.s6 { background: var(--chart-6); } .swatch.s7 { background: var(--chart-7); } .swatch.s8 { background: var(--chart-8); }
 .bar.s1 { fill: var(--ink); stroke: var(--bg); }
 .chart-svg .marker { stroke: var(--bg); }
+
+/* ============================================================================================
+   17. BEGINNER ON-RAMP — plain-words and going-deeper blocks, module references, the home
+   hero's audience notes and two ways in, the Build screen guide, the reader path on Goal, and
+   the phone fixes (nothing may scroll the page sideways; wide things scroll inside their box).
+   Same identity: rules not boxes, tracked caps for labels, the serif for anything that speaks.
+   ============================================================================================ */
+
+/* In plain words: a ruled box that opens a concept. */
+.callout-plain { border: 1px solid var(--border-strong); border-left-width: 1px; padding: var(--s4) var(--s6) var(--s4); margin: 0 0 var(--s8); }
+.callout-label, .deeper > summary, .way-label, .hero-facts dt, .screen-help-label, .check-count, .reader-offer b, .demo-fail details > summary, .ref-banner > b, .where-next h3, .ref-note {
+  font-family: var(--font); text-transform: uppercase; letter-spacing: 0.12em; font-size: 11px; font-weight: 500;
+}
+.callout-label { color: var(--ink); margin-bottom: var(--s3); }
+.callout-plain p { font-family: var(--font-display); font-size: 21px; line-height: 1.4; color: var(--ink); }
+.callout-plain p + p { margin-top: var(--s3); }
+
+/* Going deeper: a native <details>, collapsed by default, between two rules. */
+details.deeper { border-top: 1px solid var(--border-strong); border-bottom: 1px solid var(--border-strong); margin: var(--s8) 0; }
+details.deeper + details.deeper { margin-top: calc(-1 * var(--s8) - 1px); }
+.deeper > summary { display: flex; align-items: center; justify-content: space-between; gap: var(--s3); min-height: 48px; padding: var(--s3) 0; cursor: pointer; color: var(--ink); list-style: none; }
+.deeper > summary::-webkit-details-marker { display: none; }
+.deeper > summary::after { content: '+'; font-family: var(--font-display); font-size: 24px; line-height: 1; letter-spacing: 0; flex: none; }
+.deeper[open] > summary::after { content: '−'; }
+.deeper > summary:hover span { text-decoration: underline; text-underline-offset: 4px; }
+.deeper-body { padding: 0 0 var(--s6); }
+.deeper-body > :first-child { margin-top: 0; }
+
+/* Module references in prose: the path number, linked, the title in the tooltip. */
+a.modref { color: inherit; text-decoration: underline; text-decoration-thickness: 1px; text-underline-offset: 3px; text-decoration-color: var(--border); }
+a.modref:hover { text-decoration-color: currentColor; }
+span.modref { cursor: help; }
+
+/* Wide tables and code scroll inside their own box; long inline code wraps. */
+.table-wrap { max-width: 100%; overflow-x: auto; -webkit-overflow-scrolling: touch; margin: var(--s2) 0 var(--s4); }
+.table-wrap > table { margin: 0; }
+pre.code { max-width: 100%; }
+:not(pre) > code { overflow-wrap: anywhere; }
+.goal-out .chart, .goal-out .card, .goal-out .console { max-width: min(100%, var(--measure)); min-width: 0; }
+.goal-out .chart-table, .goal-out .md, .chart-body { overflow-x: auto; max-width: 100%; }
+.chart-body > table { min-width: max-content; }
+
+/* Home: what it is, who it is for, what you need; then two ways in. */
+.hero-facts { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 0 var(--s8); margin: 0 0 var(--s8); max-width: 900px; }
+.hero-facts > div { border-top: 1px solid var(--border-strong); padding-top: var(--s3); }
+.hero-facts dt { color: var(--muted); margin-bottom: var(--s2); }
+.hero-facts dd { margin: 0; font-size: 15px; line-height: 1.5; color: var(--ink-2); }
+.ways { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 var(--s8); max-width: 900px; margin-bottom: var(--s6); }
+.way { border-top: 1px solid var(--border-strong); padding: var(--s4) 0 0; display: flex; flex-direction: column; align-items: flex-start; }
+.way-label { font-family: var(--font-display); text-transform: none; letter-spacing: 0; font-size: 30px; font-style: italic; font-weight: 400; color: var(--ink); line-height: 1.1; margin-bottom: var(--s2); }
+.way p { font-size: 15px; line-height: 1.5; color: var(--ink-2); margin-bottom: var(--s4); flex: 1; }
+.way .btn { white-space: normal; text-align: left; }
+.js-note, .time-note { max-width: 720px; font-size: 15px; line-height: 1.5; color: var(--ink-2); margin: 0 0 var(--s3); }
+.js-note a { text-decoration: underline; text-underline-offset: 3px; text-decoration-thickness: 1px; }
+.time-note { color: var(--muted); font-size: 14px; margin-bottom: var(--s6); }
+
+/* Build: the first-visit screen guide, pass count beside the buttons, the stale legend. */
+.screen-help { border: 1px solid var(--border-strong); padding: var(--s4) var(--s6); margin: 0 0 var(--s6); max-width: 900px; }
+.screen-help-head { display: flex; align-items: center; justify-content: space-between; gap: var(--s3); margin-bottom: var(--s3); }
+.screen-help-label { color: var(--ink); }
+.screen-help ol { margin: 0; padding-left: 1.3em; font-size: 15px; line-height: 1.5; color: var(--ink-2); }
+.screen-help li { margin: 0 0 var(--s2); }
+.screen-help li b { color: var(--ink); font-weight: 600; }
+.check-count { color: var(--muted); }
+.check-count.ok { color: var(--ink); }
+.check-count.bad { color: var(--bad-ink); }
+.check-count:empty { display: none; }
+.help-link { color: var(--muted); text-decoration: underline; text-underline-offset: 3px; text-decoration-thickness: 1px; }
+.stale-legend { margin: calc(-1 * var(--s2)) 0 var(--s4); color: var(--warn-ink); }
+.stale-mark { cursor: help; }
+.step-chip.stale { border-color: var(--warn); color: var(--warn-ink); }
+.steps-nav { position: relative; }
+.ref-panel .caption { margin: var(--s2) 0 var(--s3); }
+.ref-panel pre.code { max-height: 70vh; overflow: auto; }
+
+/* Goal: the reader path, a friendly failure, the reference-run banner. */
+.reader-offer { border-top: 1px solid var(--border); margin-top: var(--s4); padding-top: var(--s4); }
+.reader-offer p { color: var(--ink-2); margin-bottom: var(--s3); }
+.reader-offer b { color: var(--ink); display: block; margin-bottom: 4px; }
+.goal-actions .btn { white-space: normal; text-align: left; }
+.ref-note { color: var(--muted); margin: var(--s2) 0; }
+.demo-fail { border-top: 1px solid var(--bad); padding-top: var(--s2); margin: var(--s4) 0; }
+.demo-fail .status-line { margin-top: 0; }
+.demo-fail p { color: var(--ink-2); }
+.demo-fail .row { margin: var(--s3) 0; }
+.demo-fail details { margin-top: var(--s3); }
+.demo-fail details > summary { cursor: pointer; color: var(--muted); min-height: 32px; display: inline-flex; align-items: center; }
+.demo-fail .tech-body { padding-top: var(--s2); }
+.demo-fail .tech-body pre.code { white-space: pre-wrap; overflow-wrap: anywhere; }
+.ref-banner { border-top: 1px solid var(--border-strong); border-bottom: 1px solid var(--border-strong); padding: var(--s6) 0; margin: var(--s4) 0; max-width: var(--measure); }
+.ref-banner > b { display: block; color: var(--ink); margin-bottom: var(--s2); }
+
+/* Reflect: where next after the first modules. */
+.where-next .row { margin: var(--s3) 0; }
+.where-next .btn { white-space: normal; text-align: left; }
+.jump-row { font-size: 15px; color: var(--ink-2); line-height: 1.6; }
+.jump { color: var(--ink); text-decoration: underline; text-underline-offset: 3px; text-decoration-thickness: 1px; }
+.jump .num { color: var(--muted); }
+
+/* Links inside reading text look like links (the atelier's ink links are otherwise plain text). */
+.prose a:not(.btn):not(.modref), .concept a:not(.btn):not(.modref), .instructions a:not(.btn):not(.modref), .quiz-why a:not(.modref), .prereq-note a { text-decoration: underline; text-underline-offset: 3px; text-decoration-thickness: 1px; }
+
+/* The About page: section and FAQ headings in the serif. */
+.about h3 { font-family: var(--font-display); font-size: 32px; font-weight: 500; letter-spacing: 0; margin: var(--s8) 0 var(--s2); }
+.about h4 { font-family: var(--font-display); font-size: 24px; font-weight: 500; letter-spacing: 0; margin: var(--s6) 0 var(--s2); }
+
+@media (max-width: 800px) {
+  :root { --gutter: 16px; }
+  .hero-facts, .ways { grid-template-columns: minmax(0, 1fr); }
+  .hero-facts > div { padding-bottom: var(--s3); }
+  .way { padding-bottom: var(--s6); }
+  .way .btn, .where-next .btn, .goal-actions .btn, .reader-offer .btn { width: 100%; }
+  .callout-plain { padding: var(--s3) var(--s4); }
+  .callout-plain p { font-size: 19px; }
+  /* the step chips scroll inside their own row, never the page */
+  .steps-nav { flex-wrap: nowrap; overflow-x: auto; margin: 0 0 var(--s4); padding: 0 0 var(--s1); max-width: 100%; }
+  .screen-help { padding: var(--s3) var(--s4); }
+  .check-row .kbd { display: none; }
+  .goal-actions #btn-stop:disabled { display: none; }
+  .ref-panel pre.code { white-space: pre-wrap; overflow-wrap: anywhere; }
+  .mod-head::before { right: 0; max-width: 100%; overflow: hidden; }
+  .about h4 { font-size: 22px; }
+  .hero { padding: var(--s4) 0 var(--s8); }
+}

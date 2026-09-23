@@ -1,20 +1,116 @@
 // app/markdown.js — a small, dependency-free Markdown renderer for module content.
 // Supports: headings, paragraphs, bold/italic/code, links, fenced code, lists (nested one level),
-// blockquotes, pipe tables, horizontal rules, and the custom :::predict / :::note containers.
+// blockquotes, pipe tables, horizontal rules, and the custom containers :::predict, :::note, :::warn,
+// :::plain ("In plain words") and :::deeper <title> (a collapsed <details>). Containers may nest.
+//
+// Module cross-references. Module text cites other modules by id ("module 15", "modules 24 and 25",
+// "modules 04–06", "module-06"), because ids are names that survive reordering the path. At display time
+// every such mention in prose (never inside code) becomes the number the learner sees on the path, linked to
+// that module with its title as the tooltip. main.js supplies the path with configureModuleRefs().
 
 export function escapeHtml(s) {
   return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }
 
-const CODE_MARK = '';
+// ---------- module cross-references ----------
 
-export function inline(text) {
-  const codes = [];
+let REFS = { byPrefix: new Map(), href: (id) => `#/m/${id}` };
+
+/**
+ * Tell the renderer which modules are on the path, in path order.
+ * @param {{ modules: {id: string, title: string}[], href?: (id: string) => string }} o
+ */
+export function configureModuleRefs({ modules = [], href } = {}) {
+  const byPrefix = new Map();
+  modules.forEach((m, i) => { byPrefix.set(m.id.slice(0, 2), { id: m.id, title: m.title, pos: i }); });
+  REFS = { byPrefix, href: href || REFS.href };
+}
+
+/** The number a module shows on the path ("00", "01", …), or '' when it is not on the path. */
+export function pathNumberOf(idOrPrefix) {
+  const r = REFS.byPrefix.get(String(idOrPrefix).slice(0, 2));
+  return r ? String(r.pos).padStart(2, '0') : '';
+}
+
+/** Path entry for an id or two-digit id prefix: { id, title, pos, num } or null. */
+export function moduleRef(idOrPrefix) {
+  const r = REFS.byPrefix.get(String(idOrPrefix).slice(0, 2));
+  return r ? { ...r, num: String(r.pos).padStart(2, '0') } : null;
+}
+
+/** HTML for one module reference: its path number (or `label`), linked, with the title as tooltip. */
+export function moduleLink(idOrPrefix, label = null, { links = true } = {}) {
+  const r = moduleRef(idOrPrefix);
+  if (!r) return label == null ? escapeHtml(String(idOrPrefix)) : label;
+  const text = label == null ? r.num : label;
+  const tip = escapeHtml(r.title);
+  return links ? `<a class="modref" href="${escapeHtml(REFS.href(r.id))}" title="${tip}">${text}</a>` : `<span class="modref" title="${tip}">${text}</span>`;
+}
+
+const NN = '(\\d{2})(?![\\d.,:]\\d)';
+const RANGE_RE = new RegExp(`\\b(modules)(\\s+)${NN}(\\s*(?:–|—|-|to)\\s*)${NN}(?!\\w)`, 'gi');
+const LIST_RE = new RegExp(`\\b(modules)(\\s+)((?:\\d{2}(?:,\\s*|,?\\s+(?:and|or)\\s+))*\\d{2})(?![\\d.,:]\\d)(?!\\w)`, 'gi');
+const ONE_RE = new RegExp(`\\b(module)(\\s+|-)${NN}(?![\\w-]*\\d)`, 'gi');
+
+/**
+ * Rewrite module-id mentions in an HTML-escaped prose fragment (no tags inside that could contain the
+ * pattern in an attribute) to path numbers. Unknown ids are left as written.
+ */
+export function linkModuleRefs(html, { links = true } = {}) {
+  if (!REFS.byPrefix.size || !/module/i.test(html)) return html;
+  const known = (nn) => REFS.byPrefix.has(nn);
+  const link = (nn) => moduleLink(nn, null, { links });
+  const held = [];
+  const hold = (s) => { held.push(s); return `\u0002${held.length - 1}\u0002`; };
+  let s = String(html);
+  // "modules 04–06": every existing id in the range, as a range if its path positions are contiguous.
+  s = s.replace(RANGE_RE, (m, word, sp, a, dash, b) => {
+    const lo = Math.min(+a, +b), hi = Math.max(+a, +b);
+    const ids = [];
+    for (let k = lo; k <= hi; k++) { const nn = String(k).padStart(2, '0'); if (known(nn)) ids.push(nn); }
+    if (!ids.length || !known(a) || !known(b)) return m;
+    const pos = ids.map((nn) => REFS.byPrefix.get(nn).pos).sort((x, y) => x - y);
+    const contiguous = pos.every((p, i) => i === 0 || p === pos[i - 1] + 1);
+    if (contiguous) return hold(`${word}${sp}${link(a)}${dash}${link(b)}`);
+    ids.sort((x, y) => REFS.byPrefix.get(x).pos - REFS.byPrefix.get(y).pos);
+    return hold(`${word}${sp}${joinList(ids.map(link))}`);
+  });
+  // "modules 24 and 25", "modules 06, 08 and 15"
+  s = s.replace(LIST_RE, (m, word, sp, list) => {
+    const nums = list.match(/\d{2}/g);
+    if (!nums.every(known)) return m;
+    return hold(`${word}${sp}${list.replace(/\d{2}/g, (nn) => link(nn))}`);
+  });
+  // "module 15", "Module 07", "module-06"
+  s = s.replace(ONE_RE, (m, word, sep, nn) => (known(nn) ? hold(moduleLink(nn, `${word}${sep}${moduleRef(nn).num}`, { links })) : m));
+  return s.replace(/\u0002(\d+)\u0002/g, (_, i) => held[+i]);
+}
+
+function joinList(items) {
+  if (items.length < 2) return items.join('');
+  return `${items.slice(0, -1).join(', ')} and ${items[items.length - 1]}`;
+}
+
+// ---------- inline ----------
+
+const CODE_MARK = '\u0001';
+const LINK_MARK = '\u0003';
+
+/** Inline markdown. `opts.links: false` renders module references as plain spans (for text inside buttons). */
+export function inline(text, opts = {}) {
+  const codes = [], anchors = [];
   let s = String(text).replace(/`([^`]+)`/g, (_, c) => { codes.push(c); return `${CODE_MARK}${codes.length - 1}${CODE_MARK}`; });
   s = escapeHtml(s);   // from here on `s` is escaped exactly once; URLs below must not be escaped again
   s = s.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
   s = s.replace(/(^|[^*\w])\*(?!\s)([^*\n]+?)(?<!\s)\*(?!\w)/g, '$1<em>$2</em>');   // `2 * 3 * 4` in prose is not italic
-  s = s.replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, (m, t, u) => (/^\s*javascript:/i.test(u) ? m : `<a href="${u}" target="_blank" rel="noopener">${t}</a>`));
+  s = s.replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, (m, t, u) => {
+    if (/^\s*javascript:/i.test(u)) return m;
+    const internal = u.startsWith('#');
+    anchors.push(`<a href="${u}"${internal ? '' : ' target="_blank" rel="noopener"'}>${linkModuleRefs(t, { links: false })}</a>`);
+    return `${LINK_MARK}${anchors.length - 1}${LINK_MARK}`;
+  });
+  s = linkModuleRefs(s, { links: opts.links !== false });
+  s = s.replace(new RegExp(`${LINK_MARK}(\\d+)${LINK_MARK}`, 'g'), (_, i) => anchors[+i]);
   s = s.replace(new RegExp(`${CODE_MARK}(\\d+)${CODE_MARK}`, 'g'), (_, i) => `<code>${escapeHtml(codes[+i])}</code>`);
   return s;
 }
@@ -42,13 +138,21 @@ export function render(md, ctx = {}) {
       out.push(`<pre class="code lang-${fence[1] || 'text'}"><code>${escapeHtml(buf.join('\n'))}</code></pre>`);
       continue;
     }
-    // custom containers
-    const cont = line.match(/^:::(predict|note|warn)\s*$/);
+    // custom containers (nestable: a :::deeper block may hold a :::note)
+    const cont = line.match(/^:::(predict|note|warn|plain)\s*$/) || line.match(/^:::(deeper)(?:\s+(.*?))?\s*$/);
     if (cont) {
       flushPara();
       const buf = [];
       i++;
-      while (i < lines.length && !/^:::\s*$/.test(lines[i])) buf.push(lines[i++]);
+      let depth = 1, inFence = false;
+      while (i < lines.length) {
+        const l = lines[i];
+        if (/^```/.test(l)) inFence = !inFence;
+        else if (!inFence && /^:::\s*$/.test(l)) { if (--depth === 0) break; }
+        else if (!inFence && /^:::\w/.test(l)) depth++;
+        buf.push(l);
+        i++;
+      }
       i++;
       if (cont[1] === 'predict') {
         const body = buf.join('\n');
@@ -63,6 +167,11 @@ export function render(md, ctx = {}) {
   <button class="btn btn-small predict-reveal" type="button">Reveal</button>
   <div class="predict-a hidden">${render(a, ctx)}</div>
 </div>`);
+      } else if (cont[1] === 'plain') {
+        out.push(`<div class="callout callout-plain"><div class="callout-label">In plain words</div>${render(buf.join('\n'), ctx)}</div>`);
+      } else if (cont[1] === 'deeper') {
+        const title = (cont[2] || '').trim() || 'Going deeper';
+        out.push(`<details class="deeper"><summary><span>${inline(title)}</span></summary><div class="deeper-body">${render(buf.join('\n'), ctx)}</div></details>`);
       } else {
         out.push(`<div class="callout callout-${cont[1]}">${render(buf.join('\n'), ctx)}</div>`);
       }
@@ -88,7 +197,7 @@ export function render(md, ctx = {}) {
       i += 2;
       const rows = [];
       while (i < lines.length && /^\s*\|.*\|\s*$/.test(lines[i])) rows.push(splitRow(lines[i++]));
-      out.push(`<table><thead><tr>${header.map((c) => `<th>${inline(c)}</th>`).join('')}</tr></thead><tbody>${rows.map((r) => `<tr>${r.map((c) => `<td>${inline(c)}</td>`).join('')}</tr>`).join('')}</tbody></table>`);
+      out.push(`<div class="table-wrap"><table><thead><tr>${header.map((c) => `<th>${inline(c)}</th>`).join('')}</tr></thead><tbody>${rows.map((r) => `<tr>${r.map((c) => `<td>${inline(c)}</td>`).join('')}</tr>`).join('')}</tbody></table></div>`);
       continue;
     }
     // lists

@@ -62,6 +62,9 @@ Helvetica, Arial, sans-serif`. Mono: `"SF Mono", ui-monospace, Menlo, Consolas`.
 8-point grid: `--s1` 4 · `--s2` 8 · `--s3` 12 · `--s4` 16 · `--s6` 24 · `--s8` 32 · `--s12` 48 · `--s16` 64.
 Page gutter `--gutter` is 48px (16px on phones); sidebar 280px; reading measure 720px.
 
+The atelier section re-tokens every radius below to 0 and removes the shadows; the table records the
+structural base only.
+
 | Shape | Radius | Border | Shadow |
 |---|---|---|---|
 | Card (`.card`, goal banner, chart, editor) | 16px (14px on phones) | hairline | none at rest |
@@ -109,7 +112,51 @@ disables every transition and animation.
 - Do use one accent per screen for the primary action; don't colour secondary buttons.
 - Do keep prose inside `.measure`; don't stretch reading text across the full main column.
 - Do keep the ids and classes `main.js` and `tools/e2e.mjs` rely on (`#btn-check`, `#btn-check-all`,
-  `#btn-solution`, `#sol-copy`, `#btn-run`, `#btn-complete`, `.step-chip`, `.results .status-line`,
-  `.goal-out .done-banner`, `.chart`, `.quiz-opt`, `.predict`, `.reflect textarea`, `.sidebar-toggle`);
-  add new classes rather than renaming these.
+  `#btn-solution`, `#sol-copy`, `#btn-run`, `#btn-run-ref`, `#btn-complete`, `.step-chip`, `.results .status-line`,
+  `.goal-out .done-banner`, `.goal-out .status-line.bad`, `.test.fail`, `.chart`, `.quiz-opt`, `.predict`,
+  `.reflect textarea`, `.sidebar-toggle`); add new classes rather than renaming these. The first
+  `.status-line` inside `.results` must stay the "N/M tests passed" summary; the pass count beside the buttons
+  is `#check-count`, outside `.results`. A demo failure on the learner's code must keep a `.status-line.bad`
+  inside `.goal-out` (inside `.demo-fail`) so e2e sees it.
+- Don't show module ids. The learner sees one number, the position on the path (`READY` order, from 00);
+  the id appears only in tooltips. Never hard-code module counts: the home lede, "Module N of 00–NN" and the
+  About page derive them from the registry.
+- Don't let anything scroll the page sideways at 390px: wide tables (`.table-wrap`, `.chart-body`), code
+  blocks and horizontal rows (`.steps-nav`, `.phases`) scroll inside their own box; inline code wraps. Scroll a
+  row to its active item with `scrollIntoRow()` in `main.js`, never `scrollIntoView()` (which moves the page).
+
+## Beginner on-ramp
+
+Section 17 of `app/styles.css`. Same identity: rules, not boxes; tracked 11px caps for labels; the serif
+for anything that speaks.
+
+- **`:::plain`** (markdown) renders `.callout.callout-plain`: a hairline-ruled box with the tracked label "In
+  plain words" and the text in the display serif at 21px. It opens a concept.
+- **`:::deeper <title>`** renders `details.deeper`, collapsed by default, between two strong rules; the
+  summary is a tracked-caps label with a serif +/− at the right. Containers nest (a deeper block may hold a
+  note), and a `:::` inside a fenced code block does not close anything.
+- **Module references** (`a.modref`): markdown.js rewrites "module NN", "modules NN and MM", "modules NN–MM"
+  and "module-NN" in prose (never in code) to the path number, linked, with the title as tooltip; unknown ids
+  are left alone. Inside buttons (quiz options) they are `span.modref`. `configureModuleRefs`, `moduleLink`
+  and `linkModuleRefs` are exported for `main.js` (goal, threshold, prereqs, chat intro).
+- **Home hero**: `.hero-facts` (what it is / who it is for / what you need, three ruled columns, one on
+  phones), `.ways` with two `.way` columns ("Build it" primary, "Just read" secondary, serif italic
+  headings), `.js-note` (guarded: only when `35-javascript` is registered) and `.time-note`.
+- **Build screen guide** (`.screen-help`): a ruled note with a numbered list and a "Got it" button, shown on
+  the first Build visit and remembered in `localStorage` (`btu:buildHelpDismissed`); `#show-help` brings it
+  back. After a check the check row scrolls into view and `#check-count` says "N/M passed". A stale step
+  (`.step-chip.stale`, `.stale-mark` ↻) carries a tooltip explaining it, and `.stale-legend` appears under
+  the chips when any step is stale.
+- **Reference solution** (`.ref-panel`): always behind a plain, non-scolding confirm; it opens scrolled into
+  view and wraps long lines on phones.
+- **Hints**: the padding sits on `.hint-inner > div` (inside the clipping element) and a closed hint body is
+  `visibility: hidden`, so a locked or folded hint shows nothing.
+- **Reader path on Goal**: `.reader-offer` with `#btn-run-ref` runs the demo on `solution.js` without
+  recording the goal; its result ends in `.ref-banner`, not `.done-banner`. A failure on the learner's code
+  shows `.demo-fail` (a plain sentence, the reference offer, and the stack folded in `details.tech`). Choosing
+  "Just read" on the home page stores `btu:path = reader`, which makes the reference button primary and opens
+  unstarted modules on Concept.
+- **Where next** (`.where-next`, Reflect of the first two modules): "Next module" plus jumps to tokens, the
+  KV cache and serving cost, each labelled with its path number.
+
 - Do design for the textarea fallback editor as well as CodeMirror; both inherit the editor tokens.
