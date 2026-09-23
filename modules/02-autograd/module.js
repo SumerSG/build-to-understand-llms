@@ -132,7 +132,7 @@ Fill in the three closures. Each receives \`g\`, a raw tensor \`{ shape, data }\
 1. leading dimensions the input never had (\`gradShape\` is longer than \`targetShape\`): sum over axis 0 until the ranks match;
 2. dimensions the input had as size 1 that were stretched: sum over that axis with \`keepDims = true\` so the size-1 dimension stays.
 
-\`ops.sum(t, axis, keepDims)\` from lib/ops.js (the axis-aware version of module 01's \`sum\`) does the summing; wrap \`grad\` as \`{ shape: gradShape, data: grad }\` first. \`add\` and \`sub\` already call \`unbroadcast\`, which is why their tests only start passing now.
+\`ops.sum(t, axis, keepDims)\` from lib/ops.js (the axis-aware version of module 01's \`sum\`) does the summing; wrap \`grad\` as \`{ shape: gradShape, data: grad }\` first. \`add\` and \`sub\` already call \`unbroadcast\`. Same-shape adds have worked since step 1, because the placeholder returns the gradient unchanged when no axis was broadcast; their broadcasting tests (a bias added to a matrix) only start passing now.
 
 Then finish \`mul\`: the gradient for the second operand is \`g · this\` (because \`d(a·b)/db = a\`), unbroadcast to \`o.shape\`, and only when \`o\` is a Tensor. Now \`x.mul(x)\` sends two contributions into the same \`x.grad\`.
 `,
@@ -149,7 +149,7 @@ Then finish \`mul\`: the gradient for the second operand is \`g · this\` (becau
       instructions: `
 Four closures, all elementwise: \`dx[i] = g.data[i] × (local derivative at element i)\`, then \`accumulate(this, dx)\`.
 
-- \`exp\`: the derivative of \`eˣ\` is \`eˣ\`, which is the forward output \`y\` already in scope. Use it rather than recomputing.
+- \`exp\`: the derivative of \`eˣ\` is \`eˣ\`, which is the forward output already in scope as the raw tensor \`y\` (a \`{ shape, data }\` object, so read \`y.data[i]\`). Use it rather than recomputing.
 - \`log\`: the derivative of \`ln x\` is \`1 / x\`; \`x\` is \`this.data[i]\`.
 - \`relu\`: the derivative is 1 where \`x > 0\` and 0 elsewhere, including at exactly 0.
 - \`crossEntropy\`: the forward pass (fused log-softmax, then pick the target's log-probability, then mean over the \`N\` rows) is written. \`logProbs\` is in scope, and \`softmax\` of row \`i\` is \`exp(logProbs[i·V + j])\`. The gradient with respect to logit \`j\` of row \`i\` is \`(softmax_ij − [j === target_i]) / N\`, times the incoming scalar gradient \`g.data[0]\` (the loss is not always the root: someone may scale it).
@@ -174,7 +174,7 @@ numeric = (fn(x + eps) − fn(x − eps)) / (2·eps)                 // one elem
 relErr  = |analytic − numeric| / max(1, |analytic|, |numeric|)
 \`\`\`
 
-Return \`{ ok: maxRelErr <= tol, maxRelErr, details }\` where \`details\` has one \`{ input, index, analytic, numeric, relErr }\` per element of every input. Throw if an input lacks \`requiresGrad\` or \`fn\` returns a non-scalar.
+Return \`{ ok: maxRelErr <= tol, maxRelErr, details }\` where \`details\` has one \`{ input, index, analytic, numeric, relErr }\` per element of every input, where \`input\` is the 0-based position of that tensor in \`inputs\` and \`index\` is the flat element index within its \`data\`. Throw if an input lacks \`requiresGrad\` or \`fn\` returns a non-scalar.
 
 Clear every input's gradient (\`zeroGrad\`) before your one backward pass, or a gradient left over from an earlier step leaks into the analytic side. If any \`relErr\` is NaN (a closure that divides by zero, say), \`maxRelErr\` must end up NaN and \`ok\` false: \`NaN > x\` is false for every \`x\`, so a plain running maximum skips it silently.
 

@@ -278,6 +278,7 @@ export function crossEntropy(logits, targets) {
  *   numeric = (fn(x + eps) − fn(x − eps)) / (2·eps)      for each element x of each input
  *   relErr  = |analytic − numeric| / max(1, |analytic|, |numeric|)
  * Returns { ok: maxRelErr <= tol, maxRelErr, details: [{ input, index, analytic, numeric, relErr }] }.
+ * input is the 0-based position of the tensor in `inputs`; index is the flat element index in its data.
  * Throw if an input lacks requiresGrad or fn does not return a size-1 Tensor. Restore every value you perturb.
  * Clear each input's old gradient first, and make a NaN relErr fail the check (NaN > x is always false).
  */
