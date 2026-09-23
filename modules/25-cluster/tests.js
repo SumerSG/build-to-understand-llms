@@ -147,6 +147,12 @@ export const tests = [
     run(m, T) {
       T.close(m.allReduceTime(8e6, range(8), TOY), 608, 1e-9, 'the hierarchical schedule (608 s) must be chosen over the flat ring (1400 s)');
       T.close(m.allReduceTime(1e9, [5], TOY), 0, 1e-12, 'one GPU communicates with nobody');
+      let uneven;
+      try { uneven = m.allReduceTime(8e6, [0, 1, 2], TOY); } catch (e) {
+        T.fail(`allReduceTime over the uneven group [0, 1, 2] threw (${e.message}); with no symmetric hierarchical schedule it must fall back to the flat ring`);
+      }
+      T.close(uneven, m.flatAllReduceTime(8e6, [0, 1, 2], TOY), 1e-9,
+        'an uneven group (2 GPUs on node 0, 1 on node 1) has no hierarchical schedule, so allReduceTime must return the flat ring time');
       const next = T.rng(25);
       for (let i = 0; i < 20; i++) {
         const bytes = Math.floor(next() * 4e9) + 1e6;
@@ -392,6 +398,8 @@ export const tests = [
       const oneNode = m.moeAllToAll({ ...base, gpus: range(8) });
       T.eq(oneNode.nodes, 1);
       T.close(oneNode.interNodeTime, 0, 1e-12, 'if every expert is in the node, nothing crosses the network');
+      T.ok(oneNode.intraNodeTime > 0, 'a single-node group still pays the NVLink fan-out: intraNodeTime must be positive');
+      T.close(oneNode.time, oneNode.intraNodeTime, 1e-12, 'on one node time = interNodeTime + intraNodeTime = 0 + intraNodeTime');
       T.ok(oneNode.time < free.time / 3, 'expert parallelism inside one node is several times cheaper than across eight');
       T.throws(() => m.moeAllToAll({ ...base, gpus: [] }), 'an empty expert-parallel group must throw');
     },

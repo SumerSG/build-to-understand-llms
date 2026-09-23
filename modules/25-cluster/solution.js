@@ -221,11 +221,20 @@ export function hierarchicalAllReduce(bytes, gpus, topo) {
 
 /**
  * What an all-reduce of `bytes` over `gpus` actually costs: the better of the flat ring and the
- * hierarchical schedule. One GPU costs nothing.
+ * hierarchical schedule. One GPU costs nothing. A group with an uneven number of GPUs per node has no
+ * hierarchical schedule, so it falls back to the flat ring instead of throwing.
  */
 export function allReduceTime(bytes, gpus, topo) {
   if (gpus.length <= 1) return 0;
-  return Math.min(flatAllReduceTime(bytes, gpus, topo), hierarchicalAllReduce(bytes, gpus, topo).time);
+  const flat = flatAllReduceTime(bytes, gpus, topo);
+  const perNode = new Map();
+  for (const g of gpus) {
+    const n = location(g, topo).node;
+    perNode.set(n, (perNode.get(n) || 0) + 1);
+  }
+  const even = new Set(perNode.values()).size === 1;
+  if (!even) return flat; // no symmetric two-level schedule exists, so the flat ring is the only option
+  return Math.min(flat, hierarchicalAllReduce(bytes, gpus, topo).time);
 }
 
 // ---------- step 3: placing ranks on the hierarchy ----------

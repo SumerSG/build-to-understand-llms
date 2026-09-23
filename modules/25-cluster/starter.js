@@ -190,7 +190,11 @@ export function hierarchicalAllReduce(bytes, gpus, topo) {
   return { nodes: 1, gpusPerNode: 1, crossLink: topo.links.self, phases: [], time: 0 };
 }
 
-/** What an all-reduce really costs: the better of the two schedules above. One GPU costs nothing. */
+/**
+ * What an all-reduce really costs: the better of the two schedules above. One GPU costs nothing.
+ * If the group holds a different number of GPUs on different nodes, the hierarchical schedule does
+ * not exist (it throws), so return the flat ring's time instead of letting the error escape.
+ */
 export function allReduceTime(bytes, gpus, topo) {
   // TODO: step 2
   return 0;
@@ -234,8 +238,10 @@ export function groupLink(kind, layout, topo) {
  *                micro-batch: `m * 2 * (pp - 1) * commTime(actBytes, ppLink)`. Zero if pp = 1.
  *   dpComm     — an all-reduce of BYTES.grads per owned parameter over the data-parallel group.
  *   dpExposed  — `max(0, dpComm - topo.overlap * compute)`.
- * with `m = model.batchSeqs / (dp * microBatchSeqs)` micro-batches, `microTokens = microBatchSeqs *
+ * with `tokens = model.batchSeqs * model.seqLen` (the global batch in tokens),
+ * `m = model.batchSeqs / (dp * microBatchSeqs)` micro-batches, `microTokens = microBatchSeqs *
  * model.seqLen`, `layersPerStage = model.layers / pp` and `shardParams = model.params / (tp * pp)`.
+ * tokensPerSec is `tokens / stepTime`.
  * stepTime is compute + tpComm + bubble + ppComm + dpExposed.
  * Throw unless tp*pp*dp === gpus, pp divides model.layers, tp divides model.dModel and model.dFF,
  * and dp*microBatchSeqs divides model.batchSeqs.
@@ -280,7 +286,8 @@ export function expectedNodesPerToken(topK, nodes, maxNodes = Infinity) {
  * token reaches, a fraction (nodes−1)/nodes is remote.
  * A switch delivers all pairs at once, so charge each phase one `commTime` of this GPU's own egress:
  * the inter-node phase on the slowest link between the nodes' representatives (zero if there is only
- * one node), the intra-node phase on `topo.links.node`. Throw on an empty group.
+ * one node), the intra-node phase on `topo.links.node` (always paid, even on one node). The phases
+ * run one after the other: `time = interNodeTime + intraNodeTime`. Throw on an empty group.
  * Return { nodes, nodesPerToken, interNodeBytes, intraNodeBytes, interNodeTime, intraNodeTime, time }.
  */
 export function moeAllToAll({ tokensPerGpu, topK, dModel, gpus, topo = CLUSTER, bytesPerElement = 2, capacityFactor = 1, maxNodes = Infinity }) {

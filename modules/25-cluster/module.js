@@ -35,7 +35,7 @@ export default {
       q: 'In module 24, what did ZeRO stage 1 shard across the data-parallel ranks?',
       options: ['The parameters', 'The gradients', 'The optimizer state (the 12 bytes per parameter)'],
       answer: 2,
-      why: 'The planner here uses exactly that memory model — bf16 weights and gradients replicated over the tensor and pipeline shards, fp32 AdamW state divided by dp — to decide which layouts fit in 80 GB.',
+      why: 'The planner here uses exactly that memory model — bf16 weights and gradients split over the tp·pp tensor and pipeline shards and replicated across the data-parallel ranks, fp32 AdamW state split the same way and then divided by dp as well — to decide which layouts fit in 80 GB.',
     },
   ],
   review: [
@@ -134,7 +134,7 @@ A GPU is an integer id. The topology turns that id into a place in the machine, 
 
 \`location(gpu, topo)\` — return \`{ gpu, node, pod, slot }\`. The starter has the validation and \`node\` already; finish \`pod\` and \`slot\`. A node is a contiguous block of \`topo.gpusPerNode\` ids, a pod a contiguous block of \`topo.gpusPerNode * topo.nodesPerPod\`, and \`slot\` is the position inside the node. Throw on a negative or non-integer id.
 
-\`linkBetween(a, b, topo)\` — return one of \`topo.links\`: \`self\` when the ids are equal, \`node\` when they share a node, \`pod\` when they share a pod, \`cluster\` otherwise.
+\`linkBetween(a, b, topo)\` — return one of \`topo.links\` (the object itself, not its name): \`self\` when the ids are equal, \`node\` when they share a node, \`pod\` when they share a pod, \`cluster\` otherwise. Build it on \`location\`, which already rejects bad ids; it needs no validation of its own.
 
 \`slowestLink(gpus, topo)\` — given an array of ids, the slowest link any pair among them must use. A group of one uses \`topo.links.self\`; an empty group throws. Use \`TIERS\` to compare two links: \`TIERS.indexOf(link.tier)\` is how far apart the pair is.
 
@@ -166,7 +166,7 @@ You built \`ringAllReduceTime(bytes, n, link)\` in module 24; it is given above.
 
 Skip a phase with nothing to do (\`g = 1\`, or a single node). Throw if the group does not hold the same number of GPUs on every node it touches, because then there is no symmetric schedule. Return \`{ nodes, gpusPerNode, crossLink, phases: [{ name, bytes, link, time }], time }\`.
 
-\`allReduceTime(bytes, gpus, topo)\` — the better of the two. A group of one costs nothing.
+\`allReduceTime(bytes, gpus, topo)\` — the better of the two. A group of one costs nothing. If the group is uneven (for example \`[0, 1, 2, 8]\`: three GPUs on one node, one on the next), the hierarchical schedule does not exist, so return the flat ring's time rather than letting \`hierarchicalAllReduce\`'s error escape.
 
 Check as you go: inside a single node the hierarchical schedule must come out **exactly equal** to the plain ring. Phases 1 and 3 are the ring's two halves.
 `,
@@ -206,7 +206,7 @@ This is the step where the threshold concept becomes code: \`groupLink('tp', { t
       id: 'planner',
       title: 'Pricing and choosing a layout',
       instructions: `
-\`layoutStepTime({ model, gpus, layout, topo, microBatchSeqs, memoryCap })\` — one training step, with every collective priced on the link its group actually lands on. With \`m = model.batchSeqs / (dp * microBatchSeqs)\` micro-batches, \`microTokens = microBatchSeqs * model.seqLen\`, \`layersPerStage = model.layers / pp\`, \`shardParams = model.params / (tp * pp)\` and \`actBytes = BYTES.params * microTokens * model.dModel\`:
+\`layoutStepTime({ model, gpus, layout, topo, microBatchSeqs, memoryCap })\` — one training step, with every collective priced on the link its group actually lands on. With \`tokens = model.batchSeqs * model.seqLen\` (the global batch, counted in tokens, not sequences), \`m = model.batchSeqs / (dp * microBatchSeqs)\` micro-batches, \`microTokens = microBatchSeqs * model.seqLen\`, \`layersPerStage = model.layers / pp\`, \`shardParams = model.params / (tp * pp)\` and \`actBytes = BYTES.params * microTokens * model.dModel\`:
 
 | term | formula |
 |------|---------|
@@ -217,7 +217,7 @@ This is the step where the threshold concept becomes code: \`groupLink('tp', { t
 | \`dpComm\` | \`allReduceTime(BYTES.grads * shardParams, groupFor('dp', 0, layout), topo)\`, zero if \`dp = 1\` |
 | \`dpExposed\` | \`max(0, dpComm - topo.overlap * compute)\` |
 
-\`stepTime\` is the sum of \`compute\`, \`tpComm\`, \`bubble\`, \`ppComm\` and \`dpExposed\`. Also return \`m\`, \`tokensPerSec\` (the global batch over the step time), \`links\` (the \`groupLink\` of each axis), \`memory\` (call the given \`memoryPerGpu\`) and \`fits\`.
+\`stepTime\` is the sum of \`compute\`, \`tpComm\`, \`bubble\`, \`ppComm\` and \`dpExposed\`. Also return \`m\`, \`tokensPerSec = tokens / stepTime\`, \`links\` (the \`groupLink\` of each axis), \`memory\` (call the given \`memoryPerGpu\`) and \`fits\`.
 
 Throw unless \`tp*pp*dp === gpus\`, \`pp\` divides \`model.layers\`, \`tp\` divides both \`model.dModel\` and \`model.dFF\`, and \`dp * microBatchSeqs\` divides \`model.batchSeqs\`. A planner that silently returns a number for an illegal layout will recommend one.
 
@@ -248,7 +248,7 @@ A mixture of experts routes each token to \`topK\` of \`E\` experts. When the ex
 - \`intraNodeBytes = tokensPerGpu * perToken * topK\` — every copy is delivered over NVLink;
 - \`interNodeBytes = tokensPerGpu * perToken * nodesPerToken * (nodes - 1) / nodes\` — **one copy per destination node**, which then fans out inside it, and of the nodes a token reaches a fraction \`(nodes−1)/nodes\` is remote.
 
-A switch delivers all pairs at once, so charge each phase one \`commTime\` of this GPU's own outgoing bytes: the inter-node phase on the slowest link between the nodes' representatives (zero when there is only one node), the intra-node phase on \`topo.links.node\`. Return \`{ nodes, nodesPerToken, interNodeBytes, intraNodeBytes, interNodeTime, intraNodeTime, time }\`.
+A switch delivers all pairs at once, so charge each phase one \`commTime\` of this GPU's own outgoing bytes: the inter-node phase on the slowest link between the nodes' representatives (zero when there is only one node), the intra-node phase on \`topo.links.node\`, which is paid even when the group is a single node. The two phases run one after the other, so \`time = interNodeTime + intraNodeTime\`. Return \`{ nodes, nodesPerToken, interNodeBytes, intraNodeBytes, interNodeTime, intraNodeTime, time }\`.
 `,
       hints: [
         'Count the distinct nodes in `gpus` with a Set of `location(g, topo).node` before anything else. Everything downstream is that count.',
