@@ -55,7 +55,7 @@ Five small functions:
 - \`zipfPredicted(topCount, n)\`: what a perfect Zipf distribution would predict for ranks 1…n.
 - \`zipfLogError(actual, predicted)\`: one number for how far the real counts are from that prediction.
 
-Then the demo runs your functions on the first ~640 words of *Alice's Adventures in Wonderland*, plots the real counts and the ideal Zipf line on log–log axes, and fits a straight line to the real points so you can read off their actual slope.
+Then the demo runs your functions on a fixed 641-word excerpt from the opening of *Alice's Adventures in Wonderland*, stored in the demo itself, plots the real counts and the ideal Zipf line on log–log axes, and fits a straight line to the real points so you can read off their actual slope. (\`lib/data.js\` also carries an abridged copy of the same chapter inside \`PROSE\`, but its wording differs, so counting 641 words of it gives different numbers from the ones quoted here: 272 distinct words and "the" 29 times.)
 
 :::predict
 The demo's ideal line is anchored at the real count of the rank-1 word ("the", 28 times). Will the real counts for ranks 2–40 fall *above* the line, *below* it, or *on* it? And will the fitted slope be steeper or flatter than −1?
@@ -67,7 +67,7 @@ Rank 1 sits exactly on the line by construction, since \`zipfPredicted(28, n)[0]
 
 Everything here is deliberately small. Real tokenizers do not split on a regular expression over the letters a–z: GPT-2 and Llama 3 run byte-level BPE, so accented letters, emoji, code and digits all become tokens, and their pre-tokenizer splits contractions (\`"Alice's"\` becomes \`"Alice"\` + \`"'s"\`) instead of keeping them whole. Careful Zipf analyses use millions of words and fit the exponent by maximum likelihood rather than anchoring a line at the single top count, which lets one noisy word (here, "the") set the whole prediction. What carries over unchanged is the shape: a short head of very frequent items and a long tail that never ends.
 
-A note on conventions used throughout the lab: functions are pure (they return new values rather than mutating inputs), randomness always comes from a seeded generator so tests are reproducible, and each step adds exactly one idea.
+A note on conventions used throughout the lab: functions are pure (they return new values rather than mutating inputs), randomness always comes from a seeded generator so tests are reproducible, and each build step adds one idea.
 `,
   steps: [
     {
@@ -76,7 +76,7 @@ A note on conventions used throughout the lab: functions are pure (they return n
       instructions: `
 Implement \`tokenizeWords(text)\`: return an array of the words in \`text\`, lowercased.
 
-A "word" is a maximal run of the letters \`a\`–\`z\` (after lowercasing) and apostrophes, so \`"Alice's"\` is one word and \`"well-lit"\` is two. Punctuation, digits and everything else are dropped. If the text has no letters at all, return an empty array \`[]\` (not \`null\`).
+A "word" is a maximal run of the letters \`a\`–\`z\` (after lowercasing) and apostrophes, so \`"Alice's"\` is one word and \`"well-lit"\` is two. Apostrophes at the edge of a run stay too (\`"'tis"\` stays \`"'tis"\`); that toy rule is harmless here because the demo passage quotes with double quotes. Punctuation, digits and everything else are dropped. If the text has no letters at all, return an empty array \`[]\` (not \`null\`).
 
 The starter file already contains a finished helper, \`normalize(text)\`, which lowercases and collapses whitespace. Read it: it shows the style used throughout the lab (a short doc comment, a pure function, no globals). Your function may use it.
 
@@ -105,7 +105,7 @@ Why a \`Map\` and not a plain object? Word keys like \`"constructor"\` or \`"__p
 `,
       predict: { question: 'If `words` has 1,000 entries and 300 distinct words, how many keys does the returned Map have?', answer: '300: one key per distinct word. The counts sum to 1,000.' },
       hints: [
-        'Loop over the words once. For each word, read the current count (missing keys give `undefined`) and write back count + 1.',
+        'Think of a tally sheet: one pass over the array, and for each word you bump that word\'s running total. Which structure holds "word → running total"?',
         'Start from an empty `Map`. A missing key reads as `undefined`, so turn that into 0 before adding 1, and write the new count back with `set`.',
         'Loop shape: `for (const w of words) counts.set(w, /* current count of w, or 0 if absent */ + 1);` Then return the map.',
       ],
@@ -132,18 +132,37 @@ Compare counts as *numbers*: \`10\` must rank above \`9\`, which a string compar
       id: 'zipf',
       title: 'The Zipf prediction',
       instructions: `
-Implement \`zipfPredicted(topCount, n)\`: return an array of length \`n\` where element \`i\` (0-based) is the count Zipf's law predicts for rank \`i + 1\`, namely \`topCount / (i + 1)\`.
+Implement \`zipfPredicted(topCount, n)\`: return an array of length \`n\` where element \`i\` (0-based) is the count Zipf's law predicts for rank \`i + 1\`, namely \`topCount / (i + 1)\`. For \`n = 0\` return an empty array \`[]\`.
 
 \`\`\`js
 zipfPredicted(100, 4)   // → [100, 50, 33.333…, 25]
 \`\`\`
 
-Also implement \`zipfLogError(actual, predicted)\` (two arrays of positive numbers, same length): the mean absolute difference between the natural logs \`Math.log(actual[i])\` and \`Math.log(predicted[i])\` over all \`i\`. An error of 0.69 (= \`log 2\`) means the real counts are off by a factor of 2 on average, above or below. This single number tells you how far a passage is from ideal Zipf behaviour; it is the kind of summary statistic you will compute in every later demo.
+Do not round: the values are plain JavaScript numbers, fractions included. The demo draws this array as the ideal straight line on its log–log plot.
 `,
       hints: [
-        'The rank of index i is i + 1. Build the array with a loop or with `Array.from({ length: n }, (_, i) => …)`.',
-        'For the error: take `Math.log` of each pair, subtract, take `Math.abs`, then average over the number of pairs.',
-        '`zipfPredicted`: `Array.from({ length: n }, (_, i) => /* count at rank i + 1 */)`. `zipfLogError`: accumulate `Math.abs(/* difference of the two natural logs */)` in a loop, then divide by the number of pairs. The absolute value matters: a point above the line and one below must not cancel.',
+        'Element 0 is rank 1, element 1 is rank 2. What is the rank of element i, and what does Zipf\'s law predict for it?',
+        'Make an array of length n and fill element i with topCount divided by its rank, i + 1. A plain `for` loop with `push` works, and so does `Array.from` with a length.',
+        'Shape: `return Array.from({ length: n }, (_, i) => /* topCount over the rank of element i */);` For n = 0 this already gives `[]`.',
+      ],
+    },
+    {
+      id: 'logerr',
+      title: 'Measure the distance from Zipf',
+      instructions: `
+Implement \`zipfLogError(actual, predicted)\`. Both arguments are arrays of positive numbers with the same length. Return one number: the mean over all \`i\` of the absolute difference between the natural logs, \`|Math.log(actual[i]) − Math.log(predicted[i])|\`.
+
+\`\`\`js
+zipfLogError([10], [5])                // → Math.log(2) ≈ 0.693
+zipfLogError([64, 32], [64, 32])       // → 0
+\`\`\`
+
+Use the natural log (\`Math.log\`, not \`Math.log10\`). Why logs? A count twice the prediction and a count half the prediction are equally wrong by a factor of 2, and in log space both are \`log 2\` away. The absolute value keeps a point above the line and a point below it from cancelling. An error of 0.69 (= \`log 2\`) means the real counts are off by a factor of 2 on average. This single number tells you how far a passage is from ideal Zipf behaviour; it is the kind of summary statistic you will compute in every later demo.
+`,
+      hints: [
+        'For each pair, how far apart are the two numbers as a *ratio*? Logs turn ratios into differences.',
+        'Walk both arrays together. For each index take the difference of the two natural logs, make it non-negative, and add it to a running sum. Divide the sum by the number of pairs.',
+        'Loop shape: `let s = 0; for (let i = 0; i < actual.length; i++) s += /* non-negative difference of the two natural logs */; return s / actual.length;`',
       ],
     },
   ],

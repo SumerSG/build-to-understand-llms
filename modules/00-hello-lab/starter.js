@@ -1,4 +1,4 @@
-// Module 00 — Zipf's law. Your job: fill in the four functions marked TODO.
+// Module 00 — Zipf's law. Your job: fill in the five functions marked TODO, one per build step.
 // Press "Check this step" (Ctrl+Enter) to run the tests for the current step.
 
 /**
@@ -35,6 +35,6 @@ export function zipfPredicted(topCount, n) {
 
 /** Mean absolute difference between log(actual[i]) and log(predicted[i]). */
 export function zipfLogError(actual, predicted) {
-  // TODO: step 4
+  // TODO: step 5
   return NaN;
 }
