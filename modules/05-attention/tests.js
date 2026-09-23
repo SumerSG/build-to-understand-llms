@@ -221,7 +221,7 @@ export const tests = [
     layer.proj.bias.data.set(ref.proj.bias.data);
     const x = gauss(T, [2, 6, C], 25);
     const y = layer.forward(x), yRef = ref.forward(x);
-    T.close(y, yRef, 1e-5, 'with identical qkv and proj weights your layer must reproduce the reference output: check the q/k/v slice order (q first, then k, then v) and that heads are merged back in the same order they were split');
+    T.close(y, yRef, 1e-5, 'with identical qkv and proj weights your layer must reproduce the reference output: check the q/k/v slice order (q first, then k, then v) and that heads are merged back in the same order they were split, and that splitHeads passes its own test (reshape to [B, T, H, dh], then permute to [B, H, T, dh]); a bare reshape to [B, H, T, dh] mixes tokens across heads');
     T.close(layer.lastWeights, ref.lastWeights, 1e-5, 'the per-head weights must match too');
     y.pow(2).sum().backward();
     yRef.pow(2).sum().backward();
