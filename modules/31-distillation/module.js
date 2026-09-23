@@ -5,16 +5,16 @@ export default {
   minutes: 90,
   threshold: 'A teacher\'s full next-token distribution carries far more information per token than the single correct label, so a smaller student that matches it learns faster and ends closer to the teacher than one trained on the data alone.',
   goal: 'A distillation trainer (temperature-softened targets, a T²-scaled KL loss, a mixed objective, sequence-level and on-policy data paths) that trains a 1-layer student to track the frozen checkpoint teacher faster than training from scratch, with held-out loss curves, top-1 agreement and sample generations for the three students.',
-  prereqs: ['07-pretraining', '10-sft', '14-decoding', '18-speculative'],
+  prereqs: ['07-pretraining', '10-sft', '30-lora'],
   recall: [
-    { q: 'In module 14, `applyTemperature(logits, t)` divides the logits by `t` before the softmax. What does `t = 4` do to the distribution?', options: ['Sharpens it towards the argmax', 'Flattens it towards uniform while keeping the ranking', 'Changes which token is most likely'], answer: 1,
+    { q: 'In module 07, `sample` passed a `temperature` to `model.generate`, which divides the logits by it before the softmax. What does temperature 4 do to the distribution?', options: ['Sharpens it towards the argmax', 'Flattens it towards uniform while keeping the ranking', 'Changes which token is most likely'], answer: 1,
       why: 'Dividing every logit by the same positive number keeps their order but shrinks the gaps, so exp() spreads the mass out. Distillation uses exactly this knob on the teacher, for a different purpose: to make the small probabilities large enough to learn from.' },
     { q: 'A freshly initialised model over a 256-token vocabulary (module 04 and module 07) has a cross-entropy of roughly…', options: ['0 nats', 'ln 256 ≈ 5.55 nats', '256 nats'], answer: 1,
       why: 'Near-uniform predictions give −ln(1/256) = ln 256 ≈ 5.55 nats per token. Every student in the demo starts at 5.55; the teacher checkpoint sits near 2.7 on held-out text.' },
     { q: 'In module 10, the SFT loss divides the summed per-token loss by…', options: ['B · T, all positions', 'The number of masked-in positions', 'The batch size'], answer: 1,
       why: 'A mean over the positions that count keeps the loss in nats per counted token. Your `reverseKL` in step 5 uses the same rule with a mask over the generated tokens.' },
-    { q: 'In module 18, the probability that speculative decoding accepts a drafted token x is `min(1, p(x) / q(x))`, with p the target and q the draft. What raises the acceptance rate?', options: ['A draft whose distribution q is closer to the target p', 'A draft with a higher temperature', 'A longer draft'], answer: 0,
-      why: 'When q equals p every token is accepted. That is why production draft models are often distilled from their target: distillation is the direct way to pull q towards p.' },
+    { q: 'In module 10, the SFT loss is cross-entropy against the one token in the data at each position. Which of the model\'s predicted probabilities does that loss read directly?', options: ['Only the probability of the target token', 'The whole distribution', 'The top-k probabilities'], answer: 0,
+      why: 'With a one-hot target, cross-entropy is −log p(target); the other tokens enter only through the softmax normaliser. Distillation replaces the one-hot target with the teacher\'s whole distribution.' },
     { q: 'In module 02, what does running a forward pass inside `noGrad` change?', options: ['The outputs', 'No graph is recorded, so no gradient can flow back into those weights', 'Weights are rounded to float16'], answer: 1,
       why: 'The teacher must stay frozen. Computing its logits under `noGrad` makes them constants in the student\'s graph, and it saves the memory the graph would take.' },
   ],
@@ -73,7 +73,7 @@ Logit KD is best (about 3.67 nats), then scratch (about 3.90), then sequence-lev
 
 ## Where you will meet it
 
-DistilBERT (Sanh et al. 2019) halved BERT's depth and, by the authors' count, kept about 97% of its GLUE score while running about 60% faster. MiniLM (Wang et al. 2020) distills attention distributions rather than outputs. Meta says Llama 3.2 1B and 3B used logits from Llama 3.1 8B and 70B as token-level targets. Speculative decoding (module 18) accepts a draft token with probability \`min(1, p/q)\`, so drafts are often distilled from their target (DistillSpec, Zhou et al. 2023). The contrast is TinyLlama, a 1.1B model trained from scratch on about 3 trillion tokens: the expensive way to get a small model.
+DistilBERT (Sanh et al. 2019) halved BERT's depth and, by the authors' count, kept about 97% of its GLUE score while running about 60% faster. MiniLM (Wang et al. 2020) distills attention distributions rather than outputs. Meta says Llama 3.2 1B and 3B used logits from Llama 3.1 8B and 70B as token-level targets. Speculative decoding, which module 18 builds later, accepts a small draft model's token with probability \`min(1, p/q)\` (p the target's probability, q the draft's), so drafts are often distilled from their target (DistillSpec, Zhou et al. 2023). The contrast is TinyLlama, a 1.1B model trained from scratch on about 3 trillion tokens: the expensive way to get a small model.
 
 ## Where the toy differs from production
 
@@ -89,7 +89,7 @@ Complete \`softTargets(logits, T = 1)\`: return \`softmax(z / T)\` along the las
 - \`logits\` may be a raw tensor, a \`Tensor\`, or a plain 1-D array; the skeleton already reads all three.
 - Each row of length \`V\` is normalised on its own (a \`[B, time, V]\` input is \`B · time\` separate distributions; \`T\` in this module always means temperature).
 - Subtract the row maximum before \`exp\`; teacher logits can be large, and at \`T < 1\` they get larger.
-- Throw for \`T <= 0\`. (Module 14 treated \`T = 0\` as greedy; here a zero temperature has no meaning as a training target.)
+- Throw for \`T <= 0\`. (The sampler in \`lib/sampling.js\` treats \`T = 0\` as greedy decoding, the limit as \`T\` shrinks to 0; here a zero temperature has no meaning as a training target.)
 - Do not modify the input.
 
 This one function is used for the teacher's targets (step 2) and, in the demo, to show how temperature exposes the tail.
@@ -156,7 +156,7 @@ Implement \`sequenceLevelCorpus(teacher, tokenizer, prompts, { maxNewTokens = 32
 
 \`teacher\` is an inference model (\`loadModel\` from \`lib/infer.js\`), \`prompts\` an array of strings. For each prompt, in order:
 
-1. \`continuation = generate(teacher, tokenizer, prompt, { maxNewTokens, temperature, next })\` (from \`lib/sampling.js\`; it returns only the new text and stops at \`eos\`).
+1. \`continuation = generate(teacher, tokenizer, prompt, { maxNewTokens, temperature, next })\` (from \`lib/sampling.js\`; it samples one token at a time from the model's logits divided by \`temperature\`, as module 07's \`sample\` did, and returns only the new text, stopping at \`eos\`).
 2. \`text = prompt + continuation\`; push it to \`texts\`.
 3. Append \`tokenizer.encode(text)\` and then \`tokenizer.eos\` to \`ids\`.
 
@@ -234,7 +234,7 @@ Return the losses. The teacher never runs here: offline distillation reads cache
   stretch: [
     'Implement top-k logit distillation: store only the teacher\'s 8 largest logits per position (renormalised) and measure how much of the held-out gain survives. This is how large-vocabulary pipelines keep the storage feasible when training small models such as Gemma 2 2B from a larger teacher.',
     'Add the generalised Jensen–Shannon divergence from GKD (Agarwal et al. 2023), which interpolates between forward and reverse KL with a weight beta, and run a short on-policy phase after logit KD with `onPolicyLoss`. Compare the teacher\'s reverse KL on the student\'s own samples before and after.',
-    'Distil a draft model for module 18: train a student on the checkpoint\'s soft targets, then measure the speculative-decoding acceptance rate with the distilled draft versus a from-scratch draft of the same size (DistillSpec, Zhou et al. 2023).',
+    'Once you have done module 18, distil a draft model for it: train a student on the checkpoint\'s soft targets, then measure the speculative-decoding acceptance rate with the distilled draft versus a from-scratch draft of the same size (DistillSpec, Zhou et al. 2023).',
     'Replace sampling with greedy (temperature 0) in `sequenceLevelCorpus`, the mode-seeking choice Kim & Rush approximated with beam search, and compare held-out loss and agreement against temperature-1 samples.',
   ],
   timeouts: { tests: 20000, demo: 180000 },
