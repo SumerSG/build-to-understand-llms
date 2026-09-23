@@ -54,7 +54,7 @@ The target has \`p = [0.1, 0.45, 0.45]\` and the draft \`q = [0.9, 0.05, 0.05]\`
 Acceptance is \`Σ min(p, q) = 0.2\`. The output is still exactly \`[0.1, 0.45, 0.45]\`: the 80% of trials that reject draw from the residual \`norm([0, 0.4, 0.4]) = [0, 0.5, 0.5]\`, which tops up tokens 1 and 2.
 :::
 
-The per-position acceptance rate \`α = Σ min(p, q)\` equals \`1 − TV(p, q)\` and is the only number about the draft that matters. It moves whenever \`p\` is reshaped without \`q\`: Leviathan et al. report lower acceptance at temperature 1 than at 0, and the demo sweeps the target's temperature.
+The per-position acceptance rate \`α = Σ min(p, q)\` equals \`1 − TV(p, q)\` and is the only number about the draft that matters. It moves whenever \`p\` is reshaped without \`q\`: Leviathan et al. report lower acceptance at temperature 1 than at 0, with draft and target sampled at the same temperature. The direction is not fixed: α is highest where the target's shape is closest to the draft's, so a flat draft agrees more with a hotter target. The demo sweeps the target's temperature with the draft held fixed and shows exactly that.
 
 ## Draft K, verify once
 
@@ -130,7 +130,7 @@ Work the 3-token case by hand once: \`p = [0.5, 0.3, 0.2]\`, \`q = [0.2, 0.1, 0.
       instructions: `
 \`speculativeStep(target, draft, ctx, K, next)\`. Both models follow the interface of \`markovModel\`: \`model(ids, n)\` returns \`n\` distributions, one for the token after each of the last \`n\` positions of \`ids\`.
 
-1. Draft: for \`i\` in \`0..K−1\`, call \`draft(ctx + drafted so far, 1)\`, sample a token from the row, and remember both the token and its row \`q_i\`.
+1. Draft: for \`i\` in \`0..K−1\`, call \`draft(ctx + drafted so far, 1)\`, sample a token with \`sampleFrom(q_i, next())\` from its row \`q_i\`, and remember both the token and the row. All K draft uniforms are drawn before any acceptance uniform, because drafting finishes before the verify pass starts.
 2. Verify: call \`target(ctx + all K drafted tokens, K + 1)\` **once**. Row \`i\` is \`p_i\`, the target's distribution at the position the draft filled with token \`i\`; row \`K\` is the distribution after the last drafted token.
 3. Walk \`i = 0..K−1\`: if \`shouldAccept(p_i, q_i, x_i, next())\` push \`x_i\`; otherwise push a sample from \`residual(p_i, q_i)\` and return \`{ tokens, accepted: i }\`.
 4. If nothing was rejected, push a sample from row \`K\` (the bonus token) and return \`{ tokens, accepted: K }\`.
@@ -154,7 +154,7 @@ Three functions.
 
 \`expectedTokensPerStep(alpha, K)\`: \`(1 − alpha^(K+1)) / (1 − alpha)\`, the sum \`1 + α + … + α^K\`. Return \`K + 1\` when \`alpha >= 1\` rather than dividing by zero.
 
-\`generateSpeculative(target, draft, prompt, { K, maxNewTokens, next })\`: repeat \`speculativeStep\` until at least \`maxNewTokens\` tokens have been emitted, appending each step's tokens to the context. Return \`{ tokens, steps, drafted, examined, accepted, alpha, tokensPerStep, runLengths }\` where \`tokens\` is trimmed to exactly \`maxNewTokens\`, \`drafted = steps × K\`, \`examined\` counts only the drafted tokens verification reached (\`accepted + 1\` on a step that rejected, \`K\` on a step that accepted everything), \`alpha = accepted / examined\`, \`tokensPerStep = 1 + accepted / steps\`, and \`runLengths[i]\` is the number of steps that accepted exactly \`i\` tokens for \`i = 0..K\`.
+\`generateSpeculative(target, draft, prompt, { K, maxNewTokens, next })\`: repeat \`speculativeStep\` until at least \`maxNewTokens\` tokens have been emitted, appending each step's tokens to the context. Return \`{ tokens, steps, drafted, examined, accepted, alpha, tokensPerStep, runLengths }\` where \`tokens\` is trimmed to exactly \`maxNewTokens\`, \`drafted = steps × K\`, \`examined\` counts only the drafted tokens verification reached (\`accepted + 1\` on a step that rejected, \`K\` on a step that accepted everything), \`alpha = accepted / examined\`, \`tokensPerStep = 1 + accepted / steps\`, and \`runLengths[i]\` is the number of steps that accepted exactly \`i\` tokens for \`i = 0..K\`. With \`maxNewTokens = 0\` no step runs; return \`alpha = 0\` and \`tokensPerStep = 1\` (the starter's defaults) rather than dividing zero by zero.
 
 The distinction between \`examined\` and \`drafted\` is the whole of the measurement: tokens after a rejection were never checked and carry no information about the draft.
 `,

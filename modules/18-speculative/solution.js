@@ -141,7 +141,7 @@ export function generateSpeculative(target, draft, prompt, { K = 4, maxNewTokens
     examined,
     accepted,
     alpha: examined ? accepted / examined : 0,
-    tokensPerStep: 1 + accepted / steps,
+    tokensPerStep: steps ? 1 + accepted / steps : 1,
     runLengths,
   };
 }

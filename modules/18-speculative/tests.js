@@ -58,11 +58,11 @@ export const tests = [
     T.close(r[0] + r[1] + r[2], 1, 1e-9, 'the residual is a probability distribution: it must sum to 1');
     T.eq(r[2], 0, 'where the draft proposed MORE mass than the target (q ≥ p) the residual must be exactly 0: those tokens were already over-represented');
   } },
-  { step: 'residual', name: 'identical p and q leave no residual: return p itself, never NaN', run(m, T) {
+  { step: 'residual', name: 'identical p and q leave no residual: return a copy of p, never NaN', run(m, T) {
     const p = [0.2, 0.5, 0.3];
     const r = m.residual(p, [0.2, 0.5, 0.3]);
     T.ok(r.every((v) => Number.isFinite(v)), 'max(0, p − q) is all zeros here; dividing by its sum gives NaN unless you handle the case');
-    T.close(r, p, 1e-9, 'with p = q every token is accepted, so the residual is never drawn from; returning p keeps the function total');
+    T.close(r, p, 1e-9, 'with p = q every token is accepted, so the residual is never drawn from; returning a copy of p keeps the function total');
   } },
   { step: 'residual', name: 'speculativeSampleOne draws one fresh uniform for the proposal, one for the acceptance test and one for the residual, in that order', run(m, T) {
     const p = [0.1, 0.45, 0.45], q = [0.9, 0.05, 0.05];
