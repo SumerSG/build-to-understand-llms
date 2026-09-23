@@ -109,7 +109,13 @@ Throughput hides failure: a cluster can move plenty of tokens per second while a
 
 Capacity is itself a control problem with dead time: you scale on queue depth, but a replica needs approximately 30-60 s to load weights and warm up even with the image already on the node (minutes if it must be pulled), so the loop needs asymmetric hysteresis — up at once, down only when a whole window agrees (Kubernetes HPA calls this downscale stabilisation). The end metric is not latency or GPU count but **dollars per million output tokens** = \`GPU-seconds / 3600 * price per GPU-hour / (tokens / 1e6)\`.
 
-When one fleet serves many models, LoRA adapters let hundreds of fine-tunes share one base model's weights, so a replica multiplexes them (S-LoRA, Punica) and the router must be adapter-aware too: an adapter miss costs a load, not a recompute.
+**Why output tokens cost more than input tokens.** Split the GPU-seconds by phase. With this module's numbers, prefilling a 2,000-token prompt is one iteration of \`5 ms + 2000 * 50 us\` = 105 ms, about 52 us per input token, because 2,000 tokens share one read of the weights. A decode step at batch 32 is \`5 ms + 32 * 50 us\` = 6.6 ms for 32 tokens, about 206 us per output token: roughly 4x dearer, and the whole difference is \`tFixed\` spread over 32 tokens instead of 2,000. That is why hosted APIs typically list output tokens at several times the input price, and why module 17's cached-read discount goes further still: a cached input token skips even the 50 us of prefill arithmetic.
+
+When one fleet serves many models, LoRA adapters (module 30) let hundreds of fine-tunes share one base model's weights, so a replica multiplexes them (S-LoRA, Punica) and the router must be adapter-aware too: an adapter miss costs a load, not a recompute.
+
+## When a replica is more than one GPU
+
+Here a replica is one GPU serving an 8B model. Size a real one as weights plus a KV budget with module 19's calculator: Llama-3-70B in bf16 is 70.6e9 x 2 bytes = 141 GB, so it needs at least two 80 GB H100s before any KV cache. A dense model that outgrows one GPU runs tensor parallelism inside the NVLink domain (modules 24 and 25), and the whole TP group is the replica: it routes, caches and scales as one unit. A large MoE reshapes the decode pool instead: attention runs data-parallel, each GPU (or small TP group) with its own batch and KV cache, while the experts spread over a wide expert-parallel group that pays module 25's \`moeAllToAll\` (dispatch plus combine) in every MoE layer. Width is the point: module 28 showed that a decode step reads nearly every expert's weights; a larger group and a larger batch send more tokens to each expert per step, so more tokens share each read. DeepSeek-V3 is the real example (DeepSeek-AI technical report, 2024), with attention in 4-GPU TP groups: its minimum prefill unit is 32 GPUs with 32-way expert parallelism, 8 routed experts per GPU plus one redundant copy; its minimum decode unit is 320 GPUs with 320-way expert parallelism, one expert per GPU. Disaggregation lets each phase pick the parallelism its bottleneck wants.
 
 ## Where this toy differs from production
 
@@ -239,8 +245,9 @@ The report is what the whole simulator exists to produce. \`percentile(values, p
   stretch: [
     'Add chunked prefill: cap a prefill at `maxBatchTokens` per iteration and let the remainder mix with decoding requests in the same batch. This is what vLLM does by default now, and it is the alternative to disaggregation — compare the two on the same trace.',
     'Scale the two pools independently, each with its own queue-depth signal, as DistServe and Splitwise do, and see whether the planner beats the static `planPools` split under the diurnal hump.',
-    'Give each replica a KV-block budget as in module 16, so the decode pool can run out of memory and preempt; then measure whether disaggregation still wins when the decode pool is memory-limited rather than compute-limited.',
+    'Give each replica a KV-block budget as in module 16, so the decode pool can run out of memory and preempt (vLLM\'s preemption policy is the production version: it recomputes the evicted request, and the PagedAttention paper also swaps its blocks to CPU memory); then measure whether disaggregation still wins when the decode pool is memory-limited rather than compute-limited.',
     'Make the router adapter-aware: give each request a LoRA adapter id as well as a prefix, charge an adapter load on a miss, and route on both keys — the problem S-LoRA and Punica solve when one base model serves hundreds of fine-tunes.',
+    'Add an input classifier stage (a Llama Guard-style model; Inan et al. 2023) that costs a small-model prefill before admission, and measure what it adds to TTFT p95 and to GPU-seconds.',
   ],
   timeouts: { tests: 20000, demo: 60000 },
 };
