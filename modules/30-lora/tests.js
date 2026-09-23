@@ -301,6 +301,15 @@ export const tests = [
     T.close(res.losses[0], want[0], 1e-4, 'the first loss differs from the reference: draw each batch with makeBatch(examples, { batchSize, next }) and score it with maskedLoss(model.forward(batch.x), batch.y, batch.mask)');
     T.close(res.losses, want, 1e-4, 'later losses differ from the reference loop: clip trainableParameters(model) to `maxGradNorm` after backward, use AdamW with betas [0.9, 0.95] and no weight decay, and call zeroGrad after every step (otherwise gradients accumulate across steps)');
   } },
+  { step: 'finetune', name: 'onStep(step, loss) is called once per step with a 0-based step and the loss as a number', async run(m, T) {
+    const model = pretrainedLike(13);
+    m.applyLora(model, { rank: 2, alpha: 4, next: rng(70) });
+    const calls = [];
+    const res = await m.finetune(model, syntheticExamples(12, 71), { steps: 4, lr: 1e-2, batchSize: 3, next: rng(72), onStep: async (step, loss) => { calls.push([step, loss]); } });
+    T.eq(calls.map((c) => c[0]), [0, 1, 2, 3], `onStep must be called after every step with step = 0, 1, …, steps-1; got steps [${calls.map((c) => c[0]).join(', ')}]`);
+    T.ok(calls.every((c) => typeof c[1] === 'number'), 'onStep(step, loss) must receive the loss as a number (loss.item()), not the Tensor: the goal demo calls loss.toFixed on it');
+    T.close(calls.map((c) => c[1]), res.losses, 1e-9, 'the loss passed to onStep must be the same value recorded in losses for that step');
+  } },
   { step: 'finetune', name: 'the same loop on an un-adapted model is full fine-tuning: every tensor moves', async run(m, T) {
     const model = new GPT(SMALL);
     const snapshot = model.parameters().map((p) => Array.from(p.data));

@@ -3,8 +3,8 @@ export default {
   title: 'Parameter-efficient fine-tuning (LoRA)',
   track: 'posttraining',
   minutes: 90,
-  threshold: 'A fine-tuning update lives in a low-rank subspace, so training a few percent of the parameters (with no gradients or optimizer state for the rest) recovers most of full fine-tuning, and the adapter folds back into the weights for free at inference.',
-  goal: 'Low-rank adapters wrapped around your GPT\'s projections, trained on a few percent of the parameters, merged back into plain weights, and compared with full fine-tuning.',
+  threshold: 'A fine-tuning update lives in a low-rank subspace, so training a small fraction of the parameters (with no gradients or optimizer state for the rest) recovers most of full fine-tuning, and the adapter folds back into the weights for free at inference.',
+  goal: 'Low-rank adapters wrapped around your GPT\'s projections, trained on a small fraction of the parameters (12% at the toy\'s d = 64, under 1% at production widths), merged back into plain weights, and compared with full fine-tuning.',
   prereqs: ['02-autograd', '06-transformer', '08-scaling', '10-sft'],
   recall: [
     { q: 'In lib/tensor.js, what happens during `backward()` to a leaf tensor whose `requiresGrad` is false?',
@@ -82,6 +82,8 @@ Keeping adapters **unmerged** has its own payoff. One base model in GPU memory c
 ## Where the toy differs from production
 
 Your model has \`d = 64\`, so a rank-8 adapter is about 12% of the model rather than the 0.1–1% typical at \`d = 4096\` (for a square \`d × d\` matrix the adapter's share is \`2r/d\`: 25% at \`d = 64\`, 0.4% at \`d = 4096\`). Everything here is fp32 on one CPU thread: there is no quantised base, no bf16, no paged optimizer, and the memory figures are computed with the production accounting, not measured. The dataset is 66 short instruction pairs and each run is 100 steps, so neither method converges: both learn the reply format (a short answer, then a newline) well before they learn which answer belongs to which prompt. The demo gives LoRA a higher learning rate than full fine-tuning (3e-3 against 1e-3), as is usual in practice, since the adapter starts at zero and moves few numbers. On this tiny model the loss gap between LoRA and full fine-tuning is still visible, which is a result about \`d = 64\` and 100 steps as much as about LoRA.
+
+Do not expect a LoRA step to be much faster. Backward still carries activation gradients through every frozen layer; freezing skips only the weight-gradient matmuls (about a third of a step's matmul work), and the adapter adds its own small matmuls. The demo's LoRA run is only somewhat quicker than the full run. LoRA's win is memory, not step time.
 `,
   steps: [
     {
@@ -157,6 +159,8 @@ Three functions.
 Creating a \`Linear\` requires a seeded rng for its (immediately overwritten) initialisation; any function returning numbers in (0, 1) works, e.g. \`next: () => 0.5\`. Pass \`bias: this.base.bias !== null\`.
 
 \`mergeLora(model)\` replaces every adapter found by \`loraLayers(model)\` with its merged Linear (use \`setModule\`) and returns how many it merged. The tests compare the model's logits before and after within \`1e-5\` and check that no adapter and no extra parameter remains.
+
+The merged Linear is a fresh layer, so its tensors are \`Tensor.param\` (trainable), while the embeddings and LayerNorms stay frozen from \`applyLora\`. The merged model is meant for inference; \`countParams\` on it reports the Linears as trainable. To fine-tune it again, set \`requiresGrad = true\` on every tensor in \`model.parameters()\` first.
 `,
       hints: [
         'Matrix multiplication is linear: x·W + s·(x·A)·B = x·(W + s·A·B). Compute A·B once with `ops.matmul` (it accepts Tensors, which have shape and data).',
@@ -179,9 +183,12 @@ repeat steps times:
   batch = makeBatch(examples, { batchSize, next })
   loss  = maskedLoss(model.forward(batch.x), batch.y, batch.mask)
   backward, clipGradNorm(params, maxGradNorm), step, zeroGrad
-  record loss.item(); if onStep: await onStep(step, loss)
+  value = loss.item(); losses.push(value)
+  if onStep: await onStep(step, value)   // step counts from 0; value is a plain number
 return { losses, optimizer }
 \`\`\`
+
+\`onStep(step, loss)\` receives the loss as a JavaScript number (\`loss.item()\`), not the Tensor: the goal demo formats it with \`toFixed\`, and a test calls \`finetune\` with a recorder and checks the steps \`0 … steps-1\` and the type of each loss.
 
 Handing AdamW \`model.parameters()\` instead would still leave the frozen weights unchanged (they have no gradient), but it would allocate \`m\` and \`v\` buffers for every one of them, which is exactly the memory LoRA exists to save. The tests check the size of \`optimizer.m\`, and compare your losses step by step with this exact loop (so a missing clip, a different beta or a forgotten \`zeroGrad\` shows up).
 `,

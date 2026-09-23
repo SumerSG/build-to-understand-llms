@@ -38,8 +38,8 @@ export default async function demo(m, lab) {
 
   const steps = 100, batchSize = 2;
   const onStep = (name, offset) => async (step, loss) => {
-    if (step % 5 === 0) { lab.progress((offset + step + 1) / (2 * steps), `${name} step ${step} loss ${loss.toFixed(2)}`); await lab.tick(); }
-    if (step % 25 === 0) lab.log(`${name} step ${step}: loss ${loss.toFixed(3)}`);
+    if (step % 5 === 0) { lab.progress((offset + step + 1) / (2 * steps), `${name} step ${step} batch loss ${loss.toFixed(2)}`); await lab.tick(); }
+    if (step % 25 === 0) lab.log(`${name} step ${step}: batch loss ${loss.toFixed(3)} (${batchSize} examples${step === 0 ? `; the unchanged base model, differing from the ${examples.length}-pair figure above only by which examples were drawn` : ''})`);
   };
 
   // 1. LoRA: r = 8, alpha = 16, on every linear layer.

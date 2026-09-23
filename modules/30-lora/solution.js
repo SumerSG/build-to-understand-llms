@@ -211,7 +211,9 @@ export function trainingMemory({ total, trainable }) {
 
 /**
  * Fine-tune `model` on encoded `examples` for `steps` AdamW steps over trainableParameters(model) only.
- * Returns { losses, optimizer }.
+ * Returns { losses, optimizer }, where losses holds one number (loss.item()) per step.
+ * @param onStep optional async (step: number, loss: number) => void, called after every step;
+ *   step counts from 0 and loss is loss.item(), a plain number, not the Tensor.
  */
 export async function finetune(model, examples, { steps, lr = 1e-3, batchSize = 4, maxGradNorm = 1.0, next, onStep = null }) {
   if (typeof next !== 'function') throw new Error('finetune: pass a seeded rng function as `next`');
