@@ -153,6 +153,12 @@ export const tests = [
         T.close(r.out.toArray()[b][h], e.out, 1e-4, `out for batch ${b}, head ${h} (causal: ${causal}) must be the weight-averaged values`);
       }
     }
+    // An explicit scale must reach attentionScores: attention(q, k, v, { scale }) is part of the signature.
+    const r2 = m.attention(q, k, v, { causal: true, scale: 1.5 });
+    for (let b = 0; b < 2; b++) for (let h = 0; h < 2; h++) {
+      const e = slowAttention(Q[b][h], K[b][h], V[b][h], true, 1.5);
+      T.close(r2.weights.toArray()[b][h], e.weights, 1e-4, `with { scale: 1.5 } the weights for batch ${b}, head ${h} must be softmax(1.5 · q·kᵀ): pass the scale option through to attentionScores instead of always using 1/sqrt(dh)`);
+    }
   } },
   { step: 'attend', name: 'position 0 returns v[0] exactly under the mask; identical keys give the mean of v without it', run(m, T) {
     const q = gauss(T, [1, 2, 5, 4], 13), k = gauss(T, [1, 2, 5, 4], 14), v = gauss(T, [1, 2, 5, 4], 15);
@@ -202,6 +208,7 @@ export const tests = [
       for (let j = i + 1; j < 5; j++) T.eq(W[b][h][i][j], 0, 'the layer must be causal: no weight on future keys');
     }
     T.throws(() => layer.forward(gauss(T, [2, 5, C + 1], 22)), 'forward must throw when the channel count does not match nEmbd');
+    T.throws(() => layer.forward(gauss(T, [5, C], 22)), 'forward must throw when x is not 3-D [B, T, C]');
   } },
   { step: 'heads', name: 'matches lib/attention.js exactly when given the same weights', run(m, T) {
     const C = 12, H = 3;
@@ -243,6 +250,41 @@ export const tests = [
     const end = m.causalityProbe(layer, x, 5, T.rng(32));
     T.eq(end.maxBefore, 0, 'with t = T-1 there is nothing after t to perturb, so nothing may change: perturb positions strictly greater than t, not t itself');
     T.eq(end.maxAfter, 0, 'with t = T-1 maxAfter is 0 because no position lies after t');
+  } },
+  { step: 'proof', name: 'causalityProbe perturbs every position after t in every batch element, and nothing at or before t', run(m, T) {
+    // A spy layer that returns its input unchanged and records what it was given.
+    const seen = [];
+    const spy = { forward: (inp) => { seen.push(Float32Array.from(inp.data)); return inp; }, parameters: () => [] };
+    const [B, L, C] = [2, 6, 3], t = 2;
+    const x = gauss(T, [B, L, C], 36, 1, false);
+    const r = m.causalityProbe(spy, x, t, T.rng(37));
+    T.eq(seen.length, 2, 'the probe runs the layer exactly twice: once on x, once on the perturbed copy');
+    T.eq(Array.from(seen[0]), Array.from(x.data), 'the first forward pass must see the original x');
+    let maxDiff = 0;
+    for (let b = 0; b < B; b++) for (let i = 0; i < L; i++) {
+      let changed = 0;
+      for (let c = 0; c < C; c++) {
+        const d = Math.abs(seen[1][(b * L + i) * C + c] - seen[0][(b * L + i) * C + c]);
+        if (d > 0) changed++;
+        maxDiff = Math.max(maxDiff, d);
+      }
+      if (i <= t) T.eq(changed, 0, `batch ${b}, position ${i} (≤ t = ${t}) must not be perturbed: only positions t+1..T-1 get noise`);
+      else T.eq(changed, C, `batch ${b}, position ${i} (> t = ${t}) must have noise added to all ${C} channels, in every batch element, not just batch 0`);
+    }
+    T.eq(r.maxBefore, 0, 'an identity layer passes positions 0..t through untouched');
+    T.close(r.maxAfter, maxDiff, 1e-6, 'for an identity layer maxAfter is the largest noise value added, so the probe must measure |after − before| over every output after t');
+  } },
+  { step: 'proof', name: 'causalityProbe catches an off-by-one mask (position t reads position t+1)', run(m, T) {
+    // out[i] = x[i] + x[i + 1]: the classic bug where the mask is shifted by one and each token sees the next one.
+    const offByOne = { forward: (inp) => {
+      const [B, L, C] = inp.shape;
+      const d = Float32Array.from(inp.data);
+      for (let b = 0; b < B; b++) for (let i = 0; i + 1 < L; i++) for (let c = 0; c < C; c++) d[(b * L + i) * C + c] += inp.data[(b * L + i + 1) * C + c];
+      return new Tensor({ shape: inp.shape.slice(), data: d });
+    }, parameters: () => [] };
+    const x = gauss(T, [1, 6, 4], 38, 1, false);
+    const r = m.causalityProbe(offByOne, x, 2, T.rng(39));
+    T.ok(r.maxBefore > 1e-3, `this layer leaks exactly one step: position t = 2 reads position 3, so maxBefore must be positive (got ${r.maxBefore}). maxBefore covers positions 0..t inclusive; stopping at t - 1 misses the most common masking bug`);
   } },
   { step: 'proof', name: 'gradCheckAttention passes on your MultiHeadAttention and checks x plus every parameter', run(m, T) {
     const layer = new m.MultiHeadAttention({ nEmbd: 8, nHead: 2, next: T.rng(33) });

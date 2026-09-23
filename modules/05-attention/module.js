@@ -71,7 +71,7 @@ So \`W_q\`, \`W_k\`, \`W_v\` and \`W_o\` are each \`C × C\`: a layer has \`4C²
 
 ## What it costs
 
-Per layer, the four projections cost about \`8·T·C²\` FLOPs (2 FLOPs per multiply-add, four \`C × C\` matrices, \`T\` tokens). The score matmul and the weighted sum of values cost about \`4·T²·C\` between them. The projections grow linearly in \`T\`; the attention term grows quadratically and overtakes them once \`T > 2C\`. For GPT-2 small at \`T = 1024\` the quadratic term is already about 40% of the layer's FLOPs; at \`T = 32,768\` it dominates. Memory too: this module materialises the full \`[B, H, T, T]\` weight matrix, which at \`T = 32,768\` would be about 4 GB per head in float32. Two later ideas fight this: the KV cache (module 15) stores \`k\` and \`v\` so that generating one more token costs \`O(T)\` instead of \`O(T²)\`, and FlashAttention (Dao et al. 2022) computes the softmax in tiles so the \`[T, T]\` matrix never exists in memory.
+Per layer, the four projections cost about \`8·T·C²\` FLOPs (2 FLOPs per multiply-add, four \`C × C\` matrices, \`T\` tokens). The score matmul and the weighted sum of values cost about \`4·T²·C\` between them. The projections grow linearly in \`T\`; the attention term grows quadratically and overtakes them once \`T > 2C\`. For GPT-2 small at \`T = 1024\` the quadratic term is already about 40% of the attention layer's FLOPs (the MLP, module 06, adds more linear work); at \`T = 32,768\` it is about 95%. Memory too: this module materialises the full \`[B, H, T, T]\` weight matrix, which at \`T = 32,768\` would be \`32,768² × 4\` bytes = 4 GiB per head in float32. Two later ideas fight this: the KV cache (module 15) stores \`k\` and \`v\` so that generating one more token costs \`O(T)\` instead of \`O(T²)\`, and FlashAttention (Dao et al. 2022) computes the softmax in tiles so the \`[T, T]\` matrix never exists in memory.
 
 ## Where this toy differs from production
 
@@ -93,8 +93,8 @@ The starter has the skeleton in place; the default factor and the product are yo
       predict: { question: 'With unit-variance q and k and dh = 64, what variance do the scores have before and after the scale?', answer: 'About 64 before (a sum of 64 unit-variance products) and about 1 after (dividing by sqrt(64) divides the variance by 64). The third test measures exactly this.' },
       hints: [
         'The scale is not 1 / dh. Which power of dh turns a variance of dh back into 1?',
-        'Compute `factor = scale === null ? 1 / Math.sqrt(dh) : scale`, then take the batched product of q with the transposed k and multiply by the factor.',
-        '`const factor = scale === null ? ‹…› : scale; return q.matmul(k.transpose()).scale(factor);`',
+        'Two things: when no scale is given, default the factor to one over the square root of dh (the last dim of q). Then take the batched matrix product of q with k whose last two dims are swapped, and multiply every entry by the factor. Every operation must be a Tensor method so backward() can reach q and k.',
+        '`const factor = scale === null ? ‹default› : scale;` then `return q.matmul(‹kᵀ›).‹multiply by factor›;`',
       ],
     },
     {
@@ -111,8 +111,8 @@ Keep both differentiable (\`maskedFill\` and \`softmax\` are Tensor ops); the te
 `,
       hints: [
         'The mask is applied to the scores, before the softmax. What does exp(-Infinity) give?',
-        'Read T from `scores.shape` (the last dim), build `ops.causalMask(T)`, and call `scores.maskedFill(mask, -Infinity)`. Then attentionWeights is one line: mask if causal, then `.softmax()`.',
-        '`return scores.maskedFill(ops.causalMask(T), ‹…›);` and `return (causal ? maskCausal(scores) : scores).softmax();`',
+        'maskCausal: read T from the last dim of the scores, build a [T, T] mask that keeps j ≤ i, and fill every other entry with minus infinity using a Tensor op that returns a new Tensor. attentionWeights: choose masked or unmasked scores depending on the flag, then take the softmax over the last dim.',
+        '`const T = scores.shape[‹last›]; return scores.maskedFill(ops.causalMask(T), ‹fill value›);` and `const s = causal ? ‹…› : scores; return s.‹…›();`',
       ],
     },
     {
@@ -128,8 +128,8 @@ This is the whole of scaled dot-product attention. \`out\` has the shape of \`q\
 `,
       hints: [
         'You have already written both halves. The only new operation is a matmul between the weights and v.',
-        'Compose: scores from step 1 with the given scale, weights from step 2 with the given causal flag, then `weights.matmul(v)`. Return both in an object.',
-        '`const weights = attentionWeights(attentionScores(q, k, { scale }), { causal }); const out = ‹…›; return { out, weights };`',
+        'Compose: scores from step 1, passing the caller\'s scale through; weights from step 2, passing the caller\'s causal flag through; then the product of the [.., T, T] weights with the [.., T, dh] values. Return both in an object.',
+        '`const weights = attentionWeights(attentionScores(‹…›), ‹…›); const out = ‹weights times v›; return { out, weights };`',
       ],
     },
     {
@@ -144,13 +144,13 @@ Three pieces.
 
 \`MultiHeadAttention.forward(x)\` for \`x\` of shape \`[B, T, C]\`. The constructor already built \`this.qkv\` (\`Linear(C, 3C)\`) and \`this.proj\` (\`Linear(C, C)\`). Throw if \`x\` is not 3-D or \`C !== this.nEmbd\`. Then: \`projected = this.qkv.forward(x)\` is \`[B, T, 3C]\`; slice it along axis 2 into \`q\` (\`0…C\`), \`k\` (\`C…2C\`) and \`v\` (\`2C…3C\`) with \`Tensor.slice(2, start, end)\`; split each into heads; call your \`attention\` with \`causal: true\`; store a raw copy of the weights in \`this.lastWeights\` (\`{ shape, data: new Float32Array(weights.data) }\`); merge the heads; return \`this.proj.forward(merged)\`.
 
-The layer has \`4C² + 4C\` parameters and must match \`lib/attention.js\` bit-for-bit within tolerance when given the same weights, which the third test does by copying them in.
+The layer has \`4C² + 4C\` parameters and must match \`lib/attention.js\` to within 1e-5 when given the same weights, which the third test does by copying them in.
 `,
       predict: { question: 'For C = 8 and H = 2, how many parameters does the layer have, biases included?', answer: '4·64 + 4·8 = 288: the qkv Linear is 8×24 + 24 and proj is 8×8 + 8. The heads add nothing.' },
       hints: [
         'Reshape is free and permute copies; you need both. For forward, write the shapes of every intermediate as a comment before you write the code: [B,T,3C] → three [B,T,C] → three [B,H,T,dh] → out [B,H,T,dh] → [B,T,C] → [B,T,C].',
-        'splitHeads: `x.reshape([B, T, nHead, C / nHead]).permute([0, 2, 1, 3])`. mergeHeads: permute with the same order (it is its own inverse), then reshape to `[B, T, H * dh]`. forward: slice `projected` three times along axis 2, split each, attend, save `weights` as a raw copy, merge `out`, project.',
-        '`const projected = this.qkv.forward(x); const q = splitHeads(projected.slice(2, 0, C), this.nHead); const k = ‹…›; const v = ‹…›; const { out, weights } = attention(q, k, v, { causal: true }); this.lastWeights = { shape: weights.shape.slice(), data: new Float32Array(weights.data) }; return this.proj.forward(mergeHeads(out));`',
+        'splitHeads: view the last dim as H groups of dh (a reshape to [B, T, H, dh]), then swap the T and H axes with a permute. mergeHeads: the same axis swap undoes itself, then a reshape flattens H and dh back into C. forward: validate the shape, project once, slice the projection three times along axis 2 (q, then k, then v), split each, attend causally, save a raw copy of the weights, merge the output, project again.',
+        '`splitHeads`: `x.reshape([B, T, ‹H›, ‹dh›]).permute([0, ‹…›, ‹…›, 3])`. `forward`: `const projected = this.qkv.forward(x);  const q = splitHeads(projected.slice(2, ‹start›, ‹end›), this.nHead);  /* k, v likewise */  const { out, weights } = attention(q, k, v, { causal: true });  this.lastWeights = { shape: weights.shape.slice(), data: new Float32Array(weights.data) };  return ‹project the merged heads›;`',
       ],
     },
     {
@@ -159,14 +159,14 @@ The layer has \`4C² + 4C\` parameters and must match \`lib/attention.js\` bit-f
       instructions: `
 Two checks that every attention implementation should ship with.
 
-\`causalityProbe(layer, x, t, next)\`: run \`layer.forward(x)\` (inside \`noGrad\`), then make a copy of \`x.data\`, add \`randn(next)\` to every channel of every position **after** \`t\` (positions \`t+1 … T-1\`, all batch elements), run the layer again on the perturbed copy, and return \`{ maxBefore, maxAfter }\`: the largest absolute output change over positions \`0 … t\`, and over positions \`t+1 … T-1\`. For a causal layer \`maxBefore\` is exactly 0, not merely small: nothing at or before \`t\` can read the perturbed positions. \`maxAfter\` should be positive whenever there is anything after \`t\`; it is your evidence that the perturbation was real. Do not modify the caller's \`x\`.
+\`causalityProbe(layer, x, t, next)\`: run \`layer.forward(x)\` (inside \`noGrad\`), then make a copy of \`x.data\`, add \`randn(next)\` to every channel of every position **after** \`t\` (positions \`t+1 … T-1\`, all batch elements), run the layer again on the perturbed copy, and return \`{ maxBefore, maxAfter }\`: the largest absolute output change over positions \`0 … t\`, and over positions \`t+1 … T-1\`. For a causal layer \`maxBefore\` is exactly 0, not merely small: nothing at or before \`t\` can read the perturbed positions. \`maxAfter\` should be positive whenever there is anything after \`t\`; it is your evidence that the perturbation was real. Do not modify the caller's \`x\`. The tests run your probe on a real layer, on an identity layer that records what it was given, and on a layer with an off-by-one mask where position \`t\` reads \`t + 1\`: only a probe whose \`maxBefore\` includes position \`t\` catches that one.
 
 \`gradCheckAttention(layer, x, opts = {})\`: call \`gradCheck\` from \`lib/tensor.js\` with inputs \`[x, ...layer.parameters()]\` (\`x\` must have \`requiresGrad\`) and the scalar loss \`layer.forward(x).pow(2).sum()\`, and return its result. Because the parameters are the layer's own Tensors, perturbing them in place changes what \`forward\` computes, so one call checks the input gradient and every parameter gradient at once. A check that only passes \`x\` would miss a broken \`Linear\` backward; the test counts the inputs covered.
 `,
       hints: [
         'The probe compares two forward passes on inputs that differ only after t. Which positions may legitimately differ, and which must be identical to the last bit?',
-        'Copy with `new Float32Array(x.data)`, then for each b, each i from t + 1 to T - 1 and each channel add `randn(next)` at offset `(b * T + i) * C + c`. Wrap both forwards in `noGrad(() => layer.forward(...))`. Loop over the outputs and route each |difference| to maxBefore when i ≤ t, else to maxAfter. For the gradient check, the function you hand to gradCheck can ignore its arguments beyond the first: the layer already holds its parameters.',
-        '`const noisy = new Float32Array(x.data); for (b) for (let i = ‹…›; i < T; i++) for (c) noisy[(b * T + i) * C + c] += randn(next);` … and `return gradCheck((xIn) => layer.forward(xIn).pow(2).sum(), [x, ...layer.parameters()], opts);`',
+        'Probe: copy the raw data, add noise to every channel of positions t+1 … T-1 in every batch element, wrap both forward passes in noGrad, then walk the outputs and send each absolute difference to maxBefore when its position is at most t (t itself included) and to maxAfter otherwise. Gradient check: hand gradCheck a function of the input that returns the scalar loss, together with the list of tensors to check; the function can ignore its arguments beyond the first because the layer already holds its parameters.',
+        '`const noisy = new Float32Array(x.data); for (b …) for (let i = ‹first perturbed position›; i < T; i++) for (c …) noisy[(b * T + i) * C + c] += randn(next);` then compare `noGrad(() => layer.forward(x))` with the forward on `new Tensor({ shape: x.shape.slice(), data: noisy })`. And `return gradCheck((xIn) => ‹scalar loss›, [x, ‹…›], opts);`',
       ],
     },
   ],
@@ -177,9 +177,9 @@ Two checks that every attention implementation should ship with.
   ],
   stretch: [
     'Add grouped-query attention: keep H query heads but only G < H key/value heads, each shared by H / G query heads (Llama 3 uses H = 32, G = 8 for the 8B model). Count the parameters and the KV-cache size before and after.',
-    'Implement the attention forward as a two-pass "online softmax" that never materialises the [T, T] matrix: for each query, stream over keys keeping a running max and running sum. This is the core of FlashAttention (Dao et al. 2022); compare outputs with your attention() to 1e-5.',
+    'Implement the attention forward as a single-pass "online softmax" that never materialises the [T, T] matrix: for each query, stream over keys keeping a running max, a running sum of exponentials and a running weighted sum of values, rescaling the last two whenever the max grows. This is the core of FlashAttention (Dao et al. 2022); compare outputs with your attention() to 1e-5.',
     'Add rotary position embeddings (RoPE, Su et al. 2021), as in Llama: rotate pairs of q and k channels by an angle proportional to the position before the score matmul, and verify that the score depends only on the relative distance i − j.',
-    'Load lib/checkpoints/tiny-gpt.json, run your layer on a sentence, and find the head whose weights most often peak on the previous token. Compare with the "previous-token heads" reported for GPT-2 in the induction-heads work by Olsson et al. (2022).',
+    'Load lib/checkpoints/tiny-gpt.json, run your layer on a sentence, and find the head whose weights most often peak on the previous token. Previous-token heads are the first half of the induction-head circuit described by Olsson et al. (2022), and Wang et al. (2022) located two of them in GPT-2 small in their indirect-object-identification circuit.',
   ],
   timeouts: { tests: 20000, demo: 60000 },
 };

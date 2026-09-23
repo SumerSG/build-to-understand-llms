@@ -1,5 +1,6 @@
-import { Tensor } from 'lib/tensor.js';
+import { Tensor, crossEntropy } from 'lib/tensor.js';
 import { SGD, AdamW } from 'lib/optim.js';
+import { randInt } from 'lib/util.js';
 
 /** Ids from a small seeded Markov chain over V symbols, so tests have realistic bigram statistics. */
 function chainIds(T, V, n, seed) {
@@ -107,6 +108,11 @@ export const tests = [
     const fixed = (u) => () => u;
     T.eq(m.sampleNext(p, 0, fixed(0.2), 2), 0, 'at T = 2 the row becomes [0.25, 0.75] (square roots, renormalised), so u = 0.2 picks token 0; at T = 1 it would pick token 1');
     T.eq(m.sampleNext(p, 0, fixed(0.05), 0.2), 1, 'at T = 0.2 the row becomes about [0.00002, 0.99998] (fifth powers), so u = 0.05 picks token 1; at T = 1 it would pick token 0');
+    const r = table([[0.25, 0.25, 0.5], [1, 0, 0], [0, 0, 1]]);
+    const before = Array.from(r.data);
+    T.eq(m.sampleNext(r, 0, fixed(0.1), 0.5), 0, 'at T = 0.5 the row [0.25, 0.25, 0.5] becomes [1/6, 1/6, 2/3] (squares, renormalised), so u = 0.1 picks token 0; without renormalising, the squares sum to 0.375 and the walk would run off the end');
+    T.eq(m.sampleNext(r, 0, fixed(0.2), 0.5), 1, 'at T = 0.5, u = 0.2 lies in [1/6, 1/3), so it picks token 1: the reshaped row must be divided by its sum');
+    T.eq(Array.from(r.data), before, 'temperature must reshape a copy of the row: sampling must never modify the model\'s table');
     const q = table([[0.2, 0.5, 0.3], [1, 0, 0], [0, 0, 1]]);
     const next = T.rng(5);
     const freq = [0, 0, 0];
@@ -135,6 +141,11 @@ export const tests = [
     T.ok(vals.some((v) => v !== 0), 'W must be randomly initialised, not all zeros (zeros are fine mathematically but hide bugs in the lookup)');
     T.ok(vals.every((v) => Math.abs(v) < 0.2), 'initial logits must be small (std about 0.01) so the model starts near uniform');
     T.ok(new Set(vals).size > 6, 'entries must differ from one another');
+    const sd = (xs) => { const mu = xs.reduce((a, b) => a + b, 0) / xs.length; return Math.sqrt(xs.reduce((a, b) => a + (b - mu) ** 2, 0) / xs.length); };
+    const sd0 = sd(Array.from(m.initNeural(30, T.rng(4)).W.data));
+    T.ok(sd0 > 0.008 && sd0 < 0.012, `the default initialisation must be Gaussian with std 0.01 (measured ${sd0.toFixed(4)} over 900 entries)`);
+    const sd1 = sd(Array.from(m.initNeural(30, T.rng(4), 0.5).W.data));
+    T.ok(sd1 > 0.4 && sd1 < 0.6, `initNeural(V, next, std) must honour its std argument (asked for 0.5, measured ${sd1.toFixed(3)})`);
     T.eq(Array.from(m.initNeural(6, T.rng(1)).W.data), vals, 'the same seed must give the same initialisation');
   } },
   { step: 'neural', name: 'neuralLogits(model, xs) is an embedding lookup: row xs[i] of W, still attached to the graph', run(m, T) {
@@ -197,6 +208,20 @@ export const tests = [
     T.close(losses[0], Math.log(V), 0.05, 'the first loss is about log V: the fresh model is nearly uniform');
     const tail = losses.slice(-10).reduce((s, l) => s + l, 0) / 10;
     T.ok(tail < losses[0] - 0.3, `the loss must fall substantially (first ${losses[0].toFixed(3)}, last-10 mean ${tail.toFixed(3)}): the optimiser must update W`);
+    // Reference loop, written independently: ONE AdamW with the given lr, a fresh makeBatch per step.
+    const ref = Tensor.randn([V, V], T.rng(1), 0.01, { requiresGrad: true });
+    const refOpt = new AdamW([ref], { lr: 0.03 });
+    const refNext = T.rng(12);
+    const refLosses = [];
+    for (let s = 0; s < 25; s++) {
+      const xs = [], ys = [];
+      for (let b = 0; b < 64; b++) { const t = randInt(refNext, ids.length - 1); xs.push(ids[t]); ys.push(ids[t + 1]); }
+      refOpt.zeroGrad(); const l = crossEntropy(ref.embed(xs), ys); l.backward(); refOpt.step(); refLosses.push(l.item());
+    }
+    const mine = m.initNeural(V, T.rng(1));
+    const mineLosses = m.trainNeural(mine, ids, { steps: 25, batchSize: 64, lr: 0.03, next: T.rng(12) });
+    T.close(mineLosses, refLosses, 1e-5, 'with steps 25, batchSize 64, lr 0.03 the losses must match a reference that builds ONE AdamW([W], { lr }) before the loop and draws a fresh makeBatch(ids, batchSize, next) every step: a new optimiser per step, a hard-coded lr, a reused batch or a different optimiser all change these numbers');
+    T.close(Array.from(mine.W.data), Array.from(ref.data), 1e-5, 'and W must end where the reference W ends');
     const again = m.initNeural(V, T.rng(1));
     T.close(m.trainNeural(again, ids, { steps: 120, batchSize: 256, lr: 0.1, next: T.rng(2) }), losses, 1e-6, 'the same seeds must reproduce the same losses: draw batches from `next`');
   } },

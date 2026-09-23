@@ -8,7 +8,7 @@ export default {
   prereqs: ['06-transformer', '07-pretraining'],
   recall: [
     { q: 'In module 06 you wrote a parameter-count formula for a GPT. Which part of a 175B-parameter model dominates the count?', options: ['The token and position embeddings', 'The per-layer attention and MLP weights', 'The final LayerNorm'], answer: 1, why: 'Embeddings are `V·d` once; the blocks are `12·d²` per layer times many layers. That is why the 6ND rule can ignore everything but the block weights and still be close.' },
-    { q: 'In the module 07 training loop, how much work is the backward pass relative to the forward pass?', options: ['Half as much', 'The same', 'About twice as much'], answer: 2, why: 'Backward computes a gradient with respect to the inputs and one with respect to the weights — two matmuls where forward did one. 2 forward + 4 backward = the 6 in 6ND.' },
+    { q: 'In module 07 your training step called backward() before the AdamW step. What does backward compute for each weight matrix?', options: ['Only the gradient of the loss with respect to the weights', 'A gradient with respect to the weights and one with respect to the layer input', 'The forward activations again'], answer: 1, why: 'The weight gradient feeds the optimizer; the input gradient is what flows on to the previous layer. That is two matmuls where forward did one — 2 FLOPs forward + 4 backward = the 6 in 6ND.' },
     { q: 'AdamW in module 07 keeps how many running buffers per parameter?', options: ['None', 'One (momentum)', 'Two (first and second moment)'], answer: 2, why: 'The `m` and `v` buffers are kept in fp32 — 8 bytes per parameter — which is half the memory bill of a bf16 training run.' },
     { q: 'Your matmul in module 01 does `2·n³` FLOPs for two `n × n` matrices. Why the factor of 2?', options: ['Two passes over memory', 'Each output element costs n multiplies and n adds', 'Float32 counts double'], answer: 1, why: 'One multiply-add is two floating-point operations. The same convention makes a forward pass 2 FLOPs per parameter per token.' },
     { q: 'In module 05, what shape is the attention score matrix for one head over a sequence of T tokens?', options: ['[T, d]', '[T, T]', '[d, d]'], answer: 1, why: 'One score per pair of positions. Those T×T matrices per head are exactly the activation term you will price in step 3 — and the one FlashAttention refuses to store.' },
@@ -29,7 +29,7 @@ Start with one parameter and one token. In the forward pass that parameter is us
 
 \`C = 6 · N · D\`
 
-This is the estimate used in Kaplan et al. 2020 and in every scaling paper since. It ignores embeddings, LayerNorm, the softmax, and the attention terms that grow with context length; for the models in this curriculum those are a few percent. Inference is the forward pass only: \`2 · N\` FLOPs per token generated.
+This is the estimate used in Kaplan et al. 2020 and in every scaling paper since. It ignores embeddings, LayerNorm, the softmax, and the attention terms that grow with context length; for the billion-parameter models priced in this module those are a few percent. For the toy GPTs of modules 06–07 the embeddings are a sizeable fraction: 6ND is an estimate for large runs, not a law. Inference is the forward pass only: \`2 · N\` FLOPs per token generated.
 
 :::predict
 GPT-3 is approximately 175 billion parameters trained on approximately 300 billion tokens (Brown et al. 2020). How many FLOPs is that, and how long would one NVIDIA H100 take? NVIDIA's H100 datasheet lists approximately 989 TFLOP/s of dense bf16 throughput.
@@ -43,7 +43,7 @@ No run does 989 TFLOP/s. Weights have to be fetched from HBM, gradients have to 
 
 \`seconds = C / (gpus · peakFlops · mfu)\`
 
-Price it at an assumed 2 US dollars per H100-hour and GPT-3's 221,000 H100-hours is roughly 0.44 million dollars of compute — orders of magnitude less than the run cost in 2020, which is the story of this decade in one line.
+Price it at an assumed 2 US dollars per H100-hour and GPT-3's 221,000 H100-hours is roughly 0.44 million dollars of compute. Published estimates of the actual 2020 run, on V100s, are approximately 4 million dollars — roughly an order of magnitude more for the same FLOPs, which is the story of this decade in one line.
 
 ## Memory, not FLOPs, is what forces a cluster
 
@@ -139,13 +139,7 @@ This model assumes perfect linear scaling. Real clusters do not scale linearly; 
       instructions: `
 \`scalingLoss(N, D, fit = CHINCHILLA)\` returns \`E + A / N^alpha + B / D^beta\`, reading the five constants off \`fit\` so the same code works for the paper's numbers and for the Besiroglu et al. 2024 re-fit.
 
-\`chinchillaOptimal(C, fit)\` returns the \`{ N, D, loss, tokensPerParam }\` that minimise that loss subject to \`6 · N · D = C\`. Substituting \`D = C / (6N)\` turns it into a one-variable minimisation; setting the derivative to zero gives a closed form:
-
-\`\`\`
-G = ((alpha · A) / (beta · B)) ^ (1 / (alpha + beta))
-N = G · (C / 6) ^ (beta / (alpha + beta))
-D = C / (6 · N)
-\`\`\`
+\`chinchillaOptimal(C, fit)\` returns the \`{ N, D, loss, tokensPerParam }\` that minimise that loss subject to \`6 · N · D = C\`. Substituting \`D = C / (6N)\` turns it into a one-variable minimisation; setting the derivative to zero gives a closed form for \`N\`, and \`D\` follows from the constraint.
 
 You may instead search \`N\` numerically (ternary search on the log of \`N\`, or a fine grid then a refinement) — the tests only require you to land within 3% of the true minimiser and to spend the budget exactly. Either way, \`6 · N · D\` must equal \`C\`, and \`loss\` must be \`scalingLoss(N, D, fit)\` at the point you return.
 
@@ -170,6 +164,7 @@ Three functions that answer one question: is it worth over-training a small mode
 \`overtrainingAnalysis({ N, D, inferenceTokens, fit })\` compares an actual run against that optimum:
 
 - \`loss\` — what the actual run reaches.
+- \`trainingFlops\` — \`6·N·D\` of the actual run, so the caller does not have to recompute it.
 - \`optimal\` — the \`optimalForLoss\` result for that same loss.
 - \`extraTrainingFlops\` — how much training compute the actual run spent beyond the optimal budget, clamped at 0.
 - \`savingPerInferenceToken\` — \`inferenceFlops(optimal.N) − inferenceFlops(N)\`, positive when the actual model is the smaller one.

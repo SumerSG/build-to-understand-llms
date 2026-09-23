@@ -73,6 +73,8 @@ export const tests = [
     T.close(m.trainingMemory(1e9, { precision: 'bf16', optimizer: 'sgd' }).total, 8e9, 1e-9, 'bf16 + plain SGD: 2 + 2 + 0 + 4 = 8 bytes/param');
     T.close(m.trainingMemory(1e9, { precision: 'bf16', optimizer: 'sgd-momentum' }).total, 12e9, 1e-9, 'momentum is one fp32 buffer: 4 bytes/param');
     T.close(m.trainingMemory(1e9, { precision: 'fp8', optimizer: 'adamw' }).total, 14e9, 1e-9, 'fp8 weights and grads: 1 + 1 + 8 + 4 = 14 bytes/param');
+    T.close(m.trainingMemory(1e9, { precision: 'bf16', optimizer: 'sgd' }).bytesPerParam, 8, 1e-9, 'bytesPerParam must be total / N, not a constant 16: bf16 + SGD is 8 bytes/param');
+    T.close(m.trainingMemory(3e9, { precision: 'fp8' }).bytesPerParam, 14, 1e-9, 'bytesPerParam must be total / N: fp8 + AdamW is 14 bytes/param whatever N is');
     T.throws(() => m.trainingMemory(1e9, { precision: 'int4' }), 'unknown precision must throw, not silently give NaN');
     T.throws(() => m.trainingMemory(1e9, { optimizer: 'lion' }), 'unknown optimizer must throw');
   } },
@@ -84,6 +86,8 @@ export const tests = [
     const small = { batch: 2, seq: 512, hidden: 1024, layers: 4, heads: 16 };
     const ratio = m.activationBytes({ ...small, seq: 1024 }) / m.activationBytes(small);
     T.ok(ratio > 2.5 && ratio < 4, `doubling the sequence length must more than double activations without FlashAttention (got ${ratio.toFixed(2)}×); the score matrices grow as s²`);
+    T.close(m.activationBytes({ ...small, bytesPerValue: 4 }), 2 * m.activationBytes(small), 1e-9, 'bytesPerValue must scale both terms: fp32 activations cost twice bf16');
+    T.close(m.activationBytes({ ...small, bytesPerValue: 1 }), 0.5 * m.activationBytes(small), 1e-9, 'bytesPerValue: 1 (fp8 activations) must halve the bf16 bill');
     T.close(m.activationBytes({ ...small, flashAttention: true, seq: 1024 }) / m.activationBytes({ ...small, flashAttention: true }), 2, 1e-9, 'with FlashAttention activations are linear in sequence length');
   } },
   { step: 'memory', name: 'planRun assembles FLOPs, time, GPU-hours, dollars and memory for GPT-3 on 1024 H100s', run(m, T) {
@@ -100,6 +104,9 @@ export const tests = [
     T.close(d.flops, 7.2e23, 1e-6, 'defaults: H100 peak, 40% MFU, bf16 + AdamW must give 7.2e23 FLOPs for Llama-3-8B');
     T.close(d.seconds, 7.2e23 / (8 * 989e12 * 0.4), 1e-6, 'default gpuFlops must be the H100 dense bf16 peak (989e12) and default mfu 0.4');
     T.eq(d.minGpusForState, 2, '8B × 16 bytes = 128 GB does not fit one 80 GB H100');
+    const f = m.planRun({ params: 1e9, tokens: 1e11, gpus: 8, gpuMemoryBytes: 80e9, precision: 'fp8', optimizer: 'sgd' });
+    T.close(f.memory.total, 6e9, 1e-9, 'planRun must pass precision and optimizer through to trainingMemory: fp8 + SGD is 1 + 1 + 0 + 4 = 6 bytes/param');
+    T.eq(f.minGpusForState, 1, '1B × 6 bytes = 6 GB fits on one 80 GB GPU');
   } },
 
   // ---------- step 4 ----------

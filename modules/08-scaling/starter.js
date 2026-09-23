@@ -68,7 +68,7 @@ export function trainingFlops(N, D) {
 /**
  * FLOPs to push `tokens` tokens through the same model at inference: 2·N each, because
  * inference is the forward pass only. (The attention terms that depend on context length
- * are small for short contexts; module 16 puts them back.)
+ * are small for short contexts; module 15 puts them back: `2N + 4·L·T·C` per token with a KV cache.)
  */
 export function inferenceFlops(N, tokens = 1) {
   // TODO: step 1

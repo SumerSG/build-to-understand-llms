@@ -73,6 +73,7 @@ export default async function demo(m, lab) {
   const perParam = combos.map(([, opt]) => m.trainingMemory(1e9, opt).bytesPerParam);
   lab.bar({ title: 'Bytes of persistent state per parameter (weights + grads + optimizer + fp32 master)',
     labels: combos.map(([name]) => name), values: perParam });
+  lab.log(`Note the tie: fp32 + AdamW and bf16 + AdamW cost ${perParam[0]} and ${perParam[1]} bytes per parameter. Mixed precision buys you tensor-core throughput and halved activation and gradient traffic, not optimizer memory: the fp32 master copy and the two fp32 moments survive the switch. Dropping optimizer state, not lowering precision, is what moves this bar.`);
 
   const act = m.activationBytes({ batch: 1, seq: 2048, hidden: 12288, layers: 96, heads: 96 });
   const actFlash = m.activationBytes({ batch: 1, seq: 2048, hidden: 12288, layers: 96, heads: 96, flashAttention: true });

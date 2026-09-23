@@ -53,7 +53,7 @@ export default async function demo(m, lab) {
   const trainMs = performance.now() - t0;
   lab.check(losses.every(Number.isFinite), 'training produced a non-finite loss');
   lab.plot({
-    title: 'Neural bigram: cross-entropy per step (the count model\'s training NLL is the floor)',
+    title: 'Neural bigram: cross-entropy per step (dashed floor: the count model\'s NLL on the whole training text; single minibatches can dip below it)',
     series: [
       { name: 'neural, minibatch loss', values: losses },
       { name: 'neural, validation NLL', values: valNll },
