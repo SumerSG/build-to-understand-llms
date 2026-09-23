@@ -170,6 +170,7 @@ export const tests = [
     T.eq(d.textIds, [5, 6, 4], 'width defaults to the caption length (no padding)');
     T.eq(d.mask, [0, 1, 1, 1, 1], 'nImage=2, L=3: four supervised positions (three words and eos)');
     T.eq(d.targets, [0, 5, 6, 4, 1]);
+    T.throws(() => m.captionTargets(2, [5, 6, 4], 1, 2), 'width 2 is shorter than the 3-token caption: captionTargets must throw rather than cut the caption');
   } },
   { step: 'sequence', name: 'maskedCrossEntropy averages only over masked-in positions', run(m, T) {
     const next = rng(10);
@@ -190,6 +191,7 @@ export const tests = [
     }
     const row = Array.from(g.subarray(5, 10));
     T.ok(row.some((v) => v !== 0), 'masked-in positions must receive gradient');
+    T.throws(() => m.maskedCrossEntropy(logits, targets, [[0, 0, 0, 0], [0, 0, 0, 0]]), 'a mask with no 1s has nothing to average: throw an Error instead of dividing by zero (which gives NaN)');
   } },
   { step: 'sequence', name: 'embedSequence puts image tokens first, then the text embeddings, with gradients to both', run(m, T) {
     const gpt = new GPT({ vocabSize: 7, blockSize: 8, nLayer: 1, nHead: 1, nEmbd: 4, seed: 1 });

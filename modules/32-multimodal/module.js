@@ -109,22 +109,23 @@ Two small classes. Together they turn pixels into vectors the GPT can read.
 
 **\`PatchEmbed({ patchDim, nPatches, dim, next })\`**, the ViT stem:
 
-- \`this.proj = new Linear(patchDim, dim, { next, std: 1 / Math.sqrt(patchDim) })\`
-- \`this.pos = Tensor.param(ops.randn([nPatches, dim], next, 0.02))\`, one learned vector per patch slot (create it after \`proj\`)
+- \`this.proj\`: a \`Linear\` from \`patchDim\` to \`dim\` whose weights have fan-in std \`1/sqrt(patchDim)\` (\`Linear\` in \`lib/layers.js\` takes \`{ next, std }\`; its default std is 0.02).
+- \`this.pos\`: a trainable \`[nPatches, dim]\` table, Gaussian with std 0.02, one learned vector per patch slot.
+- Draw both from the one \`next\` you are given, \`proj\` first and \`pos\` second. The tests rebuild the same draws from the same seed, so a different order or a fresh rng fails them.
 - \`forward(patches)\`: \`[B, P, patchDim] → [B, P, dim]\` is \`proj(patches) + pos\`. Use Tensor ops so the gradient reaches \`pos\`. The \`[P, dim]\` table broadcasts over the batch.
 - \`parameters()\`: proj's weight and bias, then \`pos\`.
 
 **\`Projector(dIn, dOut, { hidden = dOut, next })\`**, LLaVA-1.5's MLP:
 
-- \`this.fc1 = new Linear(dIn, hidden, { next, std: 1 / Math.sqrt(dIn) })\`, \`this.fc2 = new Linear(hidden, dOut, { next, std: 1 / Math.sqrt(hidden) })\`
+- \`this.fc1\`: a \`Linear\` from \`dIn\` to \`hidden\` with std \`1/sqrt(dIn)\`; then \`this.fc2\`: a \`Linear\` from \`hidden\` to \`dOut\` with std \`1/sqrt(hidden)\`. Both from \`next\`, in that order.
 - \`forward(x)\` is \`fc2(gelu(fc1(x)))\`. \`parameters()\` returns fc1's then fc2's.
 
 **Why these standard deviations?** \`Linear\` defaults to GPT-2's 0.02, which is right for a width-768 residual stream but makes fresh image tokens about 100× quieter than the GPT's position embeddings (see the second predict card in the concept). The \`1/sqrt(nIn)\` fan-in scale keeps each layer's output near the scale of its input. One test checks that fresh image tokens are at least as loud as the position embeddings.
 `,
       hints: [
-        '`Linear` and `Tensor.param` do the work. `forward` is one line in each class. The gradient for `pos` comes for free as long as you use `.add` on Tensors.',
+        '`Linear` and `Tensor.param` do the work, and `forward` is one line in each class. Before you write it, predict the RMS of a fresh image token if every layer used the default std 0.02 instead of `1/sqrt(nIn)`: each layer multiplies the scale by roughly `std · sqrt(nIn)`.',
         'PatchEmbed: build `proj`, then `pos`, in that order, both from the same `next`. Its forward projects the patches and then adds the position table with a Tensor op; broadcasting spreads the `[P, dim]` table over the batch. Projector: `fc1`, a GELU (a Tensor method), then `fc2`. `parameters()` concatenates the layers\' own `parameters()` lists.',
-        '`constructor(dIn, dOut, { hidden = dOut, next } = {}) { this.fc1 = new Linear(dIn, hidden, { next, std: 1 / Math.sqrt(dIn) }); this.fc2 = … }` and `forward(x) { return this.fc2.forward(/* fc1, then GELU */); }`',
+        '`this.proj = new Linear(patchDim, dim, { next, std: 1 / Math.sqrt(patchDim) }); this.pos = Tensor.param(ops.randn(/* shape, rng, std */));` and in Projector `this.fc1 = new Linear(dIn, hidden, { next, std: 1 / Math.sqrt(dIn) }); this.fc2 = …` with `forward(x) { return this.fc2.forward(/* fc1, then GELU */); }`',
       ],
     },
     {
@@ -138,7 +139,9 @@ Three functions build the training example \`[image tokens][caption, padded]\` a
 **\`captionTargets(nImage, captionIds, eos, width = captionIds.length)\`** returns \`{ textIds, targets, mask }\`:
 
 - \`textIds\`: the caption padded with \`eos\` to \`width\` (batches need equal lengths);
-- \`targets\` and \`mask\`: arrays of length \`N = nImage + width\`. Position \`i\` predicts element \`i + 1\`, so positions \`nImage - 1 … nImage - 1 + L\` predict \`caption[0] … caption[L-1], eos\` and get mask 1. Every other position gets target 0 and mask 0.
+- \`targets\` and \`mask\`: flat arrays of length \`N = nImage + width\` for this one example. Position \`i\` predicts element \`i + 1\`, so positions \`nImage - 1 … nImage - 1 + L\` predict \`caption[0] … caption[L-1], eos\` and get mask 1. Every other position gets target 0 and mask 0.
+
+\`width\` must be at least the caption length \`L\`; throw an \`Error\` otherwise rather than cutting the caption.
 
 \`\`\`
 captionTargets(3, [7, 8], 9, 4)
@@ -147,7 +150,7 @@ targets [0, 0, 7, 8, 9, 0, 0]
 mask    [0, 0, 1, 1, 1, 0, 0]
 \`\`\`
 
-**\`maskedCrossEntropy(logits, targets, mask)\`**: \`logits\` is a Tensor \`[B, N, V]\`. Return the mean of \`-log softmax(logits)[target]\` over the positions where \`mask\` is 1, as a scalar Tensor with gradients. Divide by the number of 1s, not by \`B·N\`. \`lib/tensor.js\` has no gather op. One way is to multiply \`logits.logSoftmax()\` by a constant \`[B, N, V]\` tensor that holds \`1/count\` at each masked-in target and 0 elsewhere, then \`.sum().neg()\`.
+**\`maskedCrossEntropy(logits, targets, mask)\`**: \`logits\` is a Tensor \`[B, N, V]\`; \`targets\` and \`mask\` are \`number[][]\`, B rows of length N (one \`captionTargets\` result per row). Flattened in order, row \`b\` position \`t\` lines up with row \`b·N + t\` of the logits viewed as \`[B·N, V]\`. Return the mean of \`-log softmax(logits)[target]\` over the positions where \`mask\` is 1, as a scalar Tensor with gradients. Divide by the number of 1s, not by \`B·N\`; if the mask has no 1s, throw an \`Error\` instead of dividing by zero. \`lib/tensor.js\` has no gather op. One way is to multiply \`logits.logSoftmax()\` by a constant \`[B, N, V]\` tensor that holds \`1/count\` at each masked-in target and 0 elsewhere, then \`.sum().neg()\`.
 `,
       predict: { question: 'If your mask started at position nImage instead of nImage − 1, what would the trained captioner write first?', answer: 'Nothing trained: the first caption word is never a target, so its logits at the last image slot stay at their random initial values. Greedy decoding then starts with an arbitrary word (or eos, and an empty caption), and the rest of the caption is conditioned on that wrong start.' },
       hints: [
@@ -188,7 +191,7 @@ The worked \`ClipHead\` provides the two towers. The image tower is your \`Patch
       instructions: `
 The worked \`Captioner\` wires your pieces together: \`model.imageTokens(images)\` runs \`stackPatches → PatchEmbed → Projector\` and returns \`[B, P, C]\` in the GPT's embedding space. It also holds \`model.gpt\`, \`model.tokenizer\` (\`encode\`, \`decode\`), \`model.eos\` and \`model.nPatches\`. Always use \`model.eos\`: this module's tokenizer happens to give eos id 0, but the tests use one where it is not.
 
-**\`captionLoss(model, images, captions)\`**: \`images\` is an array of raw \`[16, 16]\` images, \`captions\` an array of strings. Encode each caption, pad all of them to the longest with \`captionTargets(model.nPatches, ids, model.eos, width)\`, build the sequence with \`embedSequence\`, run \`forwardEmbeds\`, and return \`maskedCrossEntropy\`. Use one batched forward pass.
+**\`captionLoss(model, images, captions)\`**: \`images\` is an array of raw \`[16, 16]\` images, \`captions\` an array of strings. Encode each caption, pad all of them to the longest with \`captionTargets(model.nPatches, ids, model.eos, width)\`, build the sequence with \`embedSequence\`, run \`forwardEmbeds\`, and return \`maskedCrossEntropy\`. Use one batched forward pass. \`captionTargets\` describes one example, so collect the per-example \`textIds\`, \`targets\` and \`mask\` into B-row arrays (for example \`rows.map((r) => r.targets)\`) before you pass them on.
 
 **\`caption(model, image, { maxNewTokens = 12 })\`**: greedy decoding inside \`noGrad\`. Start from the image tokens alone. At each step run \`forwardEmbeds\` on image + words so far, take the **argmax** of the last position's logits, stop at \`eos\` (do not include it), and otherwise append the word. Stop after \`min(maxNewTokens, blockSize − nPatches)\` words so the sequence never exceeds \`blockSize\`. Return \`model.tokenizer.decode(words)\`.
 
