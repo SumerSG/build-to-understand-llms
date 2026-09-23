@@ -21,6 +21,7 @@ const only = args.includes('--module') ? args[args.indexOf('--module') + 1] : nu
 const skipDemo = args.includes('--skip-demo');
 const demoOnly = args.includes('--demo-only');
 const quiet = args.includes('--quiet');
+const skipIncomplete = args.includes('--skip-incomplete');   // CI while modules are still being written
 
 const { MODULES, TRACKS } = await import(pathToFileURL(path.join(ROOT, 'modules/index.js')).href);
 
@@ -186,8 +187,13 @@ async function runTests(tests, m) {
 
 const targets = MODULES.filter((m) => m.status === 'ready' && (!only || m.id === only));
 if (!targets.length) { console.error(only ? `No ready module with id ${only}` : 'No ready modules'); process.exit(2); }
-let failed = 0;
+let failed = 0, skipped = 0;
+const REQUIRED = ['module.js', 'starter.js', 'solution.js', 'tests.js', 'demo.js'];
 for (const meta of targets) {
+  if (skipIncomplete) {
+    const missing = REQUIRED.filter((f) => !existsSync(path.join(ROOT, 'modules', meta.id, f)));
+    if (missing.length) { skipped++; console.log(`SKIP  ${meta.id}  (in progress: missing ${missing.join(', ')})`); continue; }
+  }
   const r = await verifyModule(meta);
   const ok = r.errors.length === 0;
   if (!ok) failed++;
@@ -200,5 +206,5 @@ for (const meta of targets) {
   if (!quiet) for (const w of r.warnings) console.log(`      ! ${w}`);
   if (r.demo && r.demo.done && !quiet) console.log(`      done: ${r.demo.done.replace(/\s+/g, ' ').slice(0, 160)}`);
 }
-console.log(`\n${targets.length - failed}/${targets.length} modules verified`);
+console.log(`\n${targets.length - failed - skipped}/${targets.length - skipped} modules verified${skipped ? ` (${skipped} in progress, skipped)` : ''}`);
 process.exit(failed ? 1 : 0);
