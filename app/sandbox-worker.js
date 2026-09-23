@@ -1,6 +1,6 @@
 // app/sandbox-worker.js — runs learner code, tests, and goal demos off the main thread.
 import { rewriteImports } from './rewrite.js';
-import { makeT } from './testkit.js';
+import { makeT, watchLearner, explainError, explainMessage, failureMessage } from './testkit.js';
 
 let currentRun = null;
 
@@ -54,9 +54,10 @@ function fmtArg(a) {
   } catch { return String(a); }
 }
 
-async function importSource(code, base) {
+async function importSource(code, base, onUrl = null) {
   const blob = new Blob([rewriteImports(code, base)], { type: 'text/javascript' });
   const url = URL.createObjectURL(blob);
+  if (onUrl) onUrl(url);
   try { return await import(url); } finally { URL.revokeObjectURL(url); }
 }
 
@@ -95,6 +96,11 @@ async function fetchText(url) {
   return r.text();
 }
 
+// The untouched starter, so a failure can say "this function is not written yet". Best effort: '' if missing.
+async function fetchStarter(testsUrl) {
+  try { return testsUrl ? await fetchText(testsUrl.replace(/tests\.js$/, 'starter.js')) : ''; } catch { return ''; }
+}
+
 function makeLab() {
   let doneCalled = false;
   return {
@@ -122,15 +128,19 @@ function plain(x) {
 
 const errMsg = (err) => (err && err.message ? err.message : String(err));
 
+// Errors keep their original text; explainError adds plain-words notes after it (see app/testkit.js).
 async function loadLearner(code, base) {
-  try { return await importSource(code, base); }
+  let file = '';
+  try { return { mod: await importSource(code, base, (u) => { file = u; }), file }; }
   catch (err) {
     if (err instanceof SyntaxError) {
       const loc = await locateSyntaxError(code, err.message);
       const where = loc ? ` on line ${loc.line}${loc.col ? `, column ${loc.col}` : ''}` : '';
-      post({ type: 'error', syntax: true, line: loc ? loc.line : null, col: loc ? loc.col : null, message: `Your file could not be loaded (syntax error${where}): ${err.message}` });
+      const notes = explainError(err, { source: code }, { line: loc ? loc.line : 0 });
+      post({ type: 'error', syntax: true, line: loc ? loc.line : null, col: loc ? loc.col : null, message: explainMessage(`Your file could not be loaded (syntax error${where}): ${err.message}`, notes) });
     } else {
-      post({ type: 'error', message: `Your file threw while loading: ${errMsg(err)}`, stack: err && err.stack });
+      const notes = explainError(err, { source: code, file });
+      post({ type: 'error', message: explainMessage(`Your file threw while loading: ${errMsg(err)}`, notes), stack: err && err.stack });
     }
     return null;
   }
@@ -141,9 +151,14 @@ self.onmessage = async (e) => {
   if (type !== 'run') return;
   currentRun = runId;
   resetLogs();
+  let watch = null;
   try {
-    const learner = await loadLearner(code, base);
-    if (!learner) { post({ type: 'run-finished' }); return; }
+    const [loaded, starter] = await Promise.all([loadLearner(code, base), fetchStarter(testsUrl)]);
+    if (!loaded) { post({ type: 'run-finished' }); return; }
+    // The tests and the demo see the learner's module through a recorder, so a failure can name the
+    // function that produced a wrong value (it changes no value and no behaviour).
+    watch = watchLearner(loaded.mod, { source: code, starter, file: loaded.file });
+    const learner = watch.module;
     if (mode === 'tests') {
       const testsSrc = await fetchText(testsUrl);
       const { tests } = await importSource(testsSrc, base);
@@ -151,13 +166,14 @@ self.onmessage = async (e) => {
       let passed = 0, failed = 0;
       for (const t of selected) {
         const t0 = performance.now();
+        watch.reset();
         try {
-          await t.run(learner, makeT());
+          await t.run(learner, makeT(watch));
           passed++;
           post({ type: 'test', step: t.step, name: t.name, pass: true, message: '', ms: performance.now() - t0 });
         } catch (err) {
           failed++;
-          post({ type: 'test', step: t.step, name: t.name, pass: false, message: errMsg(err), stack: err && err.stack, ms: performance.now() - t0 });
+          post({ type: 'test', step: t.step, name: t.name, pass: false, message: failureMessage(err, watch), stack: err && err.stack, ms: performance.now() - t0 });
         }
       }
       post({ type: 'tests-done', passed, failed, total: selected.length });
@@ -170,7 +186,7 @@ self.onmessage = async (e) => {
       post({ type: 'run-finished' });
     }
   } catch (err) {
-    post({ type: 'error', message: errMsg(err), stack: err && err.stack });
+    post({ type: 'error', message: watch ? failureMessage(err, watch) : errMsg(err), stack: err && err.stack });
     post({ type: 'run-finished' });
   }
 };

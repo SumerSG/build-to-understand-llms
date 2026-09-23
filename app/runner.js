@@ -58,12 +58,12 @@ export class Runner {
         if (msg.type === 'tests-done' || msg.type === 'run-finished') finish();
       };
       worker.onerror = (e) => {
-        results.error = { message: e.message || 'Worker error (often a syntax error in your code)' };
+        results.error = { message: e.message || 'The code runner stopped with an error it could not describe (often a syntax error in your code: check the brackets and quotes near your last edit).' };
         onMessage({ type: 'error', message: results.error.message });
         finish();
       };
       this.timer = setTimeout(() => {
-        results.error = { message: `Timed out after ${Math.round(timeout / 1000)} s. Check for an infinite loop or reduce the work.` };
+        results.error = { message: `Timed out after ${Math.round(timeout / 1000)} s: your code was still running. Usually a loop never ends (a while loop whose condition never becomes false, or a for loop whose counter never reaches its limit, e.g. i-- where i++ was meant); otherwise it does far more work than needed.` };
         onMessage({ type: 'error', message: results.error.message });
         finish();
       }, timeout);
