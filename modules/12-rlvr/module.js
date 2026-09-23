@@ -14,7 +14,7 @@ export default {
     { q: 'A tensor `x` is used twice in a graph (module 02). After `backward()`, `x.grad` holds…', options: ['Only the gradient from the last use', 'The sum of the gradients from both uses', 'The product of the two gradients'], answer: 1,
       why: 'The policy\'s log-probability appears in both the clipped objective and the KL term of the GRPO loss; the two gradients accumulate into the same weights, and `beta` sets the balance.' },
     { q: 'In module 07, what does AdamW\'s division by `sqrt(v)` achieve?', options: ['It normalises the loss', 'Every parameter moves by roughly `lr` per step, whatever the scale of its gradient', 'It prevents overflow'], answer: 1,
-      why: 'Your GRPO loop reuses AdamW. Because the step size is roughly `lr` regardless of gradient scale, a group whose rewards are all equal (zero advantage, zero gradient) must produce an exactly zero update, which is one of the tests.' },
+      why: 'Your GRPO loop reuses AdamW. Because the step size is roughly `lr` regardless of gradient scale, even a tiny spurious gradient (say 1e-9 from a NaN-guard or a rounding error) would move a weight by about `lr`. Only an exactly zero gradient gives zero first and second moments and so a zero step, which is why an all-equal group must produce advantages of exactly 0 (one of the tests).' },
   ],
   review: [
     { q: 'In a group of 8 samples where exactly one is correct, the correct sample\'s advantage is…', options: ['1', '(1 − 1/8) / sqrt(7/64) ≈ 2.65', '1/8'], answer: 1,
@@ -33,7 +33,7 @@ export default {
 
 RLHF as used for InstructGPT trains three networks: the policy, a **reward model** fitted to human preference pairs (module 11), and a **value network** (the "critic") that PPO uses as its baseline. The critic is as large as the policy and its errors leak into every update.
 
-**RL with verifiable rewards (RLVR)** replaces the reward model with a program: a script (arithmetic, unit tests, a proof checker) decides whether a completion is right. The reward is \`1\` or \`0\` and nothing about reward is learned. DeepSeekMath (Shao et al. 2024) and DeepSeek-R1 (2025) showed that this alone, at scale, teaches long reasoning chains.
+**RL with verifiable rewards (RLVR)** replaces the reward model with a program: a script (arithmetic, unit tests, a proof checker) decides whether a completion is right. The reward is \`1\` or \`0\` and nothing about reward is learned. The name comes from AI2's Tülu 3 report (Lambert et al. 2024). DeepSeekMath (Shao et al. 2024) introduced the GRPO algorithm below, still with a learned reward model; DeepSeek-R1 (2025) ran GRPO on rule-based rewards alone (answer accuracy plus a format check) and showed that this, at scale, teaches long reasoning chains.
 
 ## GRPO: the group is the baseline
 
@@ -41,7 +41,7 @@ A policy gradient needs a **baseline** to compare each reward against, so that e
 
 \`A_i = (r_i − mean(r)) / (std(r) + eps)\`
 
-computed within its group only. A baseline independent of the sample drawn leaves the expected gradient unchanged and removes the variance due to prompt difficulty; dividing by the std makes a rare success count for more. No critic to train, and roughly half the trainable parameters PPO keeps in memory.
+computed within its group only. Subtracting a baseline that does not depend on the sample being scored leaves the expected gradient unchanged and removes the variance due to prompt difficulty. The group mean is almost that: it includes \`r_i\` itself, which only shrinks the expected gradient by a factor \`(1 − 1/G)\`. Dividing by the std is a choice, not a free lunch: it makes a rare success count for more, but it also reweights prompts by how uncertain the policy is on them, which Dr. GRPO (Liu et al. 2025) argues is a bias and removes. No critic to train, and roughly half the trainable parameters PPO keeps in memory.
 
 :::predict
 The policy starts uniform over 100 answers. With \`G = 8\`, what fraction of prompts get a group with at least one correct sample, and what advantage does an all-wrong group get?
@@ -57,7 +57,7 @@ With \`logp_i\` the policy's log-probability of sample \`i\`, REINFORCE minimise
 
 with \`ε = 0.2\`: a sample whose probability has already moved 20% the way its advantage wanted stops giving gradient.
 
-A **KL penalty** to a frozen reference (the SFT model) keeps the policy from drifting somewhere the verifier is satisfied but the language is broken. GRPO's estimator is \`k3 = exp(ref − logp) − (ref − logp) − 1\`, averaged over samples: unbiased for \`KL(π ‖ ref)\` and non-negative for every sample (Schulman 2020), so noise can never turn the penalty into a bonus. Your loss is \`clippedLoss + β · klPenalty\`.
+A **KL penalty** to a frozen reference (the SFT model) keeps the policy from drifting somewhere the verifier is satisfied but the language is broken. GRPO's estimator is \`k3 = exp(ref − logp) − (ref − logp) − 1\`, averaged over samples: unbiased for \`KL(π ‖ ref)\` when the samples are drawn from \`π\`, and non-negative for every sample (Schulman 2020, "Approximating KL divergence"), so noise can never turn the penalty into a bonus. Your loss is \`clippedLoss + β · klPenalty\`.
 
 :::predict
 After a rollout you take exactly one gradient step (\`mu = 1\`). What is the ratio \`r_i\` when the loss is evaluated, and how many samples are clipped?
@@ -67,7 +67,7 @@ Exactly 1 for every sample: the parameters that sampled also compute the log-pro
 
 ## Reward hacking is only impossible if the verifier is sound
 
-A checker that accepts any completion *containing* the answer is beaten by a policy that lists every number. Real pipelines add **format rewards** (the answer inside \`\\boxed{}\` or a tag) so parsing is unambiguous, and watch response length: with a per-sequence average, long answers are cheap (DAPO's token-level loss and Dr. GRPO's removal of the length normalisation answer exactly that). Your \`verify\` compares numbers, not strings, and returns \`0\` on garbage.
+A checker that accepts any completion *containing* the answer is beaten by a policy that lists every number. Real pipelines add **format rewards** (the answer inside \`\\boxed{}\` or a tag) so parsing is unambiguous, and watch response length: GRPO averages the loss over each sequence's tokens, so a long wrong answer is penalised less per token than a short one and length creeps up (DAPO's token-level loss and Dr. GRPO's removal of the length normalisation answer exactly that). Your \`verify\` compares numbers, not strings, and returns \`0\` on garbage.
 
 ## Reasoning traces and test-time scaling
 
@@ -79,7 +79,7 @@ In production most wall-clock goes to generation, not gradient steps: 16 samples
 
 ## Where this toy differs from production
 
-The policy here is a linear softmax over the 100 answers \`0..99\`, with logits summed from hashed question features, and a completion is a single token. It is fast, but the policy memorises prompts rather than learning arithmetic: its accuracy on unseen questions stays near zero, and rewards are dense (1 in 100 at the start) where real tasks start at 1 in thousands. In production the policy is the SFT transformer, \`logp_i\` is a sum over every token of a sampled trace, the group is 8 to 64 samples, the reference is a second copy of the weights, and the gains come over thousands of iterations. The algorithm you write is otherwise the same.
+The policy here is a linear softmax over the 100 answers \`0..99\`, with logits summed from hashed question features, and a completion is a single token. It is fast, but the policy memorises prompts rather than learning arithmetic: its accuracy on unseen questions stays near zero (the demo's warm start shows it), and it starts from nothing, a 1-in-100 hit rate, where a real run starts from an SFT model that already solves a useful fraction of its prompts (prompts it always or never solves are often filtered out beforehand). In production the policy is the SFT transformer, \`logp_i\` is a sum over every token of a sampled trace, the group is 8 to 64 samples, the reference is a second copy of the weights, and the gains come over thousands of iterations. The algorithm you write is otherwise the same.
 `,
   steps: [
     {
@@ -100,7 +100,7 @@ The \`Policy\` class above the TODO line is given; read \`probs\` and \`logProbs
       hints: [
         'A regular expression finds the number: an optional minus sign, digits, an optional fraction. `Number(match)` converts it. For verify, compare two numbers with a small tolerance, and remember that `parseAnswer` may return `null`.',
         'rollout is two nested loops: over tasks, then `G` times. Compute the probability array once per task (outside the inner loop), draw `token = sampleIndex(probs, next())`, and build the sample object with `Math.log(probs[token])`.',
-        '`const m = /* regex: optional minus, digits, optional fraction */.exec(String(text)); return m ? Number(m[0]) : null;` for parseAnswer. In rollout: `for (let i …) { const probs = policy.probs(tasks[i].question); for (let j = 0; j < G; j++) { const token = /* one draw */; samples.push({ group: i, task: tasks[i], token, text: String(token), reward: verifyFn(tasks[i], String(token)), oldLogp: Math.log(probs[token]) }); } }`',
+        '`const m = /* regex: optional minus, digits, optional fraction */.exec(String(text)); return m ? Number(m[0]) : null;` for parseAnswer. rollout is shaped `for (i over tasks) { probs = policy.probs(question_i); for (j < G) { token = /* one fresh draw */; samples.push({ group, task, token, text, reward, oldLogp }); } }`: each field is a one-liner from the instructions, and `reward` must call `verifyFn`, not `verify`.',
       ],
     },
     {
@@ -119,7 +119,7 @@ where \`mean_g\` and \`std_g\` are the mean and **population** standard deviatio
       hints: [
         'Loop over group starts `start = 0, G, 2G, …`. Inside, two passes over the `G` entries: one for the mean, one for the variance around that mean. Then a third to write the advantages.',
         'Variance is the mean of squared deviations: `sum((r − mean)²) / G`. Take `Math.sqrt`, add `eps`, divide. Do not normalise over the whole batch: group 0 must not see group 1\'s rewards.',
-        '`for (let start = 0; start < rewards.length; start += G) { let mean = 0; for (j) mean += rewards[start + j]; mean /= G; let variance = 0; for (j) variance += (rewards[start + j] - mean) ** 2; const std = /* population std */; for (j) adv[start + j] = (rewards[start + j] - mean) / (std + eps); }`',
+        '`for (let start = 0; start < rewards.length; start += G) { const mean = /* average of rewards[start .. start+G) */; const std = /* population std of the same slice around mean */; for (let j = 0; j < G; j++) adv[start + j] = /* the formula */; }`, preceded by the multiple-of-G check.',
       ],
     },
     {
@@ -164,9 +164,9 @@ Three functions.
 
 \`entropyOf(probs)\`: Shannon entropy in nats, \`−Σ p log p\`, skipping zero entries. Uniform over 100 answers gives \`ln 100 ≈ 4.605\`; a one-hot gives 0. Entropy is the health signal of an RL run: it should fall as the policy commits, and a collapse to 0 means no more mixed groups.
 
-\`grpoStep(policy, ref, tasks, { G, beta, clip, mu, optimizer, next, verifyFn })\`: one iteration. Roll out \`G\` samples per task; \`groupAdvantages\` on the rewards; collect \`questions\`, \`tokens\` and \`oldLogp\` from the samples; compute the reference log-probs once inside \`noGrad\` with \`selectLogProbs(ref.logProbs(questions), tokens)\` (a Float32Array via \`.data\`). Measure the mean \`entropyOf(policy.probs(q))\` over the tasks and \`signalFrac\`, the fraction of groups with any non-zero advantage, before updating. Then \`mu\` times: \`logp = selectLogProbs(policy.logProbs(questions), tokens)\`, \`total = clippedLoss(logp, oldLogp, adv, clip) + beta · klPenalty(logp, refLogp)\`, \`zeroGrad → backward → step\` (the ritual in \`sftWarmup\`). Return \`{ reward, kl, entropy, loss, clipFrac, signalFrac, samples, adv }\`, where \`reward\` is the mean rollout reward, \`kl\` and \`loss\` come from the last gradient step, and \`clipFrac\` is the fraction of samples whose ratio in that step lay outside \`[1 − clip, 1 + clip]\` on the side the advantage wanted.
+\`grpoStep(policy, ref, tasks, { G, beta, clip, mu, optimizer, next, verifyFn })\`: one iteration. Roll out \`G\` samples per task; \`groupAdvantages\` on the rewards; collect \`questions\`, \`tokens\` and \`oldLogp\` from the samples; compute the reference log-probs once inside \`noGrad\` with \`selectLogProbs(ref.logProbs(questions), tokens)\` (a Float32Array via \`.data\`). Measure the mean \`entropyOf(policy.probs(q))\` over the tasks and \`signalFrac\`, the fraction of groups with any non-zero advantage, before updating. Then \`mu\` times: \`logp = selectLogProbs(policy.logProbs(questions), tokens)\`, \`total = clippedLoss(logp, oldLogp, adv, clip) + beta · klPenalty(logp, refLogp)\` (in Tensor ops: \`pg.add(klTerm.scale(beta))\`), \`zeroGrad → backward → step\` (the ritual in \`sftWarmup\`). \`oldLogp\` stays the rollout's value on every one of the \`mu\` steps: that is what lets the ratio move away from 1 and the clip engage. Return \`{ reward, kl, entropy, loss, clipFrac, signalFrac, samples, adv }\`, where \`reward\` is the mean rollout reward, \`kl\` and \`loss\` come from the last gradient step, and \`clipFrac\` is the fraction of samples whose ratio in that step lay outside \`[1 − clip, 1 + clip]\` on the side the advantage wanted.
 
-\`trainGRPO(policy, ref, tasks, opts)\`: create one \`AdamW\` over \`policy.parameters()\` with \`opts.lr\`, then for \`iterations\`: take a batch of \`batchSize\` tasks from a shuffled copy (\`shuffle(next, tasks.slice())\`), call \`grpoStep\`, push \`{ iteration, reward, kl, entropy, loss, clipFrac, signalFrac }\`, and \`await onIter(record, i)\` when given. Return the history. All randomness must go through \`next\` so that a seed reproduces a run.
+\`trainGRPO(policy, ref, tasks, opts)\`: create one \`AdamW\` over \`policy.parameters()\` with \`opts.lr\`, then for \`iterations\`: take a batch of \`batchSize\` tasks from a shuffled copy (\`shuffle(next, tasks.slice())\`), call \`grpoStep\` (passing \`opts.verifyFn\` through), push \`{ iteration, reward, kl, entropy, loss, clipFrac, signalFrac }\`, and \`await onIter(record, i)\` when given. Return the history. All randomness must go through \`next\` so that a seed reproduces a run.
 `,
       predict: { question: 'The reference equals the policy and the rollout\'s rewards are all 0. After one grpoStep, how much did the weights move?', answer: 'Not at all. Every advantage is 0, so the clipped loss has zero gradient; and at policy = reference the k3 gradient `1 − exp(0)` is 0 too. AdamW turns a zero gradient into a zero step. GRPO learns nothing from prompts it always fails, or always solves.' },
       hints: [

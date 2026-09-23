@@ -1,8 +1,9 @@
 import { BPETokenizer } from 'lib/tokenizer.js';
 import { GPT } from 'lib/gpt.js';
 import { Tensor, crossEntropy } from 'lib/tensor.js';
-import { AdamW } from 'lib/optim.js';
+import { AdamW, clipGradNorm } from 'lib/optim.js';
 import { CHAT } from 'lib/data.js';
+import { randInt } from 'lib/util.js';
 
 const FIXTURE_TEXT = 'say hello to the cat and the dog. hello! the cat sat on the mat, the dog ran to the barn. one two three. name a color: red or blue.';
 const MARKERS = [CHAT.system, CHAT.user, CHAT.assistant, CHAT.end];
@@ -37,6 +38,29 @@ function randomLogits(shape, next) {
 }
 
 function sum(arr) { let s = 0; for (const v of arr) s += v; return s; }
+
+/** Reference masked cross-entropy, so the finetune test can replay the run the instructions describe. */
+function refMaskedCE(logits, y, mask) {
+  const V = logits.shape[logits.shape.length - 1];
+  const targets = y.flat(Infinity), weights = mask.flat(Infinity);
+  const pick = new Float32Array(targets.length * V);
+  for (let i = 0; i < targets.length; i++) pick[i * V + targets[i]] = weights[i];
+  return logits.logSoftmax().mul(new Tensor({ shape: logits.shape.slice(), data: pick })).sum().scale(-1 / sum(weights));
+}
+
+/** An optimizer stand-in that records what the gradients look like at the moment step() runs. */
+function spyOptimizer(params) {
+  return {
+    t: 0, calls: [],
+    step() {
+      let ss = 0, hasGrad = true;
+      for (const p of params) { if (!p.grad) { hasGrad = false; continue; } for (let i = 0; i < p.grad.length; i++) ss += p.grad[i] * p.grad[i]; }
+      this.calls.push(['step', Math.sqrt(ss), hasGrad]);
+      this.t++;
+    },
+    zeroGrad() { this.calls.push(['zeroGrad']); for (const p of params) p.zeroGrad(); },
+  };
+}
 
 export const tests = [
   // ---------- step 1 ----------
@@ -247,6 +271,7 @@ export const tests = [
     const src = model.parameters(), dst = grown.parameters();
     T.eq(dst.length, src.length, 'same parameter list');
     for (let k = 1; k < src.length; k++) T.eq(Array.from(dst[k].data), Array.from(src[k].data), `parameter ${k} (not wte) must be copied exactly`);
+    for (let k = 0; k < src.length; k++) T.ok(dst[k].data.buffer !== src[k].data.buffer, `parameter ${k} must be a COPY: sharing the Float32Array with the base model means fine-tuning the new model silently rewrites the checkpoint you started from`);
     const ids = [[1, 5, 9, 2, 17, 3]];
     const a = model.forward(ids), b = grown.forward(ids);
     T.shape(b, [1, 6, 23]);
@@ -268,6 +293,18 @@ export const tests = [
     for (const p of model.parameters()) T.ok(p.grad === null, 'gradients must be cleared after the step, or the next backward accumulates onto stale values');
     const r2 = m.sftStep(model, optimizer, batch);
     T.ok(r2.loss < r1.loss, `a step at lr 1e-2 must reduce the loss on the same batch (got ${r1.loss.toFixed(4)} then ${r2.loss.toFixed(4)})`);
+  } },
+  { step: 'finetune', name: 'sftStep clips BEFORE the optimizer step, honours maxGradNorm, and clears gradients after it', run(m, T) {
+    const model = tinyModel(20, 17);
+    const spy = spyOptimizer(model.parameters());
+    const batch = { x: [[1, 2, 3, 4, 5, 6]], y: [[2, 3, 4, 5, 6, 7]], mask: [[0, 0, 1, 1, 1, 1]] };
+    const r = m.sftStep(model, spy, batch, { maxGradNorm: 0.01 });
+    const steps = spy.calls.filter((c) => c[0] === 'step');
+    T.eq(steps.length, 1, 'call optimizer.step() exactly once');
+    T.ok(steps[0][2], 'every parameter must have a gradient when optimizer.step() runs: backward first, then step');
+    T.ok(r.gradNorm > 0.01, `the returned gradNorm is the norm BEFORE clipping (got ${r.gradNorm}); this batch's norm is well above 0.01`);
+    T.ok(steps[0][1] <= 0.01 * (1 + 1e-3), `when optimizer.step() runs the gradient norm must already be clipped to maxGradNorm = 0.01 (it was ${steps[0][1].toFixed(4)}): clip after backward and BEFORE step, and pass maxGradNorm through`);
+    T.eq(spy.calls[spy.calls.length - 1][0], 'zeroGrad', 'optimizer.zeroGrad() comes after optimizer.step()');
   } },
   { step: 'finetune', name: 'sftStep ignores masked-out targets: two batches that differ only there produce identical parameters', run(m, T) {
     const batchA = { x: [[1, 2, 3, 4, 5, 6]], y: [[2, 3, 4, 5, 6, 7]], mask: [[0, 0, 0, 1, 1, 1]] };
@@ -303,5 +340,33 @@ export const tests = [
     T.ok(last < first * 0.7, `25 steps at lr 1e-2 on 3 packs must cut the masked loss well below its start (first ${first.toFixed(3)}, last ${last.toFixed(3)})`);
     const again = await m.finetune(tinyModel(20, 31), packs, { steps: 25, lr: 1e-2, batchSize: 2, next: T.rng(4) });
     T.close(again, losses, 1e-6, 'the same seed must give the same run: batches come from `next`, nothing else');
+  } },
+  { step: 'finetune', name: 'finetune replays the specified run: one AdamW for the whole run with the given lr, betas, weightDecay and batchSize', async run(m, T) {
+    const eos = 19;
+    const packs = [
+      { x: [1, 2, 3, 4, 5, 6, 7, 8], y: [2, 3, 4, 5, 6, 7, 8, eos], mask: [0, 0, 1, 1, 1, 1, 1, 0] },
+      { x: [9, 10, 11, 12, 13, 14, 15, 16], y: [10, 11, 12, 13, 14, 15, 16, eos], mask: [0, 0, 0, 1, 1, 1, 1, 0] },
+      { x: [3, 1, 4, 1, 5, 9, 2, 6], y: [1, 4, 1, 5, 9, 2, 6, eos], mask: [0, 1, 1, 1, 1, 1, 1, 0] },
+      { x: [7, 7, 8, 8, 9, 9, 1, 1], y: [7, 8, 8, 9, 9, 1, 1, eos], mask: [0, 0, 0, 0, 1, 1, 1, 1] },
+    ];
+    const opts = { steps: 8, lr: 5e-3, batchSize: 3, weightDecay: 0.5, maxGradNorm: 0.5 };
+    const got = await m.finetune(tinyModel(20, 41), packs, { ...opts, next: T.rng(8) });
+    // The reference run, exactly as the instructions describe it.
+    const ref = tinyModel(20, 41);
+    const optimizer = new AdamW(ref.parameters(), { lr: opts.lr, betas: [0.9, 0.95], weightDecay: opts.weightDecay });
+    const next = T.rng(8);
+    const want = [];
+    for (let step = 0; step < opts.steps; step++) {
+      const x = [], y = [], mask = [];
+      for (let b = 0; b < opts.batchSize; b++) { const p = packs[randInt(next, packs.length)]; x.push(p.x); y.push(p.y); mask.push(p.mask); }
+      const loss = refMaskedCE(ref.forward(x), y, mask);
+      loss.backward();
+      clipGradNorm(ref.parameters(), opts.maxGradNorm);
+      optimizer.step();
+      optimizer.zeroGrad();
+      want.push(loss.item());
+    }
+    T.eq(got.length, opts.steps, 'one loss per step');
+    T.close(got, want, 1e-4, 'the losses must match the specified run: create ONE AdamW before the loop (its moments carry across steps) with betas [0.9, 0.95] and the given lr and weightDecay, draw sampleBatch(packs, batchSize, next) each step, and pass maxGradNorm to sftStep');
   } },
 ];

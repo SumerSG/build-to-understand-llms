@@ -9,7 +9,7 @@ export default {
   recall: [
     { q: 'In module 10, which positions did the SFT loss mask select?', options: ['Every token of the window', 'The assistant\'s response tokens, including the end marker', 'The prompt tokens'], answer: 1,
       why: 'The same mask defines "the response" here: the log-probability of a response is summed over exactly the positions that would have counted in SFT.' },
-    { q: 'In module 02, what does `noGrad(fn)` change?', options: ['It zeroes every gradient', 'Ops inside fn record no graph, so the result cannot be backpropagated through and no memory is kept for it', 'It makes the forward pass faster by skipping layers'], answer: 1,
+    { q: 'In module 07 you ran validation inside `noGrad(fn)` from lib/tensor.js. What does it change?', options: ['It zeroes every gradient', 'Ops inside fn record no graph, so the result cannot be backpropagated through and no memory is kept for it', 'It makes the forward pass faster by skipping layers'], answer: 1,
       why: 'The frozen reference model is only ever run under noGrad: its log-probs are constants, and the DPO gradient must reach the policy only.' },
     { q: 'From module 04: the log-probability a language model assigns to a whole sequence is…', options: ['The log-prob of its last token', 'The sum of the log-probs of each token given the tokens before it', 'The mean of the per-token log-probs'], answer: 1,
       why: 'The chain rule of probability: log p(y₁…yₙ) = Σ log p(yₜ | y₁…yₜ₋₁). DPO compares these sums; averaging instead would change what "preferred" means for responses of different lengths.' },
@@ -24,7 +24,7 @@ export default {
     { q: 'In DPO, the implicit reward of a response is…', options: ['Its log-probability under the policy', 'β · (log π(y|x) − log ref(y|x)), up to a per-prompt constant that cancels in the pair difference', 'The output of a separate reward head'], answer: 1,
       why: 'Inverting the optimal KL-regularised policy π* = ref · exp(r/β) / Z gives r = β log(π*/ref) + β log Z, and log Z(x) is the same for both responses to the same prompt.' },
     { q: 'What does a reward accuracy of 70% on held-out pairs tell you?', options: ['The model is 70% correct on any task', 'On 7 of 10 unseen pairs the chosen response gets the higher score; chance is 50%, and human annotators themselves agree only about 70–75% of the time', 'The reward model has failed'], answer: 1,
-      why: 'Reward accuracy is pairwise ranking accuracy on unseen pairs. Stiennon et al. 2020 and Ouyang et al. 2022 report inter-annotator agreement of approximately 73%, which caps how much a reward model can learn from the labels.' },
+      why: 'Reward accuracy is pairwise ranking accuracy on unseen pairs. Ouyang et al. 2022 measured agreement between their labellers at approximately 73%, and Stiennon et al. 2020 report a similar figure for summaries; that caps how much a reward model can learn from the labels.' },
     { q: 'After DPO the margin on a pair is +2 while the chosen response\'s own log-ratio is −1.9. Is that possible?', options: ['No, a positive margin needs a positive chosen log-ratio', 'Yes: the loss only constrains the difference, so the rejected response fell by more than the chosen one', 'Only if β is negative'], answer: 1,
       why: 'DPO can raise the margin by lowering both log-probs unequally. Production runs log the chosen and rejected log-ratios separately (and variants such as DPO-Positive add a term to stop the chosen one from falling) for exactly this reason.' },
   ],
@@ -39,7 +39,7 @@ The Bradley–Terry model (1952) turns a comparison into a number. Give every re
 L_BT = −log σ(r_c − r_r)
 \`\`\`
 
-Its gradient with respect to the margin \`m = r_c − r_r\` is \`−(1 − σ(m))\`: a pair already ranked with a wide margin contributes almost nothing, a pair ranked wrongly contributes almost a full unit. Chess Elo and the Chatbot Arena leaderboard are this model fitted to match outcomes.
+Its gradient with respect to the margin \`m = r_c − r_r\` is \`−(1 − σ(m))\`: a pair already ranked with a wide margin contributes almost nothing, a pair ranked wrongly contributes almost a full unit. Chess Elo ratings use the same logistic model (in base 10, with scores scaled by 400), and the Chatbot Arena leaderboard fits it to human votes between chatbots.
 
 :::predict
 The reward model gives both responses of a pair the same score. What is the loss, and what is the gradient with respect to the chosen score?
@@ -49,7 +49,7 @@ The loss is \`−log σ(0) = log 2 ≈ 0.693\` and the gradient is \`−(1 − 1
 
 ## The reward model
 
-A reward model is the language model with its LM head replaced by \`Linear(C, 1)\` read at the last token, whose hidden state has attended to the whole prompt and response. In production the entire network is fine-tuned on the comparisons; here you keep the 120k-parameter checkpoint frozen and train the head alone. The number you report is **reward accuracy**: the fraction of held-out pairs where the chosen response scores higher. Chance is 50%. Published RMs reach approximately 65–75% (Ouyang et al. 2022 report about 72.6% for their 6B RM, and note that labellers agree with each other only about 73% of the time), so 70% is close to the ceiling the labels allow, not a weak RM.
+A reward model is the language model with its LM head replaced by \`Linear(C, 1)\` read at the last token, whose hidden state has attended to the whole prompt and response. In production the entire network is fine-tuned on the comparisons; here you keep the 120k-parameter checkpoint frozen and train the head alone. The number you report is **reward accuracy**: the fraction of held-out pairs where the chosen response scores higher. Chance is 50%. Published RMs reach approximately 65–75%: Ouyang et al. 2022 report that their 6B RM predicts the preferences of the labellers it was trained on about 72% of the time and of held-out labellers about 70%, while their labellers agree with *each other* only about 73% of the time. So 70% is close to the ceiling the labels allow, not a weak RM.
 
 ## Why a reference model and β
 
@@ -85,11 +85,11 @@ Margin = 0.1 · (0.4 − (−0.6)) = 0.1. And yes: the loss constrains only the 
 
 ## Variants, in one paragraph
 
-**IPO** (Azar et al. 2023) replaces the log-sigmoid with a squared loss on the margin, so the policy stops pushing at a target margin instead of overfitting near-deterministic preferences. **KTO** (Ethayarajh et al. 2024) needs no pairs, only good/bad labels on single responses. **ORPO** (Hong et al. 2024) drops the reference and adds an odds-ratio term to the SFT loss. **SimPO** (Meng et al. 2024) also drops the reference and uses the *length-normalised* log-probability with a target margin, a direct attack on length bias. Meta's Llama 3 report (2024) describes rounds of rejection sampling plus DPO on top of SFT; most open pipelines use DPO or a close variant, with PPO or GRPO (module 12) reserved for rewards a verifier can compute.
+**IPO** (Azar et al. 2023) replaces the log-sigmoid with a squared loss on the margin, so the policy stops pushing at a target margin instead of overfitting near-deterministic preferences. **KTO** (Ethayarajh et al. 2024) needs no pairs, only good/bad labels on single responses. **ORPO** (Hong et al. 2024) drops the reference and adds an odds-ratio term to the SFT loss. **SimPO** (Meng et al. 2024) also drops the reference and uses the *length-normalised* log-probability with a target margin, a direct attack on length bias. Meta's Llama 3 report (2024) describes rounds of rejection sampling plus DPO on top of SFT; many open pipelines use DPO or a close variant, with PPO or GRPO (module 12) reserved for rewards a verifier can compute.
 
 ## Where this toy differs from production
 
-Your reward model is a linear probe on a frozen 2-layer, 120k-parameter GPT; a production RM is a full fine-tune of a model with billions of parameters, and your held-out set is 10 pairs, so one pair moves the accuracy by 10 points. You train DPO on 32 pairs for 150 steps of 2 pairs at a learning rate of 1e-4; real runs use approximately 10⁴–10⁶ pairs, batches of 32–128 pairs, learning rates of roughly 5e-7 to 1e-6 with β ≈ 0.1, and a single epoch, because DPO overfits quickly. You precompute the reference log-probs once, as TRL's \`precompute_ref_log_probs\` option does; large runs often keep the reference model resident instead. And your pairs use a plain \`prompt\\nresponse\` template rather than module 10's chat markers, which the checkpoint has never seen.
+Your reward model is a linear probe on a frozen 2-layer, 120k-parameter GPT; a production RM is a full fine-tune of a model with billions of parameters, and your held-out set is 10 pairs, so one pair moves the accuracy by 10 points. You train DPO on 32 pairs for 150 steps of 2 pairs at a learning rate of 1e-4; real runs use approximately 10⁴–10⁶ pairs, batches of 32–128 pairs, learning rates of roughly 5e-7 to 1e-6 with β ≈ 0.1, and one to three epochs, because DPO overfits quickly. You precompute the reference log-probs once, as TRL's \`precompute_ref_log_probs\` option does; large runs often keep the reference model resident instead. And your pairs use a plain \`prompt\\nresponse\` template rather than module 10's chat markers, which the checkpoint has never seen.
 `,
   steps: [
     {
@@ -141,7 +141,7 @@ Two small functions that make the derivation concrete.
 
 \`dpoLoss(policyChosen, policyRejected, refChosen, refRejected, beta)\`: \`−log σ(β[(π_c − ref_c) − (π_r − ref_r)])\` averaged over the batch, as a scalar Tensor. Do not write a second log-sigmoid: compute the two implicit rewards and hand them to your \`bradleyTerryLoss\`. That the code is two lines is the point of the module.
 
-Check with the values from the concept: \`dpoLoss([-10], [-12], [-11], [-11], 0.1)\` has margin 0.2 and loss 0.5981.
+Check by hand: \`dpoLoss([-10], [-12], [-11], [-11], 0.1)\` has margin 0.2 and loss 0.5981.
 `,
       predict: { question: 'Policy and reference agree on every pair. What is dpoLoss, and does its gradient with respect to the policy log-probs vanish?', answer: 'log 2 ≈ 0.693, and no: the gradient with respect to log π(chosen) is −β/(2N), so the first step already moves the policy. This is why step 1 tested the gradient at margin exactly 0.' },
       hints: [
@@ -163,8 +163,8 @@ Three functions. The class \`RewardHead\` (\`Linear(C, 1)\` reshaped to \`[B]\`)
 \`trainRewardHead(head, features, { steps, lr, weightDecay })\`: full-batch training. \`features\` is an array of \`{ chosen: Float32Array [C], rejected: Float32Array [C] }\`; stack each side into a \`[N, C]\` Tensor once, then each step: score both, \`bradleyTerryLoss\`, backward, AdamW step, zeroGrad, and record \`{ loss, accuracy }\`.
 `,
       hints: [
-        'hiddenStates: copy `GPT.forward` from lib/gpt.js and stop before `x.matmul(this.wte.weight.transpose())`. Positions are `[0, 1, …, T−1]`. lastTokenHidden: which single position of each sequence should survive a sum over T?',
-        'Selector: `select[b * T + lengths[b] − 1] = 1` in a Float32Array of size B·T, wrapped as a Tensor of shape [B, T, 1]. `h.mul(selector)` broadcasts over C; `.sum(1)` removes the T axis. Training: `new AdamW(head.parameters(), { lr, weightDecay })`, then the usual four calls per step.',
+        'hiddenStates: which tensor does the LM head read, and which lines of `GPT.forward` in lib/gpt.js produce it? lastTokenHidden: in a right-padded sequence of n real tokens, which position has attended to all of them, and how could a sum over T keep only that one?',
+        'hiddenStates is `GPT.forward` stopped before `x.matmul(this.wte.weight.transpose())`, with positions `[0, 1, …, T−1]`. Selector: `select[b * T + lengths[b] − 1] = 1` in a Float32Array of size B·T, wrapped as a Tensor of shape [B, T, 1]. `h.mul(selector)` broadcasts over C; `.sum(1)` removes the T axis. Training: `new AdamW(head.parameters(), { lr, weightDecay })`, then the usual four calls per step.',
         '`let h = model.wte.forward(x).add(model.wpe.forward(positions)); for (const block of model.blocks) h = block.forward(h); return /* … */;` and `return h.mul(new Tensor({ shape: [B, T, 1], data: select })).sum(1);` and in the loop `const loss = bradleyTerryLoss(head.forward(hChosen), head.forward(hRejected)); loss.backward(); /* … */; history.push({ loss: loss.item(), accuracy: rewardAccuracy(rChosen, rRejected) });`',
       ],
     },
@@ -172,9 +172,9 @@ Three functions. The class \`RewardHead\` (\`Linear(C, 1)\` reshaped to \`[B]\`)
       id: 'dpo-train',
       title: 'The DPO training loop',
       instructions: `
-\`dpoStep(policy, optimizer, batch, { beta, maxGradNorm })\`: \`batch\` holds \`chosen\` and \`rejected\` (two padded batches from \`padBatch\`) and \`refChosen\`, \`refRejected\` (plain arrays of reference log-probs). Run \`sequenceLogProbs\` on both, take \`dpoLoss\`, \`backward()\`, \`clipGradNorm\`, \`optimizer.step()\`, \`optimizer.zeroGrad()\`. Return \`{ loss, margin, accuracy, gradNorm }\`, where \`margin\` is the mean implicit reward margin and \`accuracy\` the reward accuracy, both measured on this step's forward pass (so step 1 reports margin 0 and accuracy 0 exactly). Computing those two numbers inside \`noGrad\` keeps them off the graph.
+\`dpoStep(policy, optimizer, batch, { beta, maxGradNorm })\`: \`batch\` holds \`chosen\` and \`rejected\` (two padded batches from \`padBatch\`) and \`refChosen\`, \`refRejected\` (plain arrays of reference log-probs). Run \`sequenceLogProbs\` on both, take \`dpoLoss\`, \`backward()\`, \`clipGradNorm\`, \`optimizer.step()\`, \`optimizer.zeroGrad()\`. Return \`{ loss, margin, accuracy, gradNorm }\`, where \`gradNorm\` is what \`clipGradNorm\` returns (the global norm *before* clipping), \`margin\` is the mean implicit reward margin and \`accuracy\` the reward accuracy, both measured on this step's forward pass (so step 1 reports margin 0 and accuracy 0 exactly). Computing those two numbers inside \`noGrad\` keeps them off the graph.
 
-\`trainDPO(policy, pairs, refLogps, opts)\`: an AdamW optimizer over the policy (betas \`[0.9, 0.95]\`), then \`steps\` times: draw \`batchSize\` indices with \`randInt(next, pairs.length)\`, pad the chosen examples and the rejected examples separately, look up \`refLogps.chosen[i]\` and \`refLogps.rejected[i]\`, call \`dpoStep\`, push the record, \`await onStep(step, record)\` if given. Return the records.
+\`trainDPO(policy, pairs, refLogps, opts)\`: \`new AdamW(policy.parameters(), { lr, betas: [0.9, 0.95], weightDecay })\`, then \`steps\` times: draw \`batchSize\` indices with \`randInt(next, pairs.length)\`, pad the chosen examples and the rejected examples separately, look up \`refLogps.chosen[i]\` and \`refLogps.rejected[i]\`, call \`dpoStep\` with \`{ beta, maxGradNorm }\`, push the record, \`await onStep(step, record)\` if given. Return the records.
 
 The reference never appears in the loop: \`referenceLogProbs\` (worked example) computed its numbers once under \`noGrad\`, which is what "frozen" means in practice.
 `,
@@ -192,8 +192,8 @@ The reference never appears in the loop: \`referenceLogProbs\` (worked example) 
     'A reward model reaches 70% on held-out pairs. List two reasons that could be the best achievable number and two reasons it could be a bug in the pipeline.',
   ],
   stretch: [
-    'Implement IPO: replace `−log σ(m)` with `(m − 1/(2τ))²` on the implicit margin and compare how the chosen and rejected log-ratios move over 150 steps. TRL exposes this as `loss_type="ipo"` in its `DPOTrainer`.',
-    'Implement SimPO: divide each sequence log-prob by its response length, drop the reference, and add a target margin γ; check whether the length gap between chosen and rejected responses still predicts the margin. Meng et al. 2024 report it matches DPO on AlpacaEval 2 with no reference model in memory.',
+    'Implement IPO: replace `−log σ(β·h)` with `(h − 1/(2τ))²`, where `h = (π_c − ref_c) − (π_r − ref_r)` is the log-ratio difference *before* any β, and compare how the chosen and rejected log-ratios move over 150 steps. TRL exposes this as `loss_type="ipo"` in its `DPOTrainer`, reusing `beta` as τ.',
+    'Implement SimPO: divide each sequence log-prob by its response length, drop the reference, and add a target margin γ; check whether the length gap between chosen and rejected responses still predicts the margin. Meng et al. 2024 report it beats DPO on AlpacaEval 2 and Arena-Hard with no reference model in memory.',
     'Fine-tune the whole body for the reward model instead of only the head (backpropagate through `hiddenStates`) and compare held-out reward accuracy; this is how the InstructGPT and Llama 2 reward models were trained.',
     'Fit Bradley–Terry scores to a small tournament of models by maximum likelihood (the Chatbot Arena leaderboard does this over human votes) and check that the fitted score differences reproduce the observed win rates.',
   ],

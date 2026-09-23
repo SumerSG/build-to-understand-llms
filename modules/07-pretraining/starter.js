@@ -34,7 +34,7 @@ export function makeModel(config) {
 /**
  * Draw `batchSize` random windows of `blockSize` tokens from `ids`. x[b] is the window, y[b] is the
  * same window shifted one token to the right, so y[b][t] is the target for the prefix x[b][0..t].
- * Draw each start offset with randInt(next, n). Throw if ids is too short for one window plus its target.
+ * Draw each row's start with its own randInt(next, lastStart + 1), in row order. Throw if ids is too short for one window plus its target.
  */
 export function getBatch(ids, blockSize, batchSize, next) {
   // TODO: step 1

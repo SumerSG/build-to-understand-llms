@@ -3,6 +3,7 @@ import { GPT } from 'lib/gpt.js';
 import { AdamW as RefAdamW, clipGradNorm as refClip } from 'lib/optim.js';
 import { CharTokenizer } from 'lib/tokenizer.js';
 import { toyCorpus } from 'lib/data.js';
+import { rng, randInt } from 'lib/util.js';
 
 // A tiny corpus and model so every test stays well under a second.
 const TEXT = toyCorpus(60, 3);
@@ -35,6 +36,35 @@ function findStart(row) {
   return -1;
 }
 
+// The loop the instructions describe, built from the reference optimizer and clipping and the learner's
+// (already tested) getBatch: one AdamW for the whole run, lr from the schedule written before each step,
+// one rng shared by training and validation batches.
+function referenceRun(m, cfg) {
+  const model = new GPT({ vocabSize: cfg.vocabSize, blockSize: cfg.blockSize, nLayer: cfg.nLayer, nHead: cfg.nHead, nEmbd: cfg.nEmbd, seed: cfg.seed });
+  const opt = new RefAdamW(model.parameters(), { lr: cfg.lr, betas: [0.9, 0.95], weightDecay: cfg.weightDecay });
+  const next = rng(cfg.seed);
+  const out = [];
+  for (let step = 0; step < cfg.steps; step++) {
+    opt.lr = m.cosineWithWarmup(step, { warmup: cfg.warmup, total: cfg.steps, peak: cfg.lr });
+    const { x, y } = m.getBatch(cfg.trainIds, cfg.blockSize, cfg.batchSize, next);
+    opt.zeroGrad();
+    const loss = crossEntropy(model.forward(x), y);
+    loss.backward();
+    const gradNorm = refClip(model.parameters(), cfg.maxGradNorm);
+    opt.step();
+    const r = { step, loss: loss.item(), gradNorm };
+    if ((step + 1) % cfg.evalInterval === 0 || step === cfg.steps - 1) {
+      r.valLoss = noGrad(() => {
+        let total = 0;
+        for (let k = 0; k < cfg.evalBatches; k++) { const b = m.getBatch(cfg.valIds, cfg.blockSize, cfg.batchSize, next); total += crossEntropy(model.forward(b.x), b.y).item(); }
+        return total / cfg.evalBatches;
+      });
+    }
+    out.push(r);
+  }
+  return { model, history: out };
+}
+
 export const tests = [
   // ---------- step 1: getBatch ----------
   { step: 'batch', name: 'getBatch returns batchSize windows of blockSize ids, each a contiguous slice of the corpus', run(m, T) {
@@ -60,6 +90,10 @@ export const tests = [
     const b = m.getBatch(IDS, 8, 4, T.rng(9));
     const c = m.getBatch(IDS, 8, 4, T.rng(10));
     T.eq(a.x, b.x, 'the same seed must give the same batch (reproducibility)');
+    const draw = T.rng(9), lastStart = IDS.length - 8 - 1;
+    const want = Array.from({ length: 4 }, () => { const s = randInt(draw, lastStart + 1); return IDS.slice(s, s + 8); });
+    T.eq(a.x, want, 'each row must draw its OWN start with randInt(next, lastStart + 1), in row order, where lastStart = ids.length − blockSize − 1');
+    T.ok(new Set(a.x.map((r) => r.join(','))).size > 1, 'the rows of a batch must come from different random offsets: drawing one start for the whole batch gives batchSize copies of the same window');
     T.ok(JSON.stringify(a.x) !== JSON.stringify(c.x), 'different seeds must give different windows: draw the start offset from `next`');
     const short = IDS.slice(0, 12); // valid starts are 0..3 for blockSize 8
     const seen = new Set();
@@ -77,11 +111,11 @@ export const tests = [
 
   // ---------- step 2: AdamW ----------
   { step: 'adamw', name: 'the first step is bias-corrected: every parameter moves by about lr, whatever its gradient scale', run(m, T) {
-    const p = param([1, 1, 1, 1]);
-    setGrad(p, [1e-3, 1, 1e3, -50]);
+    const p = param([1, 1, 1, 1, 1]);
+    setGrad(p, [1e-3, 1, 1e3, -50, 1e-5]);
     const opt = new m.AdamW([p], { lr: 0.1 });
     opt.step();
-    T.close(T.arr(p.data), [0.9, 0.9, 0.9, 1.1], 1e-3, 'after one step p = 1 − lr·sign(g): with bias correction mHat/sqrt(vHat) = g/|g| (without it you would get 0.447·lr)');
+    T.close(T.arr(p.data), [0.9, 0.9, 0.9, 1.1, 0.9], 1e-3, 'after one step p = 1 − lr·sign(g): with bias correction mHat/sqrt(vHat) = g/|g| (without it you would get 0.447·lr). eps goes OUTSIDE the square root: sqrt(vHat + eps) would shrink the step of the 1e-5 gradient tenfold');
     T.eq(opt.t, 1, 'step must count steps (t) so the bias correction can use beta^t');
   } },
   { step: 'adamw', name: 'weight decay is decoupled: it shrinks p directly and never enters the moments', run(m, T) {
@@ -242,6 +276,23 @@ export const tests = [
     T.ok(last < first - 0.1, `the mean loss of the last 4 steps (${last.toFixed(3)}) must be clearly below the first 4 (${first.toFixed(3)}): the loop is not learning`);
     const again = await m.train(cfg);
     T.close(again.history.map((r) => r.loss), history.map((r) => r.loss), 1e-6, 'the same config and seed must reproduce the same run exactly');
+  } },
+  { step: 'train', name: 'the run matches a reference loop step for step: one persistent AdamW, the scheduled lr applied, clipping and weight decay from the config, one shared rng', async run(m, T) {
+    const cfg = { ...TINY, trainIds: IDS.slice(0, 600), valIds: IDS.slice(600), steps: 10, batchSize: 4, lr: 2e-2, warmup: 3, weightDecay: 0.5, maxGradNorm: 0.3, evalInterval: 4, evalBatches: 2 };
+    const fresh = m.makeModel(cfg).parameters().map((p) => T.arr(p.data));
+    let atStep0 = null;
+    const out = await m.train(cfg, (r, model) => { if (r.step === 0) atStep0 = model.parameters().map((p) => T.arr(p.data)); });
+    T.ok(atStep0 !== null, 'onStep(record, model) must be called with the model');
+    T.close(atStep0, fresh, 1e-7, 'the scheduled lr at step 0 is 0, so after the first step the weights must be exactly the initial ones: write cosineWithWarmup(step, …) into optimizer.lr BEFORE trainStep, not only into the record');
+    const ref = referenceRun(m, cfg);
+    for (let s = 0; s < cfg.steps; s++) {
+      const a = out.history[s], b = ref.history[s];
+      T.close(a.loss, b.loss, 2e-3, `step ${s}: train loss ${a.loss.toFixed(5)} differs from the reference loop's ${b.loss.toFixed(5)}. Build ONE AdamW before the loop (a new optimizer each step resets m, v and t), pass it { lr, betas: [0.9, 0.95], weightDecay }, set optimizer.lr from the schedule each step, and draw batches from the one rng`);
+      T.close(a.gradNorm, b.gradNorm, 2e-3, `step ${s}: gradNorm differs from the reference loop`);
+      if (b.valLoss !== undefined) T.close(a.valLoss, b.valLoss, 2e-3, `step ${s}: valLoss ${a.valLoss} differs from the reference ${b.valLoss}: estimate it on valIds (not trainIds) with the same \`next\` the training batches use`);
+    }
+    const w = out.model.parameters(), rw = ref.model.parameters();
+    w.forEach((p, i) => T.close(T.arr(p.data), T.arr(rw[i].data), 2e-3, 'the final weights differ from the reference loop: check that maxGradNorm and weightDecay from the config reach trainStep and AdamW'));
   } },
   { step: 'train', name: 'sample continues the prompt with maxNewTokens tokens decoded through the tokenizer', run(m, T) {
     const model = tinyModel();

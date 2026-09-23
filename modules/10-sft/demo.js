@@ -24,7 +24,13 @@ export default async function demo(m, lab) {
   const assistantTokens = examples.reduce((s, e) => s + e.mask.reduce((a, b) => a + b, 0), 0);
   const packs = m.packExamples(examples, { blockSize: model.config.blockSize, eos: tokenizer.eos });
   const packedPositions = packs.length * model.config.blockSize;
-  const packedIn = packs.reduce((s, p) => s + p.mask.reduce((a, b) => a + b, 0), 0);
+  // Count the packed TARGET positions (y) by what they are: assistant, prompt/marker, or separator/padding.
+  let packedIn = 0, packedPrompt = 0, packedFill = 0;
+  for (const p of packs) for (let t = 0; t < p.y.length; t++) {
+    if (p.mask[t]) packedIn++;
+    else if (p.y[t] === tokenizer.eos) packedFill++;
+    else packedPrompt++;
+  }
   lab.log(`${examples.length} examples, ${totalTokens} tokens of which ${assistantTokens} are assistant tokens; packed into ${packs.length} windows of ${model.config.blockSize}`);
 
   // Show the first example the way the model sees it: what is predicted from what, and whether it counts.
@@ -38,7 +44,7 @@ export default async function demo(m, lab) {
   lab.bar({
     title: 'Positions in the packed dataset: only the masked-in ones produce gradient',
     labels: ['assistant (mask 1)', 'prompt + markers (mask 0)', 'separators + padding (mask 0)'],
-    values: [packedIn, totalTokens - assistantTokens - examples.length, packedPositions - packedIn - (totalTokens - assistantTokens - examples.length)],
+    values: [packedIn, packedPrompt, packedFill],
   });
 
   // 3. Before: the base model has no idea what the markers mean.
@@ -48,15 +54,15 @@ export default async function demo(m, lab) {
   for (let i = 0; i < prompts.length; i++) lab.log(`before  ${prompts[i]}  ->  ${JSON.stringify(show(before[i].text))}${before[i].ended ? '' : '  (never emitted <|end|>)'}`);
 
   // 4. Fine-tune (steps 3 and 6).
-  const config = { steps: 200, lr: 1e-3, batchSize: 2, weightDecay: 0.1, maxGradNorm: 1.0 };
+  const config = { steps: 150, lr: 1e-3, batchSize: 2, weightDecay: 0.1, maxGradNorm: 1.0 };
   lab.log(`fine-tuning: ${config.steps} steps, batch ${config.batchSize} x ${model.config.blockSize}, lr ${config.lr} (pre-training peaked at 3e-3), AdamW wd ${config.weightDecay}`);
   const t0 = performance.now();
   const losses = await m.finetune(model, packs, {
     ...config,
-    next: rng(10),
+    next: rng(1),
     onStep: async (step, loss) => {
       if (step % 5 === 0) { lab.progress((step + 1) / config.steps, `step ${step} masked loss ${loss.toFixed(2)}`); await lab.tick(); }
-      if (step % 50 === 0) lab.log(`step ${step}: masked loss ${loss.toFixed(3)}`);
+      if (step % 30 === 0) lab.log(`step ${step}: masked loss ${loss.toFixed(3)}`);
     },
   });
   const seconds = (performance.now() - t0) / 1000;

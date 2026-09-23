@@ -25,8 +25,8 @@ export default {
       why: 'Bias correction fixes the magnitude of `m` and `v` but not their variance; a few hundred small steps let the estimates settle before the peak learning rate is applied.' },
     { q: 'Gradient clipping at `maxNorm` scales…', options: ['Each gradient element to at most maxNorm', 'Each parameter tensor\'s gradient separately', 'All gradients together, so the global L2 norm becomes maxNorm'], answer: 2,
       why: 'One global scale factor keeps the direction of the update unchanged and only bounds its length. Per-element or per-tensor clipping would change the direction.' },
-    { q: 'A run shows train loss 1.5 and validation loss 3.1, both still falling slowly. The model is…', options: ['Undertrained', 'Overfitting: memorising training windows', 'Perfectly tuned'], answer: 1,
-      why: 'A large and growing train/val gap means the model predicts windows it has seen much better than fresh text. More data (or fewer epochs) fixes it; more steps on the same data would widen the gap.' },
+    { q: 'Over the last 1,000 steps a run\'s train loss kept falling to 1.5 while its validation loss turned upward from 2.6 to 3.1. The model is…', options: ['Undertrained', 'Overfitting: memorising training windows', 'Perfectly tuned'], answer: 1,
+      why: 'Train falling while validation rises, with a large and growing gap, means the model predicts windows it has seen much better than fresh text. More data (or fewer epochs over the same data) fixes it; more steps would widen the gap. Undertrained looks different: both curves still falling, close together.' },
   ],
   concept: `
 ## One loop
@@ -54,7 +54,7 @@ About \`ln(46) = 3.83\`: a freshly initialised model spreads probability nearly 
 
 ## Why AdamW
 
-Plain gradient descent uses one step size for every parameter, but the gradients reaching a rare token's embedding row are tiny and sparse while those at an MLP weight are large and dense. Adam (Kingma & Ba 2015) keeps two running averages per parameter, \`m\` of the gradient and \`v\` of its square, and updates by \`lr · m / (sqrt(v) + eps)\`: each parameter moves by roughly \`lr\` per step regardless of its gradient scale. Both averages start at zero and are biased low early on; dividing by \`1 − beta^t\` (bias correction) fixes that, which is why your first step moves each weight by exactly \`lr\`.
+Plain gradient descent uses one step size for every parameter, but the gradients reaching a rare token's embedding row are tiny and sparse while those at an MLP weight are large and dense. Adam (Kingma & Ba 2015) keeps two running averages per parameter, \`m\` of the gradient and \`v\` of its square, and updates by \`lr · m / (sqrt(v) + eps)\`: each parameter moves by roughly \`lr\` per step regardless of its gradient scale. Both averages start at zero and are biased low early on; dividing by \`1 − beta^t\` (bias correction) fixes that, which is why your first step moves each weight by almost exactly \`lr\` (\`eps\` keeps it a hair under).
 
 The W is weight decay done *decoupled* (Loshchilov & Hutter 2019): instead of adding \`wd · p\` to the gradient, where Adam's normalisation would rescale it away, the decay shrinks the weight directly, \`p −= lr · wd · p\`. Llama 2 (Touvron et al. 2023) reports AdamW with \`betas = [0.9, 0.95]\`, weight decay 0.1 and gradient clipping at 1.0; those are this module's defaults.
 
@@ -67,7 +67,7 @@ Even with warmup, an occasional batch produces a gradient ten times larger than 
 :::predict
 You run the same 350-step config twice, once with clipping at 1.0 and once without. Do you expect a different final loss?
 ---
-Usually only slightly, on a tiny stable model. Clipping is insurance: in the demo it fires on roughly a third of the steps but changes each update by a modest factor. On a 70B-parameter run with a peak learning rate near 3e-4, the rare spikes it catches are what separate a finished run from a restart from checkpoint.
+Only slightly, on a tiny stable model. In the demo the pre-clip norm exceeds 1.0 on about half the steps (163 of 350) but only 15 steps exceed 1.5 and none exceeds 2.3, so each clipped update shrinks by a modest factor; with clipping switched off the same seed ends within about 0.05 nats of the clipped run (slightly lower, in fact). Clipping is insurance, not a speed-up. On a 70B-parameter run (Llama 2 70B used a peak learning rate of 1.5e-4 with clipping at 1.0), the rare spikes it catches are what separate a finished run from a restart from checkpoint.
 :::
 
 ## Tokens, not epochs
@@ -87,7 +87,7 @@ This loop runs in fp32 on one thread of one CPU. Real runs add **mixed precision
       instructions: `
 Implement \`getBatch(ids, blockSize, batchSize, next)\` returning \`{ x, y }\`, two arrays of \`batchSize\` rows. Each row of \`x\` is a contiguous window of \`blockSize\` token ids drawn from a random start offset; the matching row of \`y\` is the same window shifted one token to the right, so \`y[b][t]\` is the next token after \`x[b][t]\`.
 
-Draw every start offset with \`randInt(next, n)\` (already imported) so a seed reproduces the batch. The last valid start is \`ids.length − blockSize − 1\`, because the target of the final position needs one more token. Throw an \`Error\` if the corpus is too short for that.
+Draw each row's start offset with its own call \`randInt(next, lastStart + 1)\` (already imported), one call per row in row order, so a seed reproduces the batch exactly (the tests replay the same draws). The last valid start \`lastStart\` is \`ids.length − blockSize − 1\`, because the target of the final position needs one more token. Throw an \`Error\` if the corpus is too short for that.
 
 The worked examples above the TODO (\`trainValSplit\`, \`makeModel\`) show the conventions: ids are plain arrays, \`slice\` copies, config objects are destructured.
 `,
@@ -138,7 +138,7 @@ The tests hand you the reference optimizer, so this step does not depend on your
       hints: [
         'Clipping is global: one scale factor for every gradient, computed from one sum of squares across all parameters. Per-tensor clipping would change the direction of the update, and the tests check for it.',
         'The order of the training step is fixed: zeroGrad, forward, loss, backward, clip, step. Reading the loss with `.item()` before the optimizer step is safe; the number does not change afterwards, but the graph is gone.',
-        '`optimizer.zeroGrad(); const loss = crossEntropy(model.forward(x), y); loss.backward(); const gradNorm = clipGradNorm(…); optimizer.step(); return { loss: loss.item(), gradNorm };`',
+        'For `clipGradNorm`: `let sumSq = 0; for (const p of params) { if (!p.grad) continue; for (const g of p.grad) sumSq += g * g; } const norm = Math.sqrt(sumSq);` then, only if `norm > maxNorm`, a second pass multiplies every element by the same factor. `trainStep` is six calls in the order of hint 2; turn the loss Tensor into a number with `.item()`.',
       ],
     },
     {
@@ -156,7 +156,7 @@ The tests check the exact values at step 0, mid-warmup, the peak, a quarter of t
       hints: [
         'Three cases in order: warmup, past the end, cosine in between. Return early from each so the arithmetic of the next case never runs on the wrong range.',
         'The cosine term `0.5 · (1 + cos(π · progress))` runs from 1 at progress 0 to 0 at progress 1; multiply it by the distance from min to peak and add min.',
-        '`if (step < warmup) return (peak * step) / warmup; if (step >= total) return min; const progress = …; return min + 0.5 * (peak - min) * (1 + Math.cos(Math.PI * progress));`',
+        '`if (step < warmup) return (peak * step) / warmup;` handles the first case (and with `warmup = 0` the division is never reached). Then `if (step >= total) return min;`. The last line combines `progress` from the instructions with the cosine term of hint 2.',
       ],
     },
     {
@@ -188,6 +188,8 @@ Two functions that assemble everything.
 
 Resolve to \`{ model, history, tokensSeen }\` with \`tokensSeen = steps · batchSize · blockSize\`.
 
+The tests replay your run against a reference loop built from these exact rules and compare the loss, gradient norm and validation loss at every step, so pass \`maxGradNorm\` to \`trainStep\`, use \`valIds\` (not \`trainIds\`) for evaluation, and draw validation batches from the same \`next\` right after that step's training batch.
+
 \`sample(model, tokenizer, prompt, { maxNewTokens, temperature, next })\`: encode the prompt, call \`model.generate(ids, { maxNewTokens, temperature, next })\` (from module 06; it runs under \`noGrad\`), decode the result and return the whole string, prompt included.
 `,
       hints: [
@@ -204,7 +206,7 @@ Resolve to \`{ model, history, tokensSeen }\` with \`tokensSeen = steps · batch
   ],
   stretch: [
     'Add `saveCheckpoint` / `loadCheckpoint` that serialise the model (`GPT.toJSON`), the AdamW buffers, `t` and the step number, and show that a run interrupted at step 150 and resumed reproduces the uninterrupted run exactly; this is what every Megatron-LM and DeepSpeed job does every few hundred steps.',
-    'Simulate mixed precision: round every parameter to bf16 (keep 8 bits of mantissa) after each step while keeping an fp32 master copy inside the optimizer, and compare loss curves; this is the fp32-master-weights scheme in NVIDIA Apex and PyTorch AMP.',
+    'Simulate mixed precision: round every parameter to bf16 (8 exponent bits, 7 explicit mantissa bits: the top 16 bits of the fp32 pattern, rounded to nearest) after each step while keeping an fp32 master copy inside the optimizer, and compare loss curves; this is the fp32-master-weights scheme in NVIDIA Apex and PyTorch AMP.',
     'Implement gradient accumulation: run `k` micro-batches, summing gradients, before one optimizer step, and confirm the loss curve matches a run with batch size `k × batchSize`; this is how Llama-scale runs reach millions of tokens per step on limited memory.',
     'Replace the contiguous split with `interleavedSplit` from `lib/data.js`, train on the full `CORPUS` (toy sentences plus Shakespeare), and explain why the validation curve changes; GPT-3\'s data mixing (Brown et al. 2020, Table 2.2) is the same question at scale.',
   ],

@@ -50,7 +50,7 @@ export const tests = [
     const e8 = m.errorStats(x, y8), e4 = m.errorStats(x, y4);
     T.ok(e8.maxAbs <= r8.scale / 2 + 1e-6, `rounding to the nearest code bounds the error by scale/2 = ${(r8.scale / 2).toFixed(5)}, got max error ${e8.maxAbs.toFixed(5)}`);
     T.ok(e4.maxAbs <= r4.scale / 2 + 1e-6, `int4 max error must be at most scale/2 = ${(r4.scale / 2).toFixed(4)}, got ${e4.maxAbs.toFixed(4)}`);
-    T.ok(e4.mse > 50 * e8.mse, `int4 has 16 codes vs 256, so its MSE should be roughly 256x larger than int8 (got ${e4.mse.toExponential(2)} vs ${e8.mse.toExponential(2)})`);
+    T.ok(e4.mse > 50 * e8.mse, `int4's step is max|x|/7 against int8's max|x|/127, so its MSE should be about (127/7)^2 ≈ 330x larger than int8 (got ${e4.mse.toExponential(2)} vs ${e8.mse.toExponential(2)})`);
     T.ok(e8.cosine > 0.9999, `int8 should preserve direction almost perfectly (cosine ${e8.cosine.toFixed(5)})`);
   } },
 
@@ -63,6 +63,9 @@ export const tests = [
     T.eq(Array.from(r.q), [42, -85, 127, 42, -85, 127], 'both rows quantise to the same codes because each has its own scale');
     T.eq(r.groupSize, 3, 'per-channel is the special case groupSize = cols; record it so dequantize can index the scales');
     T.ok(r.zeros === null || r.zeros === undefined, 'symmetric quantisation has no zero point (zeros: null)');
+    const r4 = m.quantizePerChannel(ops.fromArray([[0.7, -0.32, 0.1], [7, -3.2, 1]]), 4);
+    T.close(Array.from(r4.scales), [0.1, 1], 1e-6, 'quantizePerChannel(w, 4) must use the int4 range: scales[r] = max|row r| / 7, not / 127 (read qmax from qrange(bits))');
+    T.eq(Array.from(r4.q), [7, -3, 1, 7, -3, 1], 'int4 per-channel codes are round(x / scale) in [-8, 7]: each row maps 0.7, -0.32, 0.1 (times 1 or 10) to 7, -3, 1');
   } },
   { step: 'perchannel', name: 'dequantize handles groupSize < cols with scales indexed row-major by [row, group]', run(m, T) {
     const qw = { shape: [2, 4], q: Int8Array.from([1, 2, 3, 4, -1, -2, -3, -4]), scales: Float32Array.from([1, 10, 100, 1000]), zeros: null, bits: 8, groupSize: 2 };
@@ -96,6 +99,10 @@ export const tests = [
     T.ok(r.zeros === null || r.zeros === undefined, 'symmetric groups carry no zero points');
     T.close(m.dequantize(r), ops.fromArray([[0.7, -0.3, 0.1, 0.2, 7, -3, 1, 2]]), 1e-6, 'dequantize must apply the right scale to each group');
     T.throws(() => m.quantizeGroups(w, { bits: 4, groupSize: 3 }), 'cols = 8 is not divisible by groupSize = 3; throw rather than silently mis-index');
+    const w2 = ops.fromArray([[0.7, 0.1, 7, 1], [0.07, 0.01, 70, 10]]);
+    const r2 = m.quantizeGroups(w2, { bits: 4, groupSize: 2 });
+    T.close(Array.from(r2.scales), [0.1, 1, 0.01, 10], 1e-6, 'with 2 rows of 2 groups the scales are laid out row-major: scales[r * nGroups + g] = [row0 g0, row0 g1, row1 g0, row1 g1]');
+    T.eq(Array.from(r2.q), [7, 1, 7, 1, 7, 1, 7, 1], 'every group here quantises to codes 7, 1 under its own scale');
   } },
   { step: 'groups', name: 'smaller groups give strictly lower error on a matrix with outliers', run(m, T) {
     const w = gaussian([16, 256], 21, 0.02);
@@ -119,6 +126,11 @@ export const tests = [
     const back = m.dequantize(asym);
     const eA = m.errorStats(w, back), eS = m.errorStats(w, m.dequantize(m.quantizeGroups(w, { bits: 4, groupSize: 8, symmetric: true })));
     T.ok(eA.maxAbs <= 1 / 30 + 1e-6, `asymmetric max error must be at most scale/2 = ${(1 / 30).toFixed(4)}; got ${eA.maxAbs.toFixed(4)} — is dequantize subtracting the zero point?`);
+    T.ok(Array.from(asym.zeros).every((z) => Number.isInteger(z)), `the zero point is an integer code, zero = round(-min / scale); got ${Array.from(asym.zeros)}`);
+    const st = m.quantizeGroups(ops.fromArray([[-0.46, 0.2, 1, 2.54]]), { bits: 4, groupSize: 4, symmetric: false });
+    T.close(st.scales[0], 0.2, 1e-6, 'for a group spanning [-0.46, 2.54], scale = 3 / 15 = 0.2');
+    T.eq(Array.from(st.zeros), [2], 'zero = round(-min / scale) = round(2.3) = 2: an integer code, the one that stands for 0.0');
+    T.eq(Array.from(st.q), [0, 3, 7, 15], 'codes are round(x / scale) + zero: -0.46 -> -2 + 2 = 0, 0.2 -> 1 + 2 = 3, 1 -> 5 + 2 = 7, 2.54 -> 13 + 2 = 15');
     T.ok(eA.mse * 4 < eS.mse, `symmetric wastes the negative half of the range on all-positive values: expected asymmetric MSE < 1/4 of symmetric (got ${eA.mse.toExponential(2)} vs ${eS.mse.toExponential(2)})`);
   } },
 
@@ -171,6 +183,6 @@ export const tests = [
     T.close(m.kvCacheBytes(m.LLAMA3_8B, { contextLen: 8192, bits: 16 }), 1073741824, 1e-9, '8B at 8k context in fp16: 2 * 32 * 8 * 128 * 8192 * 2 = 1 GiB (128 KB per token)');
     T.close(m.kvCacheBytes(m.LLAMA3_8B, { contextLen: 8192, bits: 8 }), 536870912, 1e-9, 'int8 or fp8 KV halves it');
     T.close(m.kvCacheBytes(m.LLAMA3_8B, { contextLen: 1, batch: 16, bits: 16 }), 16 * 131072, 1e-9, 'batch multiplies it: 16 sequences x 128 KB per token');
-    T.close(m.kvCacheBytes(m.LLAMA3_70B, { contextLen: 8192, bits: 16 }), 2.5 * 1073741824, 1e-9, '70B has 80 layers vs 32: 2.5x the 8B cache, GQA keeps it from being 8.75x');
+    T.close(m.kvCacheBytes(m.LLAMA3_70B, { contextLen: 8192, bits: 16 }), 2.5 * 1073741824, 1e-9, '70B has 80 layers vs 32 and the same 8 KV heads of dimension 128: exactly 2.5x the 8B cache (without GQA its 64 heads would make it 20x)');
   } },
 ];

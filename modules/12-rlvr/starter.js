@@ -182,7 +182,9 @@ export function entropyOf(probs) {
  * { reward, kl, entropy, loss, clipFrac, signalFrac, samples, adv } where reward is the mean reward of
  * the rollout, kl and loss come from the last gradient step, entropy is the mean policy entropy over the
  * tasks before the update, clipFrac the fraction of samples whose ratio was clipped in the last step and
- * signalFrac the fraction of groups whose rewards were not all equal.
+ * signalFrac the fraction of groups whose rewards were not all equal. The loss is
+ * clippedLoss(logp, oldLogp, adv, clip).add(klPenalty(logp, refLogp).scale(beta)), with oldLogp the
+ * rollout's values on every one of the mu steps and refLogp from the frozen `ref` policy.
  */
 export function grpoStep(policy, ref, tasks, { G = 8, beta = 0.02, clip = 0.2, mu = 1, optimizer, next, verifyFn = verify }) {
   // TODO: step 5
@@ -191,7 +193,8 @@ export function grpoStep(policy, ref, tasks, { G = 8, beta = 0.02, clip = 0.2, m
 
 /**
  * The full loop: `iterations` GRPO steps, each on a random batch of `batchSize` tasks (shuffle a copy of
- * `tasks` with `next`). Returns one record per iteration: { iteration, reward, kl, entropy, loss, clipFrac,
+ * `tasks` with `next`), using ONE AdamW over policy.parameters() for the whole run and passing verifyFn on
+ * to grpoStep. Returns one record per iteration: { iteration, reward, kl, entropy, loss, clipFrac,
  * signalFrac }. `onIter(record, i)` may be async (the demo yields to the browser there): await it.
  */
 export async function trainGRPO(policy, ref, tasks, { iterations = 40, G = 8, batchSize = 16, beta = 0.02, clip = 0.2, mu = 1, lr = 0.05, next, onIter = null, verifyFn = verify } = {}) {

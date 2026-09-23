@@ -41,6 +41,11 @@ export const tests = [
     const ellipses = CLEAN + ' this... and... that... or... maybe... never... ever...';
     T.eq(m.qualityReason(ellipses), 'symbol_ratio', '7 ellipses over 47 words is 0.15 > 0.1');
     T.eq(m.qualityReason('#summer ' + CLEAN), null, 'one hash in 41 words (0.024) is fine');
+    const nineTen = Array.from({ length: 26 }, (_, i) => (i % 2 ? 'abcdefghij' : 'abcdefghi')).join(' ') + '.';
+    T.eq(m.qualityReason(nineTen), null, 'mean word length is (characters of the words) / (word count) = 248 / 26 ≈ 9.5, inside [3, 10]; dividing the whole text length (spaces included, ≈ 10.5) by the word count is a different statistic');
+    const sentences = Array.from({ length: 8 }, (_, i) => `The brown dog ran home ${i}.`).join(' ');
+    T.eq(m.qualityReason(sentences), null, 'full stops are not symbols: only #, … and ... count towards the symbol ratio');
+    T.eq(m.qualityReason(CLEAN + ' #a #b #c #d #e #f Lorem ipsum.'), 'symbol_ratio', 'rules run in order and the first violated one is reported: symbol_ratio comes before boilerplate');
   } },
   { step: 'quality', name: 'terminal punctuation, repeated lines and boilerplate rules', run(m, T) {
     const menu = Array.from({ length: 24 }, (_, i) => `Menu item number ${i}`).join('\n');
@@ -52,6 +57,13 @@ export const tests = [
     const CLEAN2 = CLEAN.replace('river', 'lake');
     T.eq(m.qualityReason([CLEAN, OTHER, OTHER].join('\n')), 'repeated_lines', '1 of 3 lines (33%) repeats an earlier line, above the 30% limit');
     T.eq(m.qualityReason([CLEAN, OTHER, OTHER, CLEAN2].join('\n')), null, '1 duplicate line of 4 (25%) is under the limit: the rule is "> 0.3", and lines are compared exactly');
+    const tenLines = (nTerminal) => Array.from({ length: 10 }, (_, i) => `This is line number ${i} of the page` + (i < nTerminal ? '.' : '')).join('\n');
+    T.eq(m.qualityReason(tenLines(3)), null, 'exactly 3 of 10 lines (30%) end in terminal punctuation: the rule is "below 0.3", so this passes');
+    T.eq(m.qualityReason(tenLines(2)), 'terminal_punct', '2 of 10 lines (20%) is below 30%');
+    const withRepeats = Array.from({ length: 10 }, (_, i) => `This is sentence number ${i < 3 ? 0 : i} of the page.`).join('\n');
+    T.eq(m.qualityReason(withRepeats), null, '10 lines with 8 distinct: (10 − 8) / 10 = 0.2 is under the limit');
+    const withMoreRepeats = Array.from({ length: 10 }, (_, i) => `This is sentence number ${i < 4 ? 0 : i} of the page.`).join('\n');
+    T.eq(m.qualityReason(withMoreRepeats), null, '10 lines with 7 distinct: (10 − 7) / 10 = 0.3 exactly; the rule is "> 0.3", so this passes');
     T.eq(m.qualityReason(CLEAN + ' Lorem ipsum dolor sit amet.'), 'boilerplate', '"lorem ipsum" is placeholder text (C4 drops it)');
     T.eq(m.qualityReason(CLEAN + ' Please enable JavaScript to continue.'), 'boilerplate', 'boilerplate matching is case-insensitive');
   } },
@@ -106,6 +118,9 @@ export const tests = [
     T.ok(m.minhash(new Set(['x']), 16, 7).some((v, i) => v !== m.minhash(new Set(['x']), 16, 8)[i]), 'a different seed gives different hash functions');
     const sx = m.minhash(new Set(['x']), 8, 3), sxy = m.minhash(new Set(['x', 'y']), 8, 3);
     T.ok(sxy.every((v, i) => v <= sx[i]), 'adding a shingle can only lower each minimum');
+    const fam = m.hashFamily(4, 1), hx = hash32('x');
+    T.eq(m.minhash(new Set(['x']), 4, 1), fam.map(({ a, b }) => (Math.imul(a, hx) + b) >>> 0),
+      'a one-shingle signature is exactly (Math.imul(a_i, hash32(s)) + b_i) >>> 0 for each i; plain `a * h` in floating point loses the low bits (products reach 2^64 but doubles hold 53 bits)');
   } },
   { step: 'minhash', name: 'estimateJaccard is the fraction of agreeing positions and tracks the exact Jaccard', run(m, T) {
     const s1 = m.minhash(m.shingles(CLEAN), 32, 1);
@@ -133,6 +148,19 @@ export const tests = [
     const strict = m.nearDedup(docs, { k: 5, numHashes: 64, threshold: 0.99, seed: 1 });
     T.eq(strict.kept.length, 5, 'with threshold 0.99 nothing is removed: the threshold must be applied, not hard-coded');
     T.eq(m.nearDedup([doc('x', CLEAN), doc('y', CLEAN)], { threshold: 0.8 }).removed.map((x) => x.id), ['y'], 'an exact copy is also a near-duplicate (estimate 1)');
+    T.eq(m.nearDedup([doc('x', CLEAN), doc('y', CLEAN)], { threshold: 1 }).removed.map((x) => x.id), ['y'], 'the threshold is inclusive (estimate >= threshold): an estimate of exactly 1 at threshold 1 is removed');
+    const est = r.pairs.map((p) => p.estimate);
+    T.ok(est.every((v, i) => i === 0 || est[i - 1] >= v), `pairs must be sorted by estimate, largest first; got ${est.map((v) => v.toFixed(2)).join(', ')}`);
+    const hi = m.nearDedup(docs, { k: 5, numHashes: 64, threshold: 0.6, seed: 1, minReport: 0.95 });
+    T.ok(hi.pairs.every((p) => p.estimate >= 0.95) && hi.pairs.length < r.pairs.length, 'minReport must be honoured: with minReport 0.95 only pairs estimated at 0.95 or above are reported');
+  } },
+  { step: 'minhash', name: 'nearDedup compares each document only with earlier KEPT documents', run(m, T) {
+    // A = word0..word39, B = word10..word49, C = word20..word59. J(A,B) = J(B,C) = 26/46 ≈ 0.57, J(A,C) = 16/56 ≈ 0.29.
+    const A = doc('A', wordsOf(40, 0)), B = doc('B', wordsOf(40, 10)), C = doc('C', wordsOf(40, 20));
+    T.close(m.jaccard(m.shingles(A.text), m.shingles(B.text)), 26 / 46, 1e-9, 'fixture sanity');
+    const r = m.nearDedup([A, B, C], { k: 5, numHashes: 128, threshold: 0.45, seed: 1 });
+    T.eq(r.removed.map((x) => [x.id, x.nearOf]), [['B', 'A']], 'B is a near-copy of A and is removed; C resembles only B, which is no longer in the corpus, so C must be compared with A alone and kept (otherwise near-copies chain and delete documents that resemble nothing that survived)');
+    T.eq(r.kept.map((d) => d.id), ['A', 'C']);
   } },
 
   // ---------- step 4: mixing ----------
@@ -177,6 +205,20 @@ export const tests = [
     T.eq(m.mixDomains(docs, { weights: { hq: 1 }, budget: 400, maxEpochs: 2, seed: 3 }).total, 100, 'when every domain is exhausted, stop below the budget rather than looping forever');
     const s1 = m.mixDomains(docs, { weights: { hq: 0.5, web: 0.5 }, budget: 400, maxEpochs: 2, seed: 3 });
     T.eq(s1.order, r.order, 'the same seed gives the same order');
+    const webOrder = r.order.filter((id) => id.startsWith('web'));
+    T.ok(webOrder.join() !== webOrder.slice().sort((x, y) => +x.slice(3) - +y.slice(3)).join(), 'each epoch is a seeded shuffle, not the input order');
+    const s9 = m.mixDomains(docs, { weights: { hq: 0.5, web: 0.5 }, budget: 400, maxEpochs: 2, seed: 9 });
+    T.ok(s9.order.join() !== r.order.join(), 'a different seed must give a different order (the seed drives the shuffle)');
+  } },
+  { step: 'mix', name: 'after a domain is exhausted, the remaining weights are renormalised over the active domains', run(m, T) {
+    const docs = [];
+    for (let i = 0; i < 3; i++) docs.push(doc(`a${i}`, wordsOf(10), 'a'));
+    for (let i = 0; i < 100; i++) docs.push(doc(`b${i}`, wordsOf(10), 'b'));
+    for (let i = 0; i < 100; i++) docs.push(doc(`c${i}`, wordsOf(10), 'c'));
+    const r = m.mixDomains(docs, { weights: { a: 0.5, b: 0.3, c: 0.2 }, budget: 1000, maxEpochs: 1, seed: 4 });
+    T.eq(r.report.a.draws, 3, 'a has 3 documents and one epoch');
+    const bShare = r.report.b.size / (r.report.b.size + r.report.c.size);
+    T.ok(Math.abs(bShare - 0.6) < 0.02, `once a is exhausted, b and c split the stream 0.3 : 0.2 = 60 : 40; got b = ${(100 * bShare).toFixed(1)}% of b+c. Divide each weight by the sum of the ACTIVE weights before computing the deficit (raw weights give ≈ 55%)`);
   } },
 
   // ---------- step 5: shards + pipeline ----------
@@ -226,6 +268,9 @@ export const tests = [
     T.ok(r.mix && r.mix.report.books && r.mix.report.web, 'the mixing report is returned');
     T.close(r.mix.report.books.size + r.mix.report.web.size, r.tokens - r.index.length, 1e-9, 'mixing must measure size in tokens (ids), not words');
     T.ok(Array.isArray(r.pairs), 'the near-duplicate pairs are returned for the report');
+    T.eq(r.index.map((e) => e.docId), r.mix.order, 'the shards must be packed in the order the mixer chose (mix.order), not in input order');
+    const loose = m.runPipeline(docs, { tokenizer: STUB, quality: { ...m.QUALITY_DEFAULTS, minWords: 1, boilerplate: [] }, near: { threshold: 0.99, numHashes: 64 }, mix: { weights: { books: 0.5, web: 0.5 }, maxEpochs: 1 }, shardSize: 32 });
+    T.eq(loose.report.map((s) => s.removed), [0, 1, 0, 0], 'config.quality and config.near must be passed to their stages: with minWords 1, no boilerplate list and threshold 0.99, only the exact duplicate goes');
     T.throws(() => m.runPipeline(docs, {}), 'a tokenizer is required');
   } },
 ];

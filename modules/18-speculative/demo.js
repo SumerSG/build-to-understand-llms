@@ -67,24 +67,26 @@ export default async function demo(m, lab) {
   const selfDraft = gptModel(0.5);   // the target itself, sharpened: a proxy for "a smaller model of the same family"
 
   const prompt = tok.encode('The painter');
-  const N = 200;
+  const N = 200;          // tokens per speculative run with the bigram draft
+  const NPLAIN = N;       // same length as the speculative runs: forward() is cheaper while the window is still filling up
+  const NSELF = 120;      // shorter runs for the self-draft (K extra forwards per step) and the temperature sweep keep the demo inside its time budget
 
-  // plain decoding, for the wall-clock baseline
+  // plain decoding, for the wall-clock baseline (one target forward per token)
   forwardCalls = 0;
   let t0 = now();
   {
     let ctx = prompt.slice();
     const nx = rng(3);
-    for (let i = 0; i < N; i++) {
+    for (let i = 0; i < NPLAIN; i++) {
       ctx.push(m.sampleFrom(target(ctx, 1)[0], nx()));
-      if (i % 40 === 0) { lab.progress(0.1 + 0.1 * (i / N), 'plain decoding'); await lab.tick(); }
+      if (i % 40 === 0) { lab.progress(0.1 + 0.1 * (i / NPLAIN), 'plain decoding'); await lab.tick(); }
     }
   }
-  const plainMs = now() - t0;
+  const plainMsPerTok = (now() - t0) / NPLAIN;
   const plainForwards = forwardCalls;
 
   // ---------- 3. K sweep with the bigram draft ----------
-  const Ks = [1, 2, 3, 4, 6];
+  const Ks = [1, 2, 4, 6];
   const sweep = [];
   for (let i = 0; i < Ks.length; i++) {
     forwardCalls = 0;
@@ -110,19 +112,19 @@ export default async function demo(m, lab) {
   // ---------- 4. the self-draft and a temperature sweep on the target ----------
   forwardCalls = 0;
   t0 = now();
-  const selfRun = m.generateSpeculative(target, selfDraft, prompt, { K: 4, maxNewTokens: N, next: rng(3) });
+  const selfRun = m.generateSpeculative(target, selfDraft, prompt, { K: 4, maxNewTokens: NSELF, next: rng(3) });
   const selfMs = now() - t0, selfForwards = forwardCalls;
   lab.progress(0.7, 'self-draft');
   await lab.tick();
   const temps = [0.5, 1, 2];
   const tempRuns = [];
   for (let i = 0; i < temps.length; i++) {
-    tempRuns.push(temps[i] === 1 ? sweep.find((s) => s.K === 4).r : m.generateSpeculative(gptModel(temps[i]), bigram, prompt, { K: 4, maxNewTokens: N, next: rng(3) }));
+    tempRuns.push(temps[i] === 1 ? sweep.find((s) => s.K === 4).r : m.generateSpeculative(gptModel(temps[i]), bigram, prompt, { K: 4, maxNewTokens: NSELF, next: rng(3) }));
     lab.progress(0.75 + 0.2 * ((i + 1) / temps.length), `target temperature ${temps[i]}`);
     await lab.tick();
   }
   lab.bar({
-    title: 'Acceptance rate α of the bigram draft vs the TARGET\'s sampling temperature (K = 4)',
+    title: `Acceptance rate α of the bigram draft vs the TARGET's sampling temperature (K = 4; ${NSELF}–${N} tokens per run, so differences of a few points are noise)`,
     labels: temps.map((t) => `T = ${t}`),
     values: tempRuns.map((r) => +r.alpha.toFixed(3)),
   });
@@ -162,12 +164,12 @@ export default async function demo(m, lab) {
     rows: rows.map((r) => [r[0], +r[1].toFixed(3), +r[2].toFixed(2), +r[3].toFixed(2), +r[4].toFixed(2), r[5]]),
   });
   lab.table({
-    title: `Wall clock in this JavaScript toy for ${N} tokens (forward() recomputes the whole window, so a verify pass costs the same as a decode step)`,
-    columns: ['method', 'target forward passes', 'draft forward passes', 'ms', 'speedup vs plain'],
+    title: 'Wall clock in this JavaScript toy (forward() recomputes the whole window, so a verify pass costs the same as a decode step)',
+    columns: ['method', 'tokens', 'target forward passes', 'draft forward passes', 'ms per token', 'speedup vs plain'],
     rows: [
-      ['plain decoding', plainForwards, 0, Math.round(plainMs), 1],
-      ...sweep.map((s) => [`bigram draft, K = ${s.K}`, s.r.steps, 0, Math.round(s.ms), +(plainMs / s.ms).toFixed(2)]),
-      ['self-draft T = 0.5, K = 4', selfRun.steps, selfForwards - selfRun.steps, Math.round(selfMs), +(plainMs / selfMs).toFixed(2)],
+      ['plain decoding', NPLAIN, plainForwards, 0, +plainMsPerTok.toFixed(1), 1],
+      ...sweep.map((s) => [`bigram draft, K = ${s.K}`, N, s.r.steps, 0, +(s.ms / N).toFixed(1), +(plainMsPerTok / (s.ms / N)).toFixed(2)]),
+      ['self-draft T = 0.5, K = 4', NSELF, selfRun.steps, selfForwards - selfRun.steps, +(selfMs / NSELF).toFixed(1), +(plainMsPerTok / (selfMs / NSELF)).toFixed(2)],
     ],
   });
 
@@ -175,7 +177,7 @@ export default async function demo(m, lab) {
   const text = tok.decode(K4.tokens).replace(/\s+/g, ' ').trim().slice(0, 120);
   lab.done(`On the synthetic pair, your sampler put **${(100 * hist[0]).toFixed(1)}% / ${(100 * hist[1]).toFixed(1)}% / ${(100 * hist[2]).toFixed(1)}%** on the three tokens against a target of 10% / 45% / 45%, while trusting the draft would have given ${(100 * naive[0]).toFixed(0)}% on token 0; the acceptance rate was ${(100 * alpha1).toFixed(1)}% against the analytic ${(100 * m.acceptanceRate(p, q)).toFixed(0)}%.
 
-Against the checkpoint, the bigram draft was accepted **${(100 * K4.alpha).toFixed(1)}%** of the time at K = 4, giving **${K4.tokensPerStep.toFixed(2)} tokens per target pass** (model: ${m.expectedTokensPerStep(K4.alpha, 4).toFixed(2)}); the best K in the sweep was ${bestSweep.K} at ${bestSweep.r.tokensPerStep.toFixed(2)}. The sharpened self-draft reached α = **${(100 * selfRun.alpha).toFixed(1)}%** and ${selfRun.tokensPerStep.toFixed(2)} tokens per pass, but at c = 1 the model gives it only **${rows[1][3].toFixed(2)}×**, against **${rows[0][3].toFixed(2)}×** for the almost-free bigram draft. With the same bigram draft, α was ${(100 * tempRuns[0].alpha).toFixed(1)}% / ${(100 * tempRuns[1].alpha).toFixed(1)}% / ${(100 * tempRuns[2].alpha).toFixed(1)}% at target temperature 0.5 / 1 / 2: α = Σ min(p, q) peaks where the target's shape is closest to the draft's, and moves whichever way the temperature pulls p away from it. In a compute-bound regime (rho = 1) both drafts model at under 1× (${rows[0][4].toFixed(2)}× and ${rows[1][4].toFixed(2)}×): speculation only pays where verification is nearly free.
+Against the checkpoint, the bigram draft was accepted **${(100 * K4.alpha).toFixed(1)}%** of the time at K = 4, giving **${K4.tokensPerStep.toFixed(2)} tokens per target pass** (model: ${m.expectedTokensPerStep(K4.alpha, 4).toFixed(2)}); the best K in the sweep was ${bestSweep.K} at ${bestSweep.r.tokensPerStep.toFixed(2)}, while the independent-acceptance model, which assumes every position is accepted at the same rate, would pick K = ${rows[0][5]}. The sharpened self-draft reached α = **${(100 * selfRun.alpha).toFixed(1)}%** and ${selfRun.tokensPerStep.toFixed(2)} tokens per pass, but at c = 1 the model gives it only **${rows[1][3].toFixed(2)}×**, against **${rows[0][3].toFixed(2)}×** for the almost-free bigram draft. With the same bigram draft, α was ${(100 * tempRuns[0].alpha).toFixed(1)}% / ${(100 * tempRuns[1].alpha).toFixed(1)}% / ${(100 * tempRuns[2].alpha).toFixed(1)}% at target temperature 0.5 / 1 / 2: α = Σ min(p, q) peaks where the target's shape is closest to the draft's, and moves whichever way the temperature pulls p away from it. In a compute-bound regime (rho = 1) both drafts model at under 1× (${rows[0][4].toFixed(2)}× and ${rows[1][4].toFixed(2)}×): speculation only pays where verification is nearly free.
 
-${N} tokens took ${Math.round(plainMs)} ms plain and ${Math.round(sweep.find((s) => s.K === 4).ms)} ms with the bigram draft at K = 4 (${plainForwards} vs ${K4.steps} target passes), a wall-clock **${(plainMs / sweep.find((s) => s.K === 4).ms).toFixed(2)}×**. Sample of the verified output: "${text}"`);
+Plain decoding cost ${plainMsPerTok.toFixed(1)} ms per token (one target pass each) and the bigram draft at K = 4 cost ${(sweep.find((s) => s.K === 4).ms / N).toFixed(1)} ms per token (${K4.steps} target passes for ${N} tokens), a wall-clock **${(plainMsPerTok / (sweep.find((s) => s.K === 4).ms / N)).toFixed(2)}×**. Sample of the verified output: "${text}"`);
 }

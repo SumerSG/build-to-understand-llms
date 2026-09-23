@@ -26,7 +26,7 @@ export default {
     { q: 'With acceptance rate α = 0.8 and K = 4, the expected number of tokens per verify pass is…', options: ['4.0', '3.36', '5.0'], answer: 1,
       why: '(1 − 0.8^5) / (1 − 0.8) = 3.36: one token is guaranteed (residual or bonus), each further draft survives with probability 0.8 given the previous one did. 5 is the ceiling K + 1.' },
     { q: 'Speculative decoding helps least when…', options: ['The batch is small and the GPU is waiting on memory', 'The batch is large and the GPU is already compute-bound', 'The draft is a tiny model of the same family'], answer: 1,
-      why: 'The trick spends idle arithmetic. When a large batch has already filled it, the K extra verified tokens per sequence cost real time (rho → 1 in your model) and the speedup can drop below 1. vLLM and TensorRT-LLM enable speculation for latency at small batch, not for throughput at large batch.' },
+      why: 'The trick spends idle arithmetic. When a large batch has already filled it, the K extra verified tokens per sequence cost real time (rho → 1 in your model) and the speedup can drop below 1. That is why serving engines treat speculation as a latency optimisation for small batches, not a throughput one.' },
     { q: 'Why does `generateSpeculative` compute α as accepted / examined rather than accepted / drafted?', options: ['They are always equal', 'Tokens drafted after the first rejection were never checked, so they say nothing about the draft\'s quality', 'Drafted is unknown'], answer: 1,
       why: 'A rejection at position i discards positions i + 1 … K − 1 unverified. Dividing by drafted underestimates α (about 0.23 instead of 0.5 in the test) and would make you pick the wrong K.' },
   ],
@@ -60,12 +60,12 @@ The per-position acceptance rate \`α = Σ min(p, q)\` equals \`1 − TV(p, q)\`
 
 A step drafts K tokens autoregressively from \`q\`, runs the target once over all of them, and walks the drafts in order applying the rule. At the first rejection it draws the residual and stops: the later drafts were conditioned on a token that no longer exists. If all K survive, the target's \`(K + 1)\`-th row is a free extra draw, the **bonus token**.
 
-If each draft survived independently with probability α, the expected tokens per step would be \`(1 − α^(K+1)) / (1 − α)\`. Real acceptances are correlated, so it overestimates at large K.
+If each draft survived independently with probability α, the expected tokens per step would be \`(1 − α^(K+1)) / (1 − α)\`. Real acceptances are not independent (easy stretches of text and hard ones come in runs, and α varies with the position in the draft), so treat it as a model to check against measurement, which the demo does.
 
 :::predict
 With α = 0.8, going from K = 4 to K = 8 raises the expected tokens per step from 3.36 to what, and at what cost?
 ---
-To \`(1 − 0.8^9) / 0.2 = 4.33\`: one more token per step for twice the drafting and twice the verified tokens. Past a few positions \`α^K\` is small and extra drafts are mostly discarded; Leviathan et al. use K of roughly 3 to 7.
+To \`(1 − 0.8^9) / 0.2 = 4.33\`: one more token per step for twice the drafting and twice the verified tokens. Past a few positions \`α^K\` is small and extra drafts are mostly discarded, which is why deployed systems draft a handful of tokens, not dozens.
 :::
 
 ## The cost model
@@ -76,7 +76,7 @@ Let one target step cost 1, one draft token cost \`c\`, and the verify pass cost
 speedup = expectedTokensPerStep(α, K) / (1 + K·c + rho·K)
 \`\`\`
 
-Three lessons. The draft must be cheap: at \`c = 1\` even α = 0.8 cannot reach 1×. It must agree with the target: at α = 0.2 nothing helps. And the pass must have slack: at large batch the GPU is already compute-bound (module 16 filled that slack), \`rho\` heads to 1, and speculation slows you down. vLLM, TensorRT-LLM and SGLang use it for latency at small batch and turn it off as batch grows.
+Three lessons. The draft must be cheap: at \`c = 1\` even α = 0.8 cannot reach 1×. It must agree with the target: at α = 0.2 and \`c = 0.2\` no K beats 1×. And the pass must have slack: at large batch the GPU is already compute-bound (module 16 filled that slack), \`rho\` heads to 1, and speculation slows you down. Serving engines therefore treat it as a latency optimisation for small batches; vLLM, for example, has offered a setting that switches speculation off once the batch passes a threshold.
 
 ## Where drafts come from
 
@@ -104,8 +104,8 @@ Why this rule and not, say, "keep x if the target likes it at least as much as t
       predict: { question: 'With p = [0.5, 0.3, 0.2] and q = [0.25, 0.5, 0.25], what is acceptProb for tokens 0, 1 and 2?', answer: '1, 0.6 and 0.8. Token 0 has p/q = 2, clipped to 1: the target wants it more than the draft offers it. Tokens 1 and 2 were over-proposed and are thinned by 0.3/0.5 and 0.2/0.25.' },
       hints: [
         'The ratio p[x] / q[x] can exceed 1 when the target likes x more than the draft; a probability cannot, so clip it.',
-        'acceptProb: `Math.min(1, p[x] / q[x])`. shouldAccept: compare the uniform against that number with a strict `<`, so an acceptance probability of 1 keeps every u in [0, 1).',
-        '`export function shouldAccept(p, q, x, u) { return u < /* the acceptance probability of x */; }`',
+        'acceptProb clips a ratio with `Math.min`. shouldAccept reuses acceptProb and compares the uniform against it with a strict `<`: an acceptance probability of 1 then keeps every u in [0, 1), and a probability of 0 keeps none, not even u = 0.',
+        '`acceptProb`: `return Math.min(1, /* how much the target likes x relative to the draft */);`  `shouldAccept`: `return u < /* the acceptance probability of x */;`',
       ],
     },
     {
@@ -114,7 +114,7 @@ Why this rule and not, say, "keep x if the target likes it at least as much as t
       instructions: `
 \`residual(p, q)\`: return a new array \`norm(max(0, p − q))\`: clip every entry of \`p − q\` at zero, then divide by the sum so it is a distribution. If the sum is zero (\`p\` and \`q\` identical) return a copy of \`p\`; a rejection cannot happen then, but the function must still be total and must not return NaN.
 
-\`speculativeSampleOne(p, q, next)\`: one position end to end. Propose \`x = sampleFrom(q, next())\`; if \`shouldAccept(p, q, x, next())\` return \`{ token: x, accepted: true }\`; otherwise return \`{ token: sampleFrom(residual(p, q), next()), accepted: false }\`. Draw the uniforms in that order (proposal, then acceptance, then residual) so the tests are reproducible.
+\`speculativeSampleOne(p, q, next)\`: one position end to end. Propose \`x = sampleFrom(q, next())\`; if \`shouldAccept(p, q, x, next())\` return \`{ token: x, accepted: true }\`; otherwise return \`{ token: sampleFrom(residual(p, q), next()), accepted: false }\`. Draw a fresh uniform for each of the three (proposal, then acceptance, then residual, in that order, and the residual one only on rejection). A test feeds scripted uniforms and checks the exact result; reusing the proposal uniform for the acceptance test correlates the two draws and quietly biases the output away from \`p\`.
 
 Work the 3-token case by hand once: \`p = [0.5, 0.3, 0.2]\`, \`q = [0.2, 0.1, 0.7]\`. Accepted mass is \`min(p, q) = [0.2, 0.1, 0.2]\`, total 0.5. The missing mass is \`[0.3, 0.2, 0]\`; scaled to 1 it is \`[0.6, 0.4, 0]\`, and drawing it on the 50% of rejections gives \`[0.2 + 0.3, 0.1 + 0.2, 0.2 + 0] = p\`. Token 2, which the draft over-proposed, gets no top-up at all.
 `,
@@ -135,7 +135,7 @@ Work the 3-token case by hand once: \`p = [0.5, 0.3, 0.2]\`, \`q = [0.2, 0.1, 0.
 3. Walk \`i = 0..K−1\`: if \`shouldAccept(p_i, q_i, x_i, next())\` push \`x_i\`; otherwise push a sample from \`residual(p_i, q_i)\` and return \`{ tokens, accepted: i }\`.
 4. If nothing was rejected, push a sample from row \`K\` (the bonus token) and return \`{ tokens, accepted: K }\`.
 
-The result always has \`tokens.length === accepted + 1\`. Do not mutate \`ctx\`. The first test spies on both models: K draft calls with \`n = 1\`, exactly one target call with \`n = K + 1\`. Calling the target once per drafted token would still be correct and would throw away the entire point of the module.
+The result always has \`tokens.length === accepted + 1\`. Do not mutate \`ctx\`. The first test spies on both models: K draft calls with \`n = 1\`, exactly one target call with \`n = K + 1\`. Calling the target once per drafted token would still be correct and would throw away the entire point of the module. Another test checks that the bonus token is distributed as the target's last row, not the draft's.
 `,
       predict: { question: 'The draft proposes 4 tokens; the second one is rejected. How many tokens does the step emit, and where does the last one come from?', answer: 'Two: the accepted first draft and a residual sample at position 1. Drafts 3 and 4 were conditioned on the rejected token and are discarded; there is no bonus token because the pass did not reach row K.' },
       hints: [
@@ -172,7 +172,7 @@ The distinction between \`examined\` and \`drafted\` is the whole of the measure
 
 \`bestK({ alpha, c, rho = 0, maxK = 16 })\`: the \`K\` in \`1..maxK\` with the largest modelled speedup; the smallest such \`K\` on a tie.
 
-Check the three regimes yourself before running the tests: α = 0.8, K = 4, c = 0.1 gives 2.4× when memory-bound and 0.62× when compute-bound; α = 0.2 never pays. This is the model an engine uses to decide whether to enable speculation for a given batch size, and it is why vLLM's speculative decoding is a latency feature, not a throughput one.
+Check the three regimes yourself before running the tests: α = 0.8, K = 4, c = 0.1 gives 2.4× when memory-bound and 0.62× when compute-bound; α = 0.2 with c = 0.2 never beats 1× at any K (K = 1 ties at exactly 1×). This is the kind of model an engine needs to decide whether speculation pays at a given batch size, and it is why speculative decoding is a latency optimisation, not a throughput one.
 `,
       hints: [
         'The numerator you already have from step 4. The denominator is time per step in units of one plain decode step: the drafts, the pass, and the pass\'s extra tokens if they are not free.',
@@ -190,7 +190,7 @@ Check the three regimes yourself before running the tests: α = 0.8, K = 4, c = 
     'Implement prompt-lookup drafting (Saxena 2023; `prompt_lookup_num_tokens` in Hugging Face `generate`): find the last 3 tokens earlier in the context and propose the tokens that followed them. Measure α on a prompt that repeats a passage.',
     'Add a KV cache to the target (lib/infer.js `forwardStep`) and roll it back to the last accepted token on rejection, as vLLM and TensorRT-LLM do; count the forward FLOPs saved versus the recompute used in the demo.',
     'Verify a tree of drafts instead of a chain: draft the top-2 tokens at each of 3 positions, build the causal mask that lets one pass score every path, and accept the longest surviving path. This is the mechanism in Medusa (Cai et al. 2024), EAGLE (Li et al. 2024) and SpecInfer (Miao et al. 2023).',
-    'Batch it: run 8 sequences through the target at once with K = 4 and let `rho` rise with batch size in your speedup model. Find the batch at which speculation stops paying, the same crossover vLLM and SGLang tune around.',
+    'Batch it: run 8 sequences through the target at once with K = 4 and let `rho` rise with batch size in your speedup model. Find the batch at which speculation stops paying: the crossover a serving engine has to tune around.',
   ],
   timeouts: { tests: 20000, demo: 120000 },
 };

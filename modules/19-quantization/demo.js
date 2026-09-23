@@ -130,19 +130,20 @@ export default async function demo(m, lab) {
     await lab.tick();
   }
   lab.table({
-    title: 'Each scheme applied to every linear weight and the LM head (bits/param assumes fp16 scales; pc = per-channel, groups of 64 here)',
+    title: 'Each scheme applied to every linear weight and the LM head (bits/param assumes fp16 scales; pc = per-channel, one scale per output row of K inputs: 64, or 256 for mlp.proj; bits/param shown for K = 64)',
     columns: ['scheme', 'bits/param', 'weight MSE', 'weight rel err %', 'logit rel err %', 'top-1 agreement with fp32'],
     rows,
   });
+  const extraBits = m.bitsPerParam({ bits: 4, groupSize: 8 }) - m.bitsPerParam({ bits: 4, groupSize: 64 });
   const int4 = SCHEMES.map((s, i) => ({ s, i })).filter(({ s }) => s.bits === 4);
   lab.plot({
-    title: 'int4: reconstruction error vs group size (per-channel = one scale per 64 inputs)',
+    title: 'int4: reconstruction error vs group size (per-channel plotted at 64, the K of most layers; mlp.proj has K = 256)',
     x: int4.map(({ s }) => (s.group === 'pc' ? 64 : s.group)),
     series: [{ name: 'weight MSE', values: int4.map(({ i }) => mse[i]) }],
     xlabel: 'values per scale (group size)', ylabel: 'MSE of dequantised weights', yscale: 'log',
   });
   lab.bar({ title: `Next-token top-1 agreement with fp32 over ${positions} positions (%)`, labels: SCHEMES.map((s) => s.name), values: agree.map((a) => +a.toFixed(1)) });
-  lab.md(`The 8-bit and per-channel 4-bit models agree with fp32 on **${agree[0].toFixed(0)}%** and **${agree[1].toFixed(0)}%** of positions; shrinking the int4 groups from 64 to 8 cuts the weight MSE by **${(mse[1] / mse[4]).toFixed(1)}x** at a cost of ${(m.bitsPerParam({ bits: 4, groupSize: 8 }) - 4).toFixed(1)} extra bits per weight. At 2 bits the grid has only four codes and agreement collapses to **${agree[6].toFixed(0)}%**.`);
+  lab.md(`The 8-bit and per-channel 4-bit models agree with fp32 on **${agree[0].toFixed(0)}%** and **${agree[1].toFixed(0)}%** of positions; shrinking the int4 groups from 64 to 8 cuts the weight MSE by **${(mse[1] / mse[4]).toFixed(1)}x** at a cost of ${extraBits.toFixed(2)} extra bits per weight. At 2 bits the grid has only four codes and agreement collapses to **${agree[6].toFixed(0)}%**. With 100 positions one flipped prediction moves agreement by a whole point, so differences of 1–2 points between the int4 rows are noise.`);
 
   // ---------- 2. memory: Llama 3 weights and KV cache at each precision ----------
   const models = [m.LLAMA3_8B, m.LLAMA3_70B];
@@ -195,7 +196,7 @@ export default async function demo(m, lab) {
 
   lab.done(
     `Your quantisers ran the checkpoint through your weight-only kernel: **int8 per-channel** agreed with fp32 on **${agree[0].toFixed(0)}%** of ${positions} next-token predictions, **int4 g32** on **${agree[2].toFixed(0)}%** and **int2 g16** on **${agree[6].toFixed(0)}%**. ` +
-    `Shrinking int4 groups from 64 to 8 lowered weight MSE ${(mse[1] / mse[4]).toFixed(1)}x (from ${mse[1].toExponential(2)} to ${mse[4].toExponential(2)}) for 2 more bits per weight. ` +
+    `Shrinking int4 groups from 64 to 8 lowered weight MSE ${(mse[1] / mse[4]).toFixed(1)}x (from ${mse[1].toExponential(2)} to ${mse[4].toExponential(2)}) for ${extraBits.toFixed(2)} more bits per weight. ` +
     `Llama-3-70B needs **${w70bf16.toFixed(1)} GB** in bf16 and **${w70int4.toFixed(1)} GB** in int4 g128 (4.125 bits/param), so it fits one 80 GB H100 only quantised; Llama-3-8B's KV cache for 32 sequences of 8k tokens is **${kv8b32.toFixed(0)} GiB** in fp16, more than its ${(m.weightBytes(m.LLAMA3_8B.params, { bits: 16 }) / GB).toFixed(1)} GB of weights. ` +
     `A single outlier weight multiplied the int4 error of all other weights by **${ratios[0].toFixed(0)}x** with one tensor-wide scale, **${ratios[1].toFixed(1)}x** per-channel and **${ratios[2].toFixed(1)}x** with groups of 16.`,
   );

@@ -34,6 +34,7 @@ export const tests = [
     T.eq(m.shouldAccept(p, q, 1, 0.61), false, 'u = 0.61 is above the 0.6 threshold for token 1, so it is rejected');
     T.eq(m.shouldAccept(p, q, 0, 0.999), true, 'token 0 has acceptance probability 1: every u in [0, 1) keeps it');
     T.eq(m.shouldAccept(p, q, 2, 0.0), true, 'u = 0 is below every positive threshold');
+    T.eq(m.shouldAccept([0, 1], [0.5, 0.5], 0, 0), false, 'p[x] = 0 gives acceptance probability 0, and the target must never emit a token it gives zero probability, not even at u = 0: compare with a strict <, not <=');
   } },
   { step: 'accept', name: 'over many trials the KEPT tokens are distributed as min(p, q), not as q', run(m, T) {
     // x ~ q, keep with min(1, p/q): P(keep x) = q[x] * min(1, p[x]/q[x]) = min(p[x], q[x]).
@@ -62,6 +63,17 @@ export const tests = [
     const r = m.residual(p, [0.2, 0.5, 0.3]);
     T.ok(r.every((v) => Number.isFinite(v)), 'max(0, p − q) is all zeros here; dividing by its sum gives NaN unless you handle the case');
     T.close(r, p, 1e-9, 'with p = q every token is accepted, so the residual is never drawn from; returning p keeps the function total');
+  } },
+  { step: 'residual', name: 'speculativeSampleOne draws one fresh uniform for the proposal, one for the acceptance test and one for the residual, in that order', run(m, T) {
+    const p = [0.1, 0.45, 0.45], q = [0.9, 0.05, 0.05];
+    // A scripted rng: hands out exactly these uniforms and complains if asked for more.
+    const script = (us) => { let i = 0; return () => { if (i >= us.length) throw new Error(`speculativeSampleOne drew more than the ${us.length} uniforms this case needs`); return us[i++]; }; };
+    T.eq(m.speculativeSampleOne(p, q, script([0.05, 0.5, 0.7])), { token: 2, accepted: false },
+      'u = 0.05 proposes token 0; its acceptance probability is 0.1 / 0.9 ≈ 0.11 and the SECOND uniform 0.5 is above it, so it is rejected and the THIRD uniform 0.7 draws token 2 from the residual [0, 0.5, 0.5]. Reusing the proposal uniform for the acceptance test (0.05 < 0.11) would keep token 0: the two draws become correlated and the output is no longer exactly p');
+    T.eq(m.speculativeSampleOne(p, q, script([0.05, 0.08])), { token: 0, accepted: true },
+      'u = 0.05 proposes token 0 and 0.08 < 0.11 keeps it; an accepted proposal uses exactly two uniforms (the residual is only drawn on rejection)');
+    T.eq(m.speculativeSampleOne(p, q, script([0.93, 0.99])), { token: 1, accepted: true },
+      'u = 0.93 proposes token 1 (cumulative q is 0.9, 0.95, 1); min(1, 0.45 / 0.05) = 1, so every u keeps it');
   } },
   { step: 'residual', name: 'speculativeSampleOne reproduces the TARGET distribution even from a bad draft', run(m, T) {
     // The draft puts 90% on token 0; the target puts 10% there. The output must still be exactly p.
@@ -119,6 +131,21 @@ export const tests = [
     const firsts = [];
     for (let i = 0; i < 3000; i++) firsts.push(m.speculativeStep(target, draft, [0], 3, next).tokens[0]);
     T.close(histogram(firsts, 3), p, 0.04, 'position 0 is a speculativeSampleOne with the target\'s first verify row: its output must be p, not q');
+  } },
+
+  { step: 'verify', name: 'the bonus token is drawn from the target\'s last row, not the draft\'s', run(m, T) {
+    // K = 1 with constant models: a step that accepts its one draft emits a second token, the bonus.
+    const p = [0.2, 0.5, 0.3], q = [0.7, 0.2, 0.1];
+    const target = constantModel(p), draft = constantModel(q);
+    const next = T.rng(13);
+    const bonus = [];
+    for (let i = 0; i < 4000; i++) {
+      const r = m.speculativeStep(target, draft, [0], 1, next);
+      T.eq(r.tokens.length, r.accepted + 1, 'a step emits accepted + 1 tokens');
+      if (r.accepted === 1) bonus.push(r.tokens[1]);
+    }
+    T.ok(bonus.length > 1700 && bonus.length < 2300, `Σ min(p, q) = 0.5, so about half of 4000 K = 1 steps should accept their draft; got ${bonus.length}`);
+    T.close(histogram(bonus, 3), p, 0.04, 'the bonus is a free draw from row K of the verify pass, so it is distributed as p; drawing it from the draft gives about q = [0.7, 0.2, 0.1]');
   } },
 
   // ---------- step 4: acceptance rate and tokens per step ----------
@@ -180,6 +207,7 @@ export const tests = [
     }
     T.ok(m.bestK({ alpha: 0.9, c: 0.02 }) > m.bestK({ alpha: 0.5, c: 0.02 }), 'a better draft justifies a longer draft window: bestK must grow with α');
     T.eq(m.bestK({ alpha: 0.3, c: 0.3 }), 1, 'an expensive, poor draft: only K = 1 is worth it');
+    T.eq(m.bestK({ alpha: 0, c: 0 }), 1, 'α = 0 and c = 0 give exactly 1× at every K: on a tie return the SMALLEST K (replace only on a strictly greater speedup)');
     T.ok(m.bestK({ alpha: 0.7, c: 0.1, maxK: 3 }) <= 3, 'never exceed maxK');
   } },
 ];

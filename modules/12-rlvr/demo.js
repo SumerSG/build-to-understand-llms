@@ -6,7 +6,10 @@ import { rng, argmaxArray } from 'lib/util.js';
 // A second, shorter run starts from an over-confident warm-up so you can see what starves GRPO of signal.
 export default async function demo(m, lab) {
   const tasks = MATH_TASKS.slice(0, 30);            // the RL prompts
-  const otherTasks = MATH_TASKS.slice(60, 120);     // used only by the warm-start run's SFT stand-in
+  // Used only by the warm-start run's SFT stand-in. MATH_TASKS repeats some questions, so drop any that is
+  // also an RL prompt: the warm start must not have seen the answers it is about to be rewarded for.
+  const rlQuestions = new Set(tasks.map((t) => t.question));
+  const otherTasks = MATH_TASKS.slice(60, 120).filter((t) => !rlQuestions.has(t.question));
   const G = 8, iterations = 40, batchSize = 16, beta = 0.02, clip = 0.2, lr = 0.1;
   const pct = (x) => `${(100 * x).toFixed(0)}%`;
   const topAnswer = (policy, task) => { const p = policy.probs(task.question); const t = argmaxArray(p); return { text: String(t), prob: p[t] }; };
@@ -18,7 +21,7 @@ export default async function demo(m, lab) {
   const entropyBefore = tasks.reduce((s, t) => s + m.entropyOf(policy.probs(t.question)), 0) / tasks.length;
   const showTasks = tasks.slice(0, 6);
   const before = showTasks.map((t) => topAnswer(policy, t));
-  lab.log(`Cold start: ${tasks.length} tasks, policy uniform over ${m.ANSWER_VOCAB} answers. Greedy accuracy ${pct(accBefore)}, entropy ${entropyBefore.toFixed(2)} nats (ln ${m.ANSWER_VOCAB} = ${Math.log(m.ANSWER_VOCAB).toFixed(2)}).`);
+  lab.log(`Cold start: ${tasks.length} tasks, policy uniform over ${m.ANSWER_VOCAB} answers. Greedy accuracy ${pct(accBefore)} (a uniform argmax picks answer 0, right for the ${tasks.filter((t) => Number(t.answer) === 0).length} prompt(s) of the form x - x), entropy ${entropyBefore.toFixed(2)} nats (ln ${m.ANSWER_VOCAB} = ${Math.log(m.ANSWER_VOCAB).toFixed(2)}).`);
   lab.log(`With G = ${G} samples per prompt and a 1% hit rate, the chance that a group has at least one correct sample is 1 - 0.99^${G} = ${pct(1 - 0.99 ** G)}: most groups carry no signal at first.`);
 
   const accuracyCurve = [];
@@ -63,7 +66,7 @@ export default async function demo(m, lab) {
   lab.progress(0.78, 'warm-start run');
   await lab.tick();
 
-  // 2. Warm start: the SFT stand-in on 60 *other* tasks makes the policy confident about typical answers
+  // 2. Warm start: the SFT stand-in on *other* questions makes the policy confident about typical answers
   //    before it has seen these prompts. Same GRPO budget; does confidence help or hurt?
   const warm = new m.Policy();
   const sftLoss = m.sftWarmup(warm, otherTasks, { epochs: 20, lr: 0.05 });
@@ -80,7 +83,7 @@ export default async function demo(m, lab) {
   });
   const warmAccAfter = m.accuracy(warm, tasks);
   const warmSignal = warmHistory.reduce((s, h) => s + h.signalFrac, 0) / warmHistory.length;
-  lab.log(`Warm start: 20 SFT epochs on ${otherTasks.length} other tasks (final cross-entropy ${sftLoss.toFixed(2)}) give greedy accuracy ${pct(warmAccBefore)} and entropy ${warmEntropyBefore.toFixed(2)} nats on the 30 RL tasks before any RL; after ${iterations} iterations: ${pct(warmAccAfter)}, mixed groups on average ${pct(warmSignal)} vs ${pct(meanSignal)} for the cold start.`);
+  lab.log(`Warm start: 20 SFT epochs on ${otherTasks.length} other questions, none of them an RL prompt (final cross-entropy ${sftLoss.toFixed(2)}, so it has memorised them), give greedy accuracy ${pct(warmAccBefore)} and entropy ${warmEntropyBefore.toFixed(2)} nats on the 30 RL tasks before any RL; after ${iterations} iterations: ${pct(warmAccAfter)}, mixed groups on average ${pct(warmSignal)} vs ${pct(meanSignal)} for the cold start.`);
   lab.plot({
     title: 'Same GRPO budget, two starting points: greedy accuracy per iteration',
     x,
@@ -92,8 +95,9 @@ export default async function demo(m, lab) {
   });
   lab.progress(1, 'done');
 
+  const began = warmAccBefore > accBefore ? ', even though it began higher' : warmAccBefore < accBefore ? '' : ', from the same starting accuracy';
   const warmVerdict = warmAccAfter < accAfter
-    ? `finished lower (${pct(warmAccAfter)}) than the cold start even though it began higher: its low entropy (${warmEntropyBefore.toFixed(2)} nats) meant fewer mixed groups (${pct(warmSignal)} vs ${pct(meanSignal)} of groups per iteration), and a group whose rewards all agree gives GRPO nothing to learn from`
-    : `finished at ${pct(warmAccAfter)}: on this seed its prior helped, and its mixed-group rate was ${pct(warmSignal)} vs ${pct(meanSignal)} for the cold start`;
+    ? `finished lower (${pct(warmAccAfter)}) than the cold start${began}: SFT on other questions taught it confident guesses (entropy ${warmEntropyBefore.toFixed(2)} nats) but not these answers (a linear policy over hashed features memorises, it does not generalise), so fewer of its groups had mixed rewards (${pct(warmSignal)} vs ${pct(meanSignal)} per iteration), and a group whose rewards all agree gives GRPO nothing to learn from`
+    : `finished at ${pct(warmAccAfter)} vs ${pct(accAfter)} for the cold start: on this seed its prior helped, and its mixed-group rate was ${pct(warmSignal)} vs ${pct(meanSignal)}`;
   lab.done(`Your GRPO loop took greedy accuracy on ${tasks.length} arithmetic tasks from **${pct(accBefore)}** to **${pct(accAfter)}** in ${iterations} iterations of G = ${G} (mean sampled reward ${history[0].reward.toFixed(2)} -> ${last.reward.toFixed(2)}), with no reward model and no value network: only exact-match rewards, group-normalised inside each prompt's ${G} samples. Entropy fell from ${entropyBefore.toFixed(2)} to ${last.entropy.toFixed(2)} nats while the KL to the uniform reference grew to ${last.kl.toFixed(2)} nats (beta = ${beta}); on average only ${pct(meanSignal)} of groups per iteration had mixed rewards, and those groups did all the work. The warm-started policy, which began at ${pct(warmAccBefore)}, ${warmVerdict}.`);
 }

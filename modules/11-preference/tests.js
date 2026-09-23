@@ -2,6 +2,7 @@ import { GPT } from 'lib/gpt.js';
 import { Tensor } from 'lib/tensor.js';
 import * as ops from 'lib/ops.js';
 import { AdamW } from 'lib/optim.js';
+import { randInt } from 'lib/util.js';
 
 const LN2 = Math.log(2);
 const softplus = (z) => (z > 30 ? z : Math.log(1 + Math.exp(z))); // -log sigmoid(-z), reference in float64
@@ -83,7 +84,7 @@ export const tests = [
   } },
   { step: 'bradley-terry', name: 'numerically stable: a margin of −200 gives loss ≈ 200, not Infinity or NaN', run(m, T) {
     const bad = m.bradleyTerryLoss([0], [200]).item();
-    T.ok(Number.isFinite(bad), `got ${bad}: log(1 + exp(200)) overflows float32 (exp(88) is already Infinity). Use log σ(m) = m − logsumexp(m, 0), e.g. via logSoftmax over [m, 0]`);
+    T.ok(Number.isFinite(bad), `got ${bad}: log(1 + exp(200)) overflows float32 (exp(89) is already Infinity; the float32 limit is about 3.4e38 = e^88.7). Use log σ(m) = m − logsumexp(m, 0), e.g. via logSoftmax over [m, 0]`);
     T.close(bad, 200, 1e-3, '−log σ(−200) is 200 to float precision');
     const good = m.bradleyTerryLoss([200], [0]).item();
     T.ok(Number.isFinite(good) && good >= 0 && good < 1e-6, `−log σ(200) is 0 to float precision, got ${good}`);
@@ -213,6 +214,10 @@ export const tests = [
     T.eq(history[59].accuracy, 1, 'these features are linearly separable, so the trained head must rank every pair correctly');
     T.ok(!paramsEqual(before, paramsSnapshot(head)), 'the head parameters must actually be updated by an optimizer step');
     for (const p of head.parameters()) T.ok(p.grad === null, 'gradients must be cleared after each step');
+    const plain = new m.RewardHead(C, { next: T.rng(2) }), decayed = new m.RewardHead(C, { next: T.rng(2) });
+    m.trainRewardHead(plain, features, { steps: 20, lr: 5e-2, weightDecay: 0 });
+    m.trainRewardHead(decayed, features, { steps: 20, lr: 5e-2, weightDecay: 1.0 });
+    T.ok(!paramsEqual(paramsSnapshot(plain), paramsSnapshot(decayed), 1e-4), 'weightDecay must reach the optimizer: new AdamW(head.parameters(), { lr, weightDecay })');
   } },
 
   // ---------- step 5 ----------
@@ -230,11 +235,55 @@ export const tests = [
     T.eq(r1.accuracy, 0, 'ties are not wins: accuracy 0 before any update');
     T.eq(optimizer.t, 1, 'exactly one optimizer step per call');
     for (const p of policy.parameters()) T.ok(p.grad === null, 'gradients must be cleared after the step');
+    // The margin a step reports is β · mean over the batch of the log-ratio difference, on the pre-update policy.
+    const now = refLogpsFor(policy, idx.map((i) => pairs[i]));
+    const expectMargin = 0.1 * ((now.chosen[0] - batch.refChosen[0]) - (now.rejected[0] - batch.refRejected[0]) + (now.chosen[1] - batch.refChosen[1]) - (now.rejected[1] - batch.refRejected[1])) / 2;
     const r2 = m.dpoStep(policy, optimizer, batch, { beta: 0.1 });
+    T.close(r2.margin, expectMargin, 1e-4, 'margin = β · mean_i[(π_c − ref_c) − (π_r − ref_r)] on this step\'s forward pass: multiply by β (it is the implicit reward margin, not the raw log-ratio difference) and average over the batch, do not sum');
     const r3 = m.dpoStep(policy, optimizer, batch, { beta: 0.1 });
     T.ok(r3.loss < r2.loss && r2.loss < r1.loss, `repeating a batch at lr 1e-2 must lower the loss (got ${r1.loss.toFixed(4)}, ${r2.loss.toFixed(4)}, ${r3.loss.toFixed(4)})`);
     T.ok(r3.margin > r2.margin && r2.margin > 0, `the implicit reward margin β·[(π_c − ref_c) − (π_r − ref_r)] must grow (got ${r2.margin.toFixed(4)} then ${r3.margin.toFixed(4)}); check the sign of the loss`);
     T.eq(r3.accuracy, 1, 'after two updates both pairs in the batch should be ranked correctly');
+  } },
+  { step: 'dpo-train', name: 'dpoStep clips the gradient before the optimizer step and reports the pre-clip norm', run(m, T) {
+    const policy = tinyModel(22);
+    const pairs = fakePairs();
+    const ref = refLogpsFor(policy, pairs);
+    const idx = [1, 2];
+    const batch = { chosen: refPad(idx.map((i) => pairs[i].chosen)), rejected: refPad(idx.map((i) => pairs[i].rejected)), refChosen: idx.map((i) => ref.chosen[i]), refRejected: idx.map((i) => ref.rejected[i]) };
+    // A spy optimizer: it records the global gradient norm it is handed and the order of calls.
+    const params = policy.parameters();
+    const calls = [];
+    let normAtStep = null;
+    const spy = {
+      step() { let s = 0, any = false; for (const p of params) if (p.grad) { any = true; for (let i = 0; i < p.grad.length; i++) s += p.grad[i] * p.grad[i]; } normAtStep = any ? Math.sqrt(s) : null; calls.push('step'); },
+      zeroGrad() { for (const p of params) p.zeroGrad(); calls.push('zeroGrad'); },
+    };
+    const r = m.dpoStep(policy, spy, batch, { beta: 0.5, maxGradNorm: 1e-3 });
+    T.eq(calls, ['step', 'zeroGrad'], 'call optimizer.step() once, then optimizer.zeroGrad() once');
+    T.ok(normAtStep !== null, 'the gradients must already be filled when optimizer.step() runs: backward() comes before the step');
+    T.ok(typeof r.gradNorm === 'number' && r.gradNorm > 1e-2, `gradNorm is the global norm BEFORE clipping (what clipGradNorm returns); at β = 0.5 it is far above 1e-3, got ${r.gradNorm}`);
+    T.ok(normAtStep <= 1e-3 * (1 + 1e-4), `the optimizer must see the clipped gradient: global norm ${normAtStep} > maxGradNorm 1e-3. Call clipGradNorm(policy.parameters(), maxGradNorm) between backward() and step()`);
+  } },
+  { step: 'dpo-train', name: 'trainDPO follows the recipe: randInt draws, AdamW with betas [0.9, 0.95] and weightDecay, maxGradNorm passed to dpoStep', async run(m, T) {
+    const pairs = fakePairs();
+    const refLogps = refLogpsFor(tinyModel(27), pairs);
+    const opts = { steps: 6, beta: 0.2, lr: 1e-2, batchSize: 2, maxGradNorm: 0.05, weightDecay: 0.5 };
+    const learner = tinyModel(27);
+    const got = await m.trainDPO(learner, pairs, refLogps, { ...opts, next: T.rng(8) });
+    // The same loop written out, using your dpoStep (tested above).
+    const policy = tinyModel(27);
+    const optimizer = new AdamW(policy.parameters(), { lr: opts.lr, betas: [0.9, 0.95], weightDecay: opts.weightDecay });
+    const next = T.rng(8);
+    const want = [];
+    for (let s = 0; s < opts.steps; s++) {
+      const idx = [];
+      for (let b = 0; b < opts.batchSize; b++) idx.push(randInt(next, pairs.length));
+      const batch = { chosen: refPad(idx.map((i) => pairs[i].chosen)), rejected: refPad(idx.map((i) => pairs[i].rejected)), refChosen: idx.map((i) => refLogps.chosen[i]), refRejected: idx.map((i) => refLogps.rejected[i]) };
+      want.push(m.dpoStep(policy, optimizer, batch, { beta: opts.beta, maxGradNorm: opts.maxGradNorm }).loss);
+    }
+    T.close(got.map((r) => r.loss), want, 1e-5, 'the loss sequence differs from the loop written out: draw each index with randInt(next, pairs.length), build AdamW with { lr, betas: [0.9, 0.95], weightDecay }, and pass { beta, maxGradNorm } through to dpoStep');
+    T.ok(paramsEqual(paramsSnapshot(learner), paramsSnapshot(policy), 1e-6), 'the final parameters differ from the loop written out: check the AdamW settings ({ lr, betas: [0.9, 0.95], weightDecay }) and that maxGradNorm reaches dpoStep');
   } },
   { step: 'dpo-train', name: 'trainDPO: one record per step, onStep called, deterministic given the seed, the reference untouched and the margin positive on every pair', async run(m, T) {
     const policy = tinyModel(23);

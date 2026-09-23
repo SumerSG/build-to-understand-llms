@@ -4,7 +4,7 @@ export default {
   track: 'transformer',
   minutes: 90,
   threshold: 'Model quality is decided as much by what you remove from the corpus as by what you keep: filtering, deduplication and mixing are modelling decisions, and every one of them is a measurable count.',
-  goal: 'A pipeline that filters, deduplicates, mixes and shards raw documents into token shards, with a report of what was kept and why: the demo runs it on 60-odd real and synthetic documents and charts what each stage removed.',
+  goal: 'A pipeline that filters, deduplicates, mixes and shards raw documents into token shards, with a report of what was kept and why: the demo runs it on 74 real and synthetic documents and charts what each stage removed.',
   prereqs: ['03-tokenizer', '07-pretraining', '08-scaling'],
   recall: [
     { q: 'In module 08, the compute-optimal (Chinchilla) rule says a model of N parameters should see roughly how many tokens?', options: ['About N', 'About 20 N', 'About 1000 N'], answer: 1,
@@ -45,19 +45,19 @@ Each stage is a pure function returning \`{ kept, removed }\`, so the report is 
 
 ## Quality heuristics (C4, Gopher)
 
-C4 (Raffel et al. 2020) kept only lines ending in terminal punctuation and dropped pages containing "lorem ipsum" or a curly brace. Gopher (Rae et al. 2021) added document-level rules: 50 to 100,000 words, mean word length between 3 and 10 characters, a symbol-to-word ratio (hashes, ellipses) below 0.1, and no more than 30% duplicate lines. Your \`qualityReason\` uses smaller word counts because the lab's documents are short. RefinedWeb and FineWeb reuse most of them; DCLM adds a learned classifier.
+C4 (Raffel et al. 2020) kept only lines ending in terminal punctuation, deleted lines mentioning JavaScript or cookie and privacy policies, and dropped whole pages containing "lorem ipsum" or a curly brace. (Your filter is blunter: a boilerplate phrase anywhere rejects the whole document.) Gopher (Rae et al. 2021) added document-level rules: 50 to 100,000 words, mean word length between 3 and 10 characters, a symbol-to-word ratio (hashes, ellipses) below 0.1, and no more than 30% duplicate lines. Your \`qualityReason\` uses smaller word counts because the lab's documents are short. RefinedWeb and FineWeb reuse most of them; DCLM adds a learned classifier.
 
 :::predict
 The default rules require at least 30% of lines to end in \`.\`, \`!\`, \`?\` or a closing quote. The demo feeds Shakespeare's sonnets, one verse line per text line. Do they survive?
 ---
-No. Sonnet lines end in commas and semicolons: two or three of fourteen pass, so the rule removes all six sonnets (and keeps four of Blake's six "Tyger" stanzas). C4's line rule is known to delete verse, dialogue and code; whether that is a bug is a modelling decision the report makes visible.
+No. Sonnet lines mostly end in commas, colons and semicolons: between one and four of fourteen pass (at most 29%), so the rule removes all six sonnets (and keeps four of Blake's six "Tyger" stanzas). C4's line rule is known to delete verse, dialogue and code; whether that is a bug is a modelling decision the report makes visible.
 :::
 
 ## Deduplication
 
 Lee et al. 2021 ("Deduplicating Training Data Makes Language Models Better") found a 61-word sentence repeated over 60,000 times in C4, and that a model trained on deduplicated data emitted memorised text ten times less often. Exact duplicates are cheap: normalise, hash (\`hash32\` from \`lib/util.js\`, FNV-1a), keep the first document per hash.
 
-Near-duplicates (the same article under a different header) need a similarity. The **Jaccard similarity** of two sets is \`|A ∩ B| / |A ∪ B|\`. Represent each document by its set of 5-word **shingles** (every window of five consecutive words), so documents that share text share shingles. Exact Jaccard for every pair is \`O(n²)\` set intersections. **MinHash** (Broder 1997) replaces each set by a signature: for each of \`k\` hash functions, the minimum hash value over the set. Two sets share a minimum under one hash function with probability exactly \`J\`, so the fraction of agreeing positions is an unbiased estimate of \`J\` with standard deviation \`sqrt(J(1-J)/k)\`.
+Near-duplicates (the same article under a different header) need a similarity. The **Jaccard similarity** of two sets is \`|A ∩ B| / |A ∪ B|\`. Represent each document by its set of 5-word **shingles** (every window of five consecutive words), so documents that share text share shingles. Exact Jaccard for every pair is \`O(n²)\` set intersections. **MinHash** (Broder 1997) replaces each set by a signature: for each of \`k\` hash functions, the minimum hash value over the set. For an ideal random hash function, two sets share a minimum with probability exactly \`J\` (the element of \`A ∪ B\` with the smallest hash is equally likely to be any of them, and the minima agree exactly when it lies in \`A ∩ B\`); seeded linear hashes come close enough in practice, so the fraction of agreeing positions is an unbiased estimate of \`J\` with standard deviation \`sqrt(J(1-J)/k)\`.
 
 :::predict
 With \`k = 32\` hash functions and a true Jaccard similarity of 0.8, roughly how far off is the estimate typically?
@@ -69,7 +69,7 @@ Your \`nearDedup\` compares each document against every earlier survivor, still 
 
 ## Mixing and epochs
 
-A clean corpus is still several datasets. The Pile (Gao et al. 2020) set weights by hand (Pile-CC 18%, PubMed Central 14%, Books3 12%, …); DoReMi (Xie et al. 2023) learns them with a small proxy model. Your \`mixDomains\` uses Megatron-LM's blending rule: at every draw, pick the domain whose running share of tokens is furthest below its target. Weights are shares of *tokens*, not documents.
+A clean corpus is still several datasets. The Pile (Gao et al. 2020) set weights by hand (Pile-CC 18%, PubMed Central 14%, Books3 12%, …); DoReMi (Xie et al. 2023) learns them with a small proxy model. Your \`mixDomains\` uses Megatron-LM's blending rule: at every draw, pick the domain whose running share is furthest below its target. Megatron counts fixed-length samples; your documents vary in length, so you count tokens instead. Weights are shares of *tokens*, not documents.
 
 Scarce, high-quality sources (Wikipedia, textbooks) run out before the budget does. Muennighoff et al. 2023 ("Scaling Data-Constrained Language Models") found that up to about 4 epochs of repeated data is nearly as good as fresh data; beyond that, returns fall off quickly. A \`maxEpochs\` cap makes the repeat count explicit; an exhausted domain's weight goes to the others.
 
@@ -79,7 +79,7 @@ Tokenisation is independent per document, so it is embarrassingly parallel: prod
 
 ## Where the toy differs from production
 
-Your pipeline holds every document in memory, compares MinHash signatures pairwise instead of through LSH buckets, uses 32 hash functions, and skips language identification, URL blocklists, PII scrubbing and the learned classifiers of DCLM and FineWeb-Edu. Production shards are files of 100M or more tokens on object storage, addressed by \`(shard, offset)\`. The stage boundaries, reason strings and counts are the same.
+Your pipeline holds every document in memory, compares MinHash signatures pairwise instead of through LSH buckets, uses 32 hash functions, and skips language identification, URL blocklists, PII scrubbing and the learned classifiers of DCLM and FineWeb-Edu. Production shards are binary files on object storage holding millions to hundreds of millions of tokens each (Karpathy's FineWeb-Edu shards for build-nanogpt hold 100M), addressed by \`(shard, offset)\`. The stage boundaries, reason strings and counts are the same.
 `,
   steps: [
     {
@@ -96,7 +96,7 @@ Complete \`qualityReason(text, cfg)\`: return the name of the **first** rule the
 
 Then write \`qualityFilter(docs, cfg)\`: \`{ kept, removed }\` where \`removed\` holds \`{ id, reason }\`. Pass \`cfg\` through; the tests change thresholds.
 
-These are Gopher's rules (Rae et al. 2021, Appendix A) with smaller word counts. The reason string is not decoration: the report at the end of the pipeline is built from it.
+The word-count, word-length, symbol and repeated-line rules are Gopher's (Rae et al. 2021, Appendix A) with smaller word counts; \`terminal_punct\` is a document-level version of C4's line rule, and \`boilerplate\` is a C4-style phrase blocklist. The reason string is not decoration: the report at the end of the pipeline is built from it.
 `,
       predict: { question: 'A document of 24 lines like "Menu item number 7", none ending in punctuation. Which reason fires first: terminal_punct or repeated_lines?', answer: 'terminal_punct. The rules run in order and 0 of 24 lines end in terminal punctuation; the lines are all different, so repeated_lines would not fire anyway.' },
       hints: [
@@ -141,9 +141,9 @@ The signature is built inside \`minhash\` from the family, so the same seed alwa
 `,
       predict: { question: 'Two documents that are exact copies: what is estimateJaccard of their signatures?', answer: 'Exactly 1: identical sets give identical minima under every hash function. Near-dedup therefore also removes exact duplicates, which is why the exact pass runs first (it is far cheaper).' },
       hints: [
-        'Shingles are the sliding windows of the word array: index `i` from 0 while `i + k <= words.length`. For the signature, the `>>> 0` keeps the arithmetic in unsigned 32-bit range after `Math.imul` wraps.',
-        'minhash: `fam = hashFamily(numHashes, seed)`; `sig` filled with 4294967295; for each shingle compute `h = hash32(s)` once, then for each `i` compute `v` and keep the smaller of `sig[i]` and `v`. nearDedup: precompute all shingle sets and signatures, keep a list of kept indices, and loop over it for each new document.',
-        '`for (const s of shingleSet) { const h = hash32(s); for (let i = 0; i < numHashes; i++) { const v = /* (a_i * h + b_i) mod 2^32 */; if (v < sig[i]) sig[i] = v; } }` and in nearDedup: `for (const i of keptIdx) { const est = estimateJaccard(sigs[i], sigs[j]); if (est >= minReport) pairs.push({ a: docs[i].id, b: docs[j].id, estimate: est, jaccard: jaccard(sets[i], sets[j]) }); if (est >= threshold && hit === null) hit = { id: docs[j].id, nearOf: docs[i].id, estimate: est }; }`',
+        'Build the pieces bottom-up and test each on a tiny set before the next: a shingle set you can print, a Jaccard you can check by hand on two four-element sets, then a signature. For nearDedup, ask: which earlier documents should a new one be compared with once some have been removed?',
+        'shingles: slide a window of `k` words while `i + k <= words.length`. minhash: `fam = hashFamily(numHashes, seed)`; `sig` filled with 4294967295; for each shingle compute `h = hash32(s)` once, then for each `i` compute `v` and keep the smaller of `sig[i]` and `v` (the `>>> 0` keeps the result unsigned after `Math.imul` wraps). nearDedup: precompute all shingle sets and signatures, keep a list of kept indices, and for each new document loop over that list, recording pairs above `minReport` and the first match above `threshold`.',
+        '`for (const s of shingleSet) { const h = hash32(s); for (let i = 0; i < numHashes; i++) { const v = /* (a_i * h + b_i) mod 2^32 */; if (v < sig[i]) sig[i] = v; } }` and in nearDedup: `for (let j = 0; j < docs.length; j++) { let hit = null; for (const i of keptIdx) { const est = estimateJaccard(sigs[i], sigs[j]); /* maybe record a pair; maybe set hit */ } /* keep j (and remember its index) or remove it */ }`, then sort `pairs`.',
       ],
     },
     {
@@ -166,7 +166,7 @@ Return \`{ order, total, report }\` where \`report[domain] = { docs, draws, epoc
       hints: [
         'Two loops, one inside the other: the outer runs until the budget is met or nothing is active; the inner scans the active domains for the largest deficit. Sizes matter: a domain of long documents must be drawn less often for the same share.',
         'Deficit of domain d: `target_d × total − size_d` where `target_d = weight_d / (sum of active weights)`. With `total = 0` every deficit is 0, so the first draw goes to whichever domain you check first; from then on the rule self-corrects.',
-        '`while (total < budget) { const active = state.filter((s) => s.draws < maxEpochs * s.docs.length); if (active.length === 0) break; let sumW = 0; for (const s of active) sumW += s.weight; let best = null, bestDeficit = -Infinity; for (const s of active) { const deficit = /* target share times total, minus size */; if (deficit > bestDeficit) { bestDeficit = deficit; best = s; } } if (best.ptr >= best.queue.length) { best.queue = shuffle(next, best.docs.slice()); best.ptr = 0; best.epochs++; } const doc = best.queue[best.ptr++]; … }`',
+        '`while (total < budget) { const active = state.filter((s) => s.draws < maxEpochs * s.docs.length); if (active.length === 0) break; let sumW = 0; for (const s of active) sumW += s.weight; let best = null, bestDeficit = -Infinity; for (const s of active) { const deficit = /* target share times total, minus size */; if (deficit > bestDeficit) { bestDeficit = deficit; best = s; } } /* refill best.queue with a shuffle if it is used up, draw one document, update draws, size, total and order */ }`',
       ],
     },
     {
@@ -182,9 +182,9 @@ Then \`runPipeline(docs, config)\` with \`config = { tokenizer, quality?, near?,
 \`readDoc(shards, entry)\` (written) reads a document back through the index; the tests use it to check that nothing was lost across shard boundaries.
 `,
       hints: [
-        'Keep one current shard array and a `push(token)` helper that appends and, when the length hits `shardSize`, moves the array into `shards` and starts a fresh one. The index entry for a document is `{ shard: shards.length, offset: cur.length }` at the moment before its first token is pushed.',
-        'runPipeline is bookkeeping: after each stage push `{ stage, in, out, removed }` and copy the stage\'s `removed` entries into the flat list with a `stage` field and a reason string (`duplicate of <id>`, `near-duplicate of <id>`). The mixer must measure size in tokens, so pass `size: (d) => d.ids.length`.',
-        '`const push = (t) => { cur.push(t); if (cur.length === shardSize) { shards.push(cur); cur = []; } }; for (const id of order) { const doc = byId.get(id); if (!doc) throw new Error(…); index.push({ docId: id, shard: shards.length, offset: cur.length, length: doc.ids.length }); /* push every id, then the eos */ } if (cur.length > 0) shards.push(cur);`',
+        'Think of one long token stream that you cut every `shardSize` tokens. At what moment do you know which shard and offset a document starts at, and what state tells you?',
+        'packShards: keep one current shard array and a `push(token)` helper that appends and, when the length hits `shardSize`, moves the array into `shards` and starts a fresh one; the index entry is written just before a document\'s first token is pushed. runPipeline is bookkeeping: after each stage push `{ stage, in, out, removed }` and copy the stage\'s `removed` entries into the flat list with a `stage` field and a reason string (`duplicate of <id>`, `near-duplicate of <id>`). The mixer must measure size in tokens, so pass `size: (d) => d.ids.length`.',
+        '`const push = (t) => { cur.push(t); if (cur.length === shardSize) { shards.push(cur); cur = []; } }; for (const id of order) { const doc = byId.get(id); if (!doc) throw new Error(…); index.push({ docId: id, shard: /* ? */, offset: /* ? */, length: doc.ids.length }); /* push every id, then the eos */ }` and remember the final partial shard. In runPipeline, pack in `mixed.order`, not input order.',
       ],
     },
   ],
@@ -194,9 +194,9 @@ Then \`runPipeline(docs, config)\` with \`config = { tokenizer, quality?, near?,
     'Your mixer caps each domain at `maxEpochs`. Walk through what happens to a 1% high-quality domain with weight 0.3 as the budget grows, and connect it to what module 07 taught about the train/validation gap.',
   ],
   stretch: [
-    'Replace the pairwise signature comparison in `nearDedup` with locality-sensitive hashing: split each signature into `b` bands of `r` rows, bucket by band, compare only bucket-mates, and plot the probability curve `1 − (1 − J^r)^b` against the pairs your pipeline found. This is how RefinedWeb and FineWeb (via the datatrove library) deduplicate billions of documents.',
-    'Add a contamination check: take 20 questions from `MATH_TASKS` in `lib/data.js`, plant three of them inside documents, and use the shingle sets plus the shard index to report which shard and offset each leaked question sits at. Every serious eval report (GPT-4, Llama 3) includes a table like this.',
-    'Train a tiny "quality classifier": label the demo\'s documents by domain, fit a bag-of-words logistic regression with the ops from module 01, and use its probability as a filter score. DCLM and FineWeb-Edu do this with fastText and a small Llama-based annotator, respectively.',
+    'Replace the pairwise signature comparison in `nearDedup` with locality-sensitive hashing: split each signature into `b` bands of `r` rows, bucket by band, compare only bucket-mates, and plot the probability curve `1 − (1 − J^r)^b` against the pairs your pipeline found. This is how RefinedWeb (its own pipeline) and FineWeb (via the Hugging Face datatrove library) deduplicate billions of documents.',
+    'Add a contamination check: take 20 questions from `MATH_TASKS` in `lib/data.js`, plant three of them inside documents, and use the shingle sets plus the shard index to report which shard and offset each leaked question sits at. The GPT-4 and Llama 3 reports both include contamination analyses of this kind.',
+    'Train a tiny "quality classifier": label the demo\'s documents by domain, fit a bag-of-words logistic regression with the ops from module 01, and use its probability as a filter score. DCLM filters with a fastText classifier; FineWeb-Edu had Llama-3-70B-Instruct score about 450k pages for educational value and trained a small classifier on those scores to label the full corpus.',
     'Implement DoReMi\'s idea in miniature: train the bigram model from module 04 on each domain, measure its loss per domain, and reweight domains towards the ones where the loss gap is largest. Compare the resulting weights with the hand-set Pile weights.',
   ],
   timeouts: { tests: 20000, demo: 60000 },

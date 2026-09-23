@@ -1,6 +1,7 @@
 import { Tensor } from 'lib/tensor.js';
 import { AdamW } from 'lib/optim.js';
 import { MATH_TASKS } from 'lib/data.js';
+import { shuffle } from 'lib/util.js';
 
 /** A policy whose answer to `question` is `token` with probability about `p` (the rest spread evenly). */
 function peakedPolicy(m, question, token, p = 0.999) {
@@ -227,6 +228,74 @@ export const tests = [
     T.eq(T.arr(stats.adv), new Array(32).fill(0), 'stats.adv must hold the 32 group advantages, all zero here');
     T.ok(stats.entropy > 4.6 && stats.entropy <= Math.log(m.ANSWER_VOCAB) + 1e-6, `a uniform policy has entropy ln 100 = 4.605 nats before the update, got ${stats.entropy}`);
     T.ok(policy.W.data.every((v, i) => v === before[i]), 'zero advantages and zero KL gradient at the reference mean zero update: GRPO wastes prompts whose group is all-wrong or all-right');
+  } },
+  { step: 'train', name: 'grpoStep adds beta · KL to the reference: with no reward signal the KL alone pulls the policy back', run(m, T) {
+    // All answers unreachable, so every advantage is 0 and the only gradient is the KL term's.
+    const tasks = MATH_TASKS.slice(0, 4).map((t) => ({ question: t.question, answer: '999' }));
+    const q = tasks[0].question, token = 42;
+    const drifted = peakedPolicy(m, q, token, 0.5);   // the policy has drifted to 50% on token 42 for task 0
+    const ref = new m.Policy();                        // the reference is uniform
+    const pBefore = drifted.probs(q)[token];
+    const entropyBefore = tasks.reduce((s, t) => s + m.entropyOf(drifted.probs(t.question)), 0) / tasks.length;
+    const stats = m.grpoStep(drifted, ref, tasks, { G: 8, beta: 0.5, clip: 0.2, mu: 1, optimizer: new AdamW(drifted.parameters(), { lr: 0.1 }), next: T.rng(4) });
+    // The expected KL, recomputed from the returned samples: at mu = 1 the policy's logp is the rollout's oldLogp.
+    const k3 = stats.samples.map((s) => { const d = Math.log(1 / m.ANSWER_VOCAB) - s.oldLogp; return Math.exp(d) - d - 1; });
+    T.close(stats.kl, k3.reduce((s, v) => s + v, 0) / k3.length, 1e-4, 'stats.kl must be klPenalty(logp, refLogp) with refLogp from the REFERENCE policy (not the policy itself), measured in the gradient step');
+    T.ok(stats.kl > 0.05, `the policy differs from the reference on task 0, so the KL must be clearly positive, got ${stats.kl}`);
+    T.close(stats.entropy, entropyBefore, 1e-4, 'entropy is measured on the policy BEFORE the update');
+    const pAfter = drifted.probs(q)[token];
+    T.ok(pAfter < pBefore - 0.01, `with zero advantages, total = clippedLoss + beta · klPenalty must still move the policy TOWARDS the uniform reference: P(${token}) should fall from ${pBefore.toFixed(3)}, got ${pAfter.toFixed(3)} (did you add the KL term, with a plus sign and weight beta?)`);
+    const still = peakedPolicy(m, q, token, 0.5);
+    const w0 = Float32Array.from(still.W.data);
+    m.grpoStep(still, ref, tasks, { G: 8, beta: 0, clip: 0.2, mu: 1, optimizer: new AdamW(still.parameters(), { lr: 0.1 }), next: T.rng(4) });
+    T.ok(still.W.data.every((v, i) => v === w0[i]), 'with beta = 0 and zero advantages nothing may move: the KL term must be scaled by beta');
+  } },
+  { step: 'train', name: 'grpoStep with mu > 1 keeps the rollout\'s oldLogp, so the ratio drifts from 1 and the clip engages', run(m, T) {
+    const tasks = MATH_TASKS.slice(0, 6);
+    const V = m.ANSWER_VOCAB;
+    const make = () => {
+      const p = new m.Policy();
+      p.W.data[m.features(tasks[0].question)[0] * V + Number(tasks[0].answer)] = Math.log(V - 1);   // 50% on the right answer for task 0
+      return p;
+    };
+    const w0 = make().W.data;
+    const moved = (p) => p.W.data.reduce((s, v, i) => s + Math.abs(v - w0[i]), 0);
+    const one = make();
+    const s1 = m.grpoStep(one, one.clone(), tasks, { G: 8, beta: 0, clip: 0.2, mu: 1, optimizer: new AdamW(one.parameters(), { lr: 0.3 }), next: T.rng(2) });
+    T.eq(s1.clipFrac, 0, 'with mu = 1 nothing is clipped');
+    const many = make();
+    const s6 = m.grpoStep(many, many.clone(), tasks, { G: 8, beta: 0, clip: 0.2, mu: 6, optimizer: new AdamW(many.parameters(), { lr: 0.3 }), next: T.rng(2) });
+    T.ok(s6.clipFrac > 0, `after 5 updates on the same rollout the ratio exp(logp - oldLogp) of the rewarded samples is far above 1.2, so clipFrac must be > 0 in the last step; got ${s6.clipFrac}. Loop mu times, and keep oldLogp from the rollout rather than recomputing it each step`);
+    T.ok(moved(many) > 2 * moved(one), 'mu = 6 gradient steps on one rollout must move the weights further than mu = 1');
+    const loose = make();
+    m.grpoStep(loose, loose.clone(), tasks, { G: 8, beta: 0, clip: 1e6, mu: 6, optimizer: new AdamW(loose.parameters(), { lr: 0.3 }), next: T.rng(2) });
+    T.ok(moved(many) < 0.5 * moved(loose), `the clip must actually limit the update: 6 steps with clip = 0.2 moved the weights by ${moved(many).toFixed(1)}, with the clip disabled (1e6) by ${moved(loose).toFixed(1)}. If they are equal, your loss sees ratio 1 on every step: pass the rollout's oldLogp to clippedLoss, not the current logp`);
+  } },
+  { step: 'train', name: 'trainGRPO shuffles a batch per iteration, threads verifyFn through, and keeps one AdamW', async run(m, T) {
+    const tasks = MATH_TASKS.slice(20, 26);
+    const seen = [];
+    const spy = (task, text) => { seen.push(task.question); return m.verify(task, text); };
+    // Give every task a 50% chance of its right answer (on its own q= feature row) so that groups are mixed.
+    const V = m.ANSWER_VOCAB;
+    const primed = () => { const p = new m.Policy(); for (const t of tasks) p.W.data[m.features(t.question)[5] * V + Number(t.answer)] = Math.log(V - 1); return p; };
+    const policy = primed();
+    const opts = { iterations: 3, G: 4, batchSize: 2, beta: 0.04, clip: 0.2, mu: 1, lr: 0.2 };
+    const history = await m.trainGRPO(policy, policy.clone(), tasks, { ...opts, next: T.rng(9), verifyFn: spy });
+    T.eq(history.length, 3);
+    T.eq(seen.length, 3 * 2 * 4, 'every rollout reward must come from opts.verifyFn: iterations × batchSize × G calls (pass verifyFn on to grpoStep)');
+    for (let i = 0; i < 3; i++) T.eq(new Set(seen.slice(i * 8, i * 8 + 8)).size, 2, `iteration ${i} must roll out exactly batchSize = 2 distinct tasks`);
+    T.ok(new Set(seen).size > 2, 'a fresh shuffled batch each iteration: over 3 iterations more than 2 of the 6 tasks should appear (do not always take the first batchSize)');
+    // Replay the loop by hand with ONE optimizer and the documented order of randomness.
+    const replay = primed();
+    const replayRef = replay.clone();
+    const optimizer = new AdamW(replay.parameters(), { lr: opts.lr });
+    const next = T.rng(9);
+    for (let i = 0; i < 3; i++) {
+      const batch = shuffle(next, tasks.slice()).slice(0, opts.batchSize);
+      m.grpoStep(replay, replayRef, batch, { G: opts.G, beta: opts.beta, clip: opts.clip, mu: opts.mu, optimizer, next });
+    }
+    T.ok(policy.W.data.some((v, i) => v !== primed().W.data[i]), 'with mixed groups the policy must have moved');
+    T.close(Array.from(policy.W.data), Array.from(replay.W.data), 1e-6, 'trainGRPO must create ONE AdamW over policy.parameters() with opts.lr and reuse it every iteration, batching with shuffle(next, tasks.slice()).slice(0, batchSize) before each grpoStep');
   } },
   { step: 'train', name: 'trainGRPO raises accuracy on a handful of tasks from a uniform start, deterministically', async run(m, T) {
     const tasks = MATH_TASKS.slice(10, 16);

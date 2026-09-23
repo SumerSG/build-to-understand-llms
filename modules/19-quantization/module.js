@@ -5,7 +5,7 @@ export default {
   minutes: 90,
   threshold: 'Quantisation replaces each float with a small integer times a shared scale; the error is set by the largest value in the group that shares the scale, so smaller groups and outlier handling are what make 4-bit weights usable.',
   goal: 'Absmax, per-channel and group-wise int8/int4 quantisers (symmetric and with zero points), a weight-only quantised matmul, error metrics and a memory calculator for weights and KV cache; the demo quantises the trained checkpoint, plots error against group size, measures next-token agreement with fp32 over 100 positions, and shows what one outlier does to each scheme.',
-  prereqs: ['01-tensors', '15-kv-cache'],
+  prereqs: ['01-tensors', '08-scaling', '15-kv-cache'],
   recall: [
     { q: 'A `Float32Array` of 1,000,000 elements (module 01) occupies how many bytes?',
       options: ['1,000,000', '4,000,000', '8,000,000'], answer: 1,
@@ -34,7 +34,7 @@ export default {
       options: ['Negative numbers can be represented', 'All 2^bits codes cover the actual [min, max] of the group instead of [−max|x|, +max|x|]', 'The scale can be an integer'], answer: 1,
       why: 'For a group of values in [2, 3], symmetric int4 spends its 16 codes on [−3, 3] and uses 3 of them; asymmetric spends all 16 on [2, 3], a step 6x finer.' },
     { q: 'LLM.int8 (Dettmers et al. 2022) found that above roughly 6.7B parameters, a few activation channels…',
-      options: ['Become exactly zero', 'Reach magnitudes about 20x the rest and destroy per-tensor quantisation unless kept in fp16', 'Stop mattering'], answer: 1,
+      options: ['Become exactly zero', 'Reach magnitudes up to about 20x the rest and wreck int8 quantisation of the other channels unless kept in fp16', 'Stop mattering'], answer: 1,
       why: 'Outlier feature dimensions set the absmax scale for everything else. LLM.int8 keeps those columns in fp16 and quantises the rest; AWQ instead rescales the salient channels before quantising.' },
   ],
   concept: `
@@ -52,11 +52,11 @@ The scale is \`0.5 / 7 ≈ 0.071\`, so any |x| below 0.036 rounds to zero: about
 
 ## Symmetric or with a zero point
 
-Symmetric schemes waste codes on lopsided groups. **Asymmetric** quantisation maps the group's actual \`[min, max]\` onto \`[0, 2^bits − 1]\` with \`scale = (max − min) / (2^bits − 1)\` and an integer **zero point** \`zero = round(−min / scale)\`, so \`x ≈ (q − zero) · scale\`. For weights, nearly symmetric around zero, the gain is small; for activations and KV entries, often all positive after a GELU, it is large. GPTQ and AWQ checkpoints store a 4-bit zero point per group.
+Symmetric schemes waste codes on lopsided groups. **Asymmetric** quantisation maps the group's actual \`[min, max]\` onto \`[0, 2^bits − 1]\` with \`scale = (max − min) / (2^bits − 1)\` and an integer **zero point** \`zero = round(−min / scale)\`, the code that stands for 0.0, so \`x ≈ (q − zero) · scale\`. For weights, nearly symmetric around zero, the gain is small; for skewed tensors it is large: GELU outputs never go below about −0.17, and some key channels sit on a large constant offset (which is why KIVI quantises keys per channel, asymmetrically). GPTQ and AWQ checkpoints store the zero point in 4 bits per group, so it must lie in \`[0, 15]\`; GPTQ ensures that by widening each group's range to include 0. Your quantiser leaves the zero point unconstrained, which is what lets the step-3 test's all-positive group \`[2, 3]\` use all 16 codes.
 
 ## Why 4-bit weights work at all
 
-At batch size 1 a decode step multiplies one row of activations by every weight matrix: about 2 FLOPs per weight, and one read of every weight. NVIDIA's H100 datasheet lists approximately 3.35 TB/s of HBM3 bandwidth against approximately 989 TFLOP/s of bf16 arithmetic, so a kernel doing 1 FLOP per byte spends over 99% of its time waiting on memory (module 23). Reading 0.5 bytes per weight instead of 2 cuts that wait by about 4x. This is **weight-only** quantisation: the codes are unpacked to fp16 inside the matmul kernel, one group at a time; the arithmetic stays in fp16. It needs a matched kernel (vLLM's Marlin and ExLlama, \`bitsandbytes\` for NF4); without one the whole matrix is dequantised first and the saving exists only on disk. Prefill is compute-bound and gains little.
+At batch size 1 a decode step multiplies one row of activations by every weight matrix: about 2 FLOPs per weight, and one read of every weight. NVIDIA's H100 SXM datasheet lists approximately 3.35 TB/s of HBM3 bandwidth against approximately 989 TFLOP/s of dense bf16 arithmetic, so a kernel doing 1 FLOP per byte spends over 99% of its time waiting on memory (module 23). Reading 0.5 bytes per weight instead of 2 cuts that wait by about 4x. This is **weight-only** quantisation: the codes are unpacked to fp16 inside the matmul kernel, one group at a time; the arithmetic stays in fp16. It needs a matched kernel (the Marlin and ExLlamaV2 kernels vLLM ships for GPTQ and AWQ checkpoints, \`bitsandbytes\` for NF4); without one the whole matrix is dequantised first and the saving exists only on disk. Prefill is compute-bound and gains little.
 
 :::predict
 Llama-3-8B has 8.03 billion parameters. How many bytes are its weights in bf16, int8, and int4 with groups of 128 and 16-bit scales? Does 70B (70.6 billion parameters) fit on one 80 GB H100 in int4?
@@ -68,7 +68,7 @@ Llama-3-8B has 8.03 billion parameters. How many bytes are its weights in bf16, 
 
 **GPTQ** (Frantar et al. 2022) quantises a matrix column by column and nudges the remaining columns to cancel each rounding error, weighted by the inverse Hessian \`H = 2 · X · Xᵀ\` from a small **calibration set** (typically 128 sequences). **AWQ** (Lin et al. 2023) finds that about 1% of input channels carry most of the activation magnitude, scales those weight channels up before rounding (and the activations down to match) by a factor tuned on calibration data. **LLM.int8** (Dettmers et al. 2022) found that models above roughly 6.7B parameters develop a few activation channels about 20x larger than the rest, and keeps those columns in fp16, the rest in int8. **NF4** (QLoRA, Dettmers et al. 2023) replaces the uniform grid with 16 quantiles of a normal distribution in blocks of 64, with 8-bit scales.
 
-Typical cost, as WikiText-2 perplexity: approximately 0.1–0.3 points for 7B–70B models in int4 g128 under GPTQ or AWQ (AWQ reports Llama-2-7B going from 5.47 to about 5.6), rising steeply below 4 bits; larger models tolerate it better. Hopper GPUs add hardware **fp8** (E4M3 for weights and activations, E5M2 for gradients) at approximately twice the bf16 rate; DeepSeek-V3 trains in it, vLLM and TensorRT-LLM serve in it, and a float needs no groups: its exponent is a per-value scale. The **KV cache** quantises too: vLLM's \`kv_cache_dtype="fp8"\` halves it.
+Typical cost, as WikiText-2 perplexity: approximately 0.1–0.3 points for 7B–70B models in int4 g128 under GPTQ or AWQ (AWQ reports Llama-2-7B going from 5.47 to about 5.6), rising steeply below 4 bits; larger models tolerate it better. Hopper GPUs add hardware **fp8** (conventionally E4M3 for weights and activations, E5M2 for gradients) at approximately twice the dense bf16 rate; vLLM and TensorRT-LLM serve in it and DeepSeek-V3 trains in it. Each fp8 value carries its own exponent, so it tolerates spread inside a tensor far better than an integer grid, but it still needs scales to fit a tensor into E4M3's range (largest value 448): one per tensor in most serving recipes, one per 1x128 activation tile and per 128x128 weight block in DeepSeek-V3, which uses E4M3 throughout. The **KV cache** quantises too: vLLM's \`kv_cache_dtype="fp8"\` halves it.
 
 ## Where this toy differs from production
 
@@ -90,7 +90,7 @@ q[i]  = clamp(round(x[i] / scale), qmin, qmax)
 
 Return \`{ q: Int8Array, scale, bits }\`. \`dequantizeAbsmax\` returns a \`Float32Array\` of \`q[i] * scale\`. The starter already finds \`amax\` for you.
 
-The round-trip error of every value is at most \`scale / 2\`; the tests check that bound and that int4 has roughly 256x the mean squared error of int8.
+The round-trip error of every value is at most \`scale / 2\`; the tests check that bound and that int4, whose step is \`max|x| / 7\` against int8's \`max|x| / 127\`, has roughly \`(127/7)² ≈ 330\` times the mean squared error of int8.
 `,
       predict: { question: 'You quantise 1,000 samples from N(0, 0.5) to int8 absmax. Which value decides the scale, and what does that make the error bound for the 990 values near zero?', answer: 'The single largest |x|, around 1.6 for 1,000 Gaussian samples. scale ≈ 1.6 / 127 ≈ 0.0126, so every value is within 0.0063 of its reconstruction. One outlier of 16 would make that bound ten times worse for everyone.' },
       hints: [
@@ -105,7 +105,7 @@ The round-trip error of every value is at most \`scale / 2\`; the tests check th
       instructions: `
 Write \`quantizePerChannel(w, bits = 8)\` and the general \`dequantize(qw)\`.
 
-\`w\` is a raw \`[rows, cols]\` tensor. Apply the absmax rule of step 1 to each row separately and return the quantised-matrix struct from the top of the file: \`{ shape, q, scales, zeros: null, bits, groupSize: cols }\`, with \`scales[r]\` the scale of row \`r\` and \`q\` laid out exactly like \`w.data\`.
+\`w\` is a raw \`[rows, cols]\` tensor. Apply the absmax rule of step 1, with \`qrange(bits)\` for whatever \`bits\` is passed (the tests and the demo also call it with 4), to each row separately and return the quantised-matrix struct from the top of the file: \`{ shape, q, scales, zeros: null, bits, groupSize: cols }\`, with \`scales[r]\` the scale of row \`r\` and \`q\` laid out exactly like \`w.data\`.
 
 \`dequantize\` must handle the general struct, not only per-channel: a row is split into \`nGroups = cols / groupSize\` groups, and value \`[r, c]\` uses \`scales[r * nGroups + floor(c / groupSize)]\`. If \`qw.zeros\` is present, subtract \`zeros[same index]\` from the code before scaling. Per-channel is the case \`groupSize === cols\`; step 3 will produce smaller groups without changing this function.
 
@@ -114,7 +114,7 @@ The third test injects one row 100x larger than the others and checks that the s
       hints: [
         'Row r occupies offsets r*cols … r*cols + cols − 1. Find its amax, compute its scale, then quantise just those values.',
         'In dequantize, loop over rows, then groups g, then the groupSize values in the group; base = r*cols + g*groupSize. Read the scale (and zero) once per group.',
-        '`const idx = r * nGroups + g; const s = qw.scales[idx]; const z = qw.zeros ? qw.zeros[idx] : 0; for (k) out[base + k] = (qw.q[base + k] - z) * s;`',
+        '`const idx = r * nGroups + g; const s = qw.scales[idx]; const z = qw.zeros ? qw.zeros[idx] : 0; for (let k = 0; k < G; k++) out[base + k] = /* the code, zero-corrected, times s */;`',
       ],
     },
     {
@@ -128,11 +128,11 @@ Throw if \`cols % groupSize !== 0\`. For each row and each group of \`groupSize\
 - **symmetric**: \`scale = max(|min|, |max|) / qmax\`, \`zero = 0\`, and \`zeros\` is \`null\`;
 - **asymmetric**: \`{ qmin, qmax } = qrange(bits, false)\` is \`[0, 2^bits − 1]\`, \`scale = (max − min) / (qmax − qmin)\`, \`zero = round(−min / scale)\`, stored in \`zeros[r * nGroups + g]\`.
 
-Either way \`q = clamp(round(x / scale) + zero, qmin, qmax)\`, and \`scale\` falls back to 1 when the group is constant. Return the same struct as step 2 with the given \`groupSize\`.
+Either way \`q = clamp(round(x / scale) + zero, qmin, qmax)\` (the zero point is itself an integer code, so round it), and \`scale\` falls back to 1 when the group is constant. Return the same struct as step 2 with the given \`groupSize\`.
 
 The tests check that error falls strictly as the group shrinks on a matrix with outliers, and that an all-positive group in \`[2, 3]\` is more than 4x more accurate asymmetrically than symmetrically. Your \`dequantize\` from step 2 should already handle both.
 `,
-      predict: { question: 'A [16, 256] matrix has four outliers per row at 25x the typical weight. Going from groupSize 256 (per-channel) to 16, does the int4 error drop by about 2x, 4x, or more than 10x?', answer: 'More than 10x. With per-channel scales every one of the 256 values in a row is graded on the outlier\'s scale; with groups of 16, only the 4 groups that contain an outlier are, and the other 12 use a grid about 25x finer.' },
+      predict: { question: 'Each row of a [16, 256] matrix holds weights from N(0, 0.02) plus four outliers of ±0.5 (25x the typical weight) in different places. Going from groupSize 256 (one scale per row) to 16, does the symmetric int4 MSE drop by about 2x, about 4x, or more than 10x?', answer: 'About 4x (3.9x on a seeded sample). With one scale per row the step is 0.5 / 7 ≈ 0.07, so nearly every small weight rounds to 0 and the MSE is close to the weights\' own variance. With groups of 16, the 4 groups that hold an outlier (a quarter of the row) still lose nearly all their small weights; only the other 12 get a fine grid. The groups that contain an outlier set the floor, which is why production recipes pair small groups with outlier handling.' },
       hints: [
         'The group loop is the row loop of step 2 with one more level: for each row, for each group g, base = r*cols + g*groupSize. Scale index is r*nGroups + g.',
         'Compute lo and hi in one pass over the group. Symmetric: amax = max(|lo|, |hi|). Asymmetric: range = hi − lo; scale = range / (qmax − qmin); zero = Math.round(−lo / scale).',
@@ -169,9 +169,9 @@ KV cache: a key and a value per layer per KV head per position, so \`2 · nLayer
 `,
       predict: { question: 'Llama-3-8B, batch 64, context 8,192, fp16 KV cache. Does the cache or the bf16 weight set take more memory?', answer: 'The cache: 64 GiB against 16 GB of weights. This is why KV-cache quantisation (fp8 in vLLM, 2-bit in KIVI) and paged allocation (module 16) matter as much as weight quantisation for throughput.' },
       hints: [
-        'Two terms for weights: codes and overhead. Guard the overhead with `groupSize === Infinity ? 0 : …`.',
-        'bitsPerParam(opts) = weightBytes(1, opts) * 8 reuses the formula with a single parameter.',
-        '`return 2 * nLayer * nKvHeads * headDim * contextLen * batch * (bits / 8);`',
+        'Everything here is counting. For weights: how many groups are there, and how many bits does each carry on top of its codes? For the cache: what is stored per token, per layer, per sequence?',
+        'Weights: the codes take params · bits / 8 bytes; there are params / groupSize groups, each carrying scaleBits + zeroBits bits, and a per-tensor scale (groupSize Infinity) contributes 0. bitsPerParam is the byte count of one parameter, in bits. KV: a key and a value vector of headDim entries per KV head, per layer, per position, per sequence.',
+        '`const codes = (params * bits) / 8; const overhead = groupSize === Infinity ? 0 : /* number of groups */ * /* bytes of scale + zero per group */; return codes + overhead;` bitsPerParam can call weightBytes with params = 1; kvCacheBytes is one product of the factors in hint 2, times bytes per value.',
       ],
     },
   ],
