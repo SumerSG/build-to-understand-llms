@@ -7,7 +7,8 @@ import { hash32, rng, randInt } from 'lib/util.js';
 // ---------- constants and worked examples (done for you) ----------
 
 /**
- * Tokens per KV block. vLLM's default is 16; SGLang and TensorRT-LLM use 16–64. Caching is
+ * Tokens per KV block. vLLM's default on GPUs is 16; TensorRT-LLM's tokens-per-block is configurable
+ * (32 or 64 are common); SGLang's radix cache defaults to a page of 1 token and matches token by token. Caching is
  * block-granular: a 33-token prompt has two complete blocks and one leftover token that is
  * recomputed every time, because its block is not full yet and so has no stable identity.
  */
@@ -314,8 +315,10 @@ export function breakEvenHitRate(pricing = PRICING) {
 /**
  * Time to first token. Prefill is compute-bound, so cached tokens are simply skipped;
  * `overheadMs` is everything that does not scale with prompt length (scheduling, sampling setup).
- * `prefillTokensPerSecond` defaults to 10000, roughly what an 8B model reaches on one H100
- * (NVIDIA H100 datasheet peak with a typical 40% utilisation); treat it as an order of magnitude.
+ * `prefillTokensPerSecond` defaults to 10000, a deliberately conservative figure for an 8B model on
+ * one H100: NVIDIA's H100 SXM datasheet lists approximately 989 TFLOPS of dense BF16, and prefill
+ * costs about 2 x 8e9 = 16 GFLOP per prompt token, so 10,000 tokens/s is about 16% utilisation
+ * (40% would be roughly 25,000 tokens/s). Treat it as an order of magnitude.
  */
 export function ttftMs(promptTokens, cachedTokens, { prefillTokensPerSecond = 10000, overheadMs = 15 } = {}) {
   const toPrefill = Math.max(0, promptTokens - cachedTokens);

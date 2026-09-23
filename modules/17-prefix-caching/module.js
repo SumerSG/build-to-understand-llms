@@ -8,8 +8,8 @@ export default {
   prereqs: ['05-attention', '15-kv-cache', '16-batching'],
   recall: [
     { q: 'In causal self-attention (module 05), the key and value vectors for token `i` are computed from…',
-      options: ['All tokens in the sequence', 'Only token `i` and the weights', 'Tokens `i` and `i+1`'], answer: 1,
-      why: 'Each token\'s key and value come from its own hidden state, and that hidden state depends only on tokens 0..i. This is exactly why a shared prefix has shared KV: nothing later can change it.' },
+      options: ['Every token in the sequence, including later ones', 'The hidden state at position `i`, which depends only on tokens `0..i`', 'Tokens `i` and `i+1`'], answer: 1,
+      why: 'Each layer projects its own hidden state at position `i` into a key and a value, and under the causal mask that hidden state depends only on tokens `0..i`. This is exactly why a shared prefix has shared KV: nothing later can change it.' },
     { q: 'In module 15 you cached keys and values so that decoding step `t` did not recompute them. What made that cache valid?',
       options: ['The keys and values for earlier tokens never change once computed', 'The model is deterministic given a seed', 'Float32 rounding is stable'], answer: 0,
       why: 'Causal masking freezes the KV of every earlier position. Prefix caching is the same observation applied across requests instead of across steps.' },
@@ -58,7 +58,7 @@ vLLM's *automatic prefix caching* gives each block an identity with a hash chain
 
 ## The radix tree
 
-A hash table answers "is this exact prefix cached?". A server wants the *longest* cached prefix of a prompt, and wants to see which prefixes are shared so it can evict the unpopular ones. A radix tree — a trie whose nodes hold runs of blocks rather than single blocks — answers both in one walk. When a request diverges inside a node you split it: the shared head stays one node and each branch gets a tail. This is SGLang's **RadixAttention** (Zheng et al., 2024) almost exactly.
+A hash table answers "is this exact prefix cached?". A server wants the *longest* cached prefix of a prompt, and wants to see which prefixes are shared so it can evict the unpopular ones. A radix tree — a trie whose nodes hold runs of blocks rather than single blocks — answers both in one walk. When a request diverges inside a node you split it: the shared head stays one node and each branch gets a tail. This is the structure of SGLang's **RadixAttention** (Zheng et al., 2024), with one difference: SGLang's edges hold token ids (a page of one token by default), so it compares tokens directly and never hashes; yours holds block hashes, which is closer to how vLLM names blocks.
 
 Eviction needs two rules. Only **childless** nodes may go, because a parent is a prefix of its children and freeing it would orphan a longer cached prefix. And a node with a non-zero **reference count** may never go, because a decoding request is reading those exact KV blocks; step 3 pins a path on \`acquire\` and unpins on \`release\`, four requests at a time — the continuous-batching window of module 16.
 
@@ -72,15 +72,17 @@ No: about 33%. Four requests are pinned in flight at any moment, so their shared
 
 Hosted APIs expose the same mechanism as **prompt caching**: you mark a cache breakpoint, cached tokens are billed at a discount, tokens written into the cache carry a premium, entries expire after a short time-to-live, and prefixes below a minimum length are not cached at all. Step 5 models it with example multipliers — write at 1.25x the base input price, read at 0.1x — giving a break-even: caching pays only above a hit rate of \`(cacheWrite - base) / (cacheWrite - cacheRead)\`, about 22% here. Below that you pay a write premium for blocks nobody reads back.
 
+The model in step 5 simplifies one thing: it bills every uncached prompt token at the write price. A real API writes only the tokens up to the breakpoint you mark and bills anything after it at the base price, so its cold requests cost a little less than yours.
+
 Two rules fall out. **Put stable content first** — system prompt, tools, few-shot examples — and volatile content (timestamps, session ids, per-request documents) last; the demo measures 0% against 78% on identical tokens, ordered differently. And **any edit invalidates everything after it**: change one token in block 0 of a 96-token prompt and all six blocks are gone.
 
 ## What a cached entry is bound to
 
-KV is not portable: it is bound to the exact weights, the numerical precision and any LoRA adapter, so a model update or a switch from bf16 to fp8 voids the whole cache. A shared tree is also a fairness and privacy surface — one tenant's traffic evicts another's hot prefix, and the timing gap between hit and miss reveals whether someone else recently sent the same prompt. Production systems partition by tenant or accept that side channel deliberately.
+KV is not portable: it is bound to the exact weights, the numerical precision and any LoRA adapter, so a model update or a switch from bf16 to fp8 voids the whole cache. vLLM mixes extra keys such as the LoRA adapter id into each block hash for exactly this reason. A shared tree is also a fairness and privacy surface — one tenant's traffic evicts another's hot prefix, and the timing gap between hit and miss reveals whether someone else recently sent the same prompt. Production systems partition by tenant (vLLM accepts a per-request *cache salt* mixed into the first block's hash, so differently salted requests can never share a block) or accept that side channel deliberately.
 
 ## Where this toy differs from production
 
-Yours stores a 32-bit number per block; a real cache stores \`2 x layers x heads x head_dim\` floats per token in GPU HBM, so capacity is gigabytes and eviction pressure is constant. vLLM and SGLang keep a flat block table with reference counts beside the tree, hash with a 64-bit function, handle collisions, and can offload evicted blocks to host memory rather than dropping them. Your simulator is serial: two requests never prefill at once and contend for free blocks. What transfers exactly is the shape — block granularity, chained identity, longest-prefix match, leaves-only LRU under reference counts, and hit rate to bill.
+Yours stores a 32-bit number per block; a real cache stores \`2 x layers x kv_heads x head_dim\` numbers per token in GPU HBM, so capacity is gigabytes and eviction pressure is constant. A 32-bit hash also collides by the birthday bound after tens of thousands of distinct blocks, which a busy server passes in seconds; vLLM uses a much wider hash (SHA-256 is an option) so collisions are negligible rather than detected, and SGLang avoids the question by comparing tokens. vLLM does not build a tree at all: it keeps step 1's hash table plus a reference count per block and an LRU queue of free blocks. SGLang keeps the tree with a lock count per node, as you do. Both can offload evicted blocks to host memory rather than dropping them. Your simulator is serial: two requests never prefill at once and contend for free blocks. What transfers exactly is the shape — block granularity, chained identity, longest-prefix match, leaves-only LRU under reference counts, and hit rate to bill.
 `,
   steps: [
     {
@@ -103,7 +105,7 @@ This is vLLM's automatic prefix caching in miniature. It is enough to answer "is
       hints: [
         'The chain is a fold: one running value that each block updates. What should that value be before the first block?',
         'For `blockHashes`: `let h = 0;` then for each block from `toBlocks`, set `h = hashChain(h, block)` and push the new `h`. For `lookup`: compute the hashes, then count how many leading entries `this.blocks.has(...)`.',
-        '`lookup`: `const hashes = blockHashes(tokens, this.blockSize); let n = 0; while (n < hashes.length && this.blocks.has(hashes[n])) n++; return { blocks: n, tokens: n * this.blockSize };`',
+        '`lookup`: `const hashes = blockHashes(tokens, this.blockSize); let n = 0; while (/* n is in range and block n is cached */) n++;` then report `n` in blocks and in tokens. `insert` walks the same hashes without the early stop and counts the ones it had to `set`.',
       ],
     },
     {
@@ -160,7 +162,7 @@ Two invariants to hold on to. A parent is a prefix of its children, so evicting 
       hints: [
         'Keep one growing `prompt` array per conversation. The request\'s tokens are `prompt ++ user`; afterwards the conversation\'s prompt becomes `prompt ++ user ++ reply`.',
         'For interleaving, hold an array of live conversations and repeatedly `randInt(next, live.length)` to choose one; splice a conversation out once it has produced all its turns. For `simulate`, an array used as a queue (`push` / `shift`) is all the in-flight bookkeeping you need.',
-        'The per-request body is: `const hashes = blockHashes(r.tokens, blockSize); const { blocks: hit } = tree.match(hashes); inFlight.push(tree.acquire(hashes)); while (inFlight.length > concurrency) tree.release(inFlight.shift()); evictedBlocks += tree.evict(capacityBlocks);` then accumulate `hit` and `hashes.length`.',
+        'Per request, in pseudo-code: `hashes ← blockHashes(tokens, blockSize)`; `hit ← tree.match(hashes).blocks`; `queue.push(tree.acquire(hashes))`; while the queue is longer than `concurrency`, `release` its front; `evicted += tree.evict(capacityBlocks)`; add `hit`, `hashes.length` and `tokens.length` to the running totals. After the loop, release whatever is left.',
       ],
     },
     {

@@ -110,5 +110,5 @@ export default async function demo(m, lab) {
 
 At the example multipliers (write ${m.PRICING.cacheWrite}x, read ${m.PRICING.cacheRead}x) the bill for these 500 requests fell from ${Math.round(noCache).toLocaleString()} to **${Math.round(costs[costs.length - 1]).toLocaleString()}** units, a **${saved.toFixed(1)}%** saving, and mean time to first token fell from ${ttftCold.toFixed(0)} ms to **${ttftWarm.toFixed(0)} ms**. Break-even was at a hit rate of ${(100 * m.breakEvenHitRate()).toFixed(1)}%; the ${capacities[0]}-block cache reached ${(100 * worst.hitRate).toFixed(1)}%, so it ${worst.hitRate > m.breakEvenHitRate() ? 'still paid for itself' : 'actually cost more than no caching at all'}.
 
-Injecting a 16-token timestamp into every prompt costs nothing when it goes last (**${(100 * stampLast.hitRate).toFixed(1)}%** hit rate) and destroys the cache when it goes first (**${(100 * stampFirst.hitRate).toFixed(1)}%**), on exactly the same tokens.`);
+Injecting a 16-token timestamp into every prompt costs only its own block when it goes last (**${(100 * stampLast.hitRate).toFixed(1)}%** hit rate) and destroys the cache when it goes first (**${(100 * stampFirst.hitRate).toFixed(1)}%**), on exactly the same tokens.`);
 }

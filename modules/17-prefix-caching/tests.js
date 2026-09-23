@@ -67,6 +67,16 @@ export const tests = [
       T.eq(cache.lookup(ramp(64)), { blocks: 2, tokens: 32 },
         'a longer prompt that starts with the cached one hits its first two blocks and stops: lookup must stop at the first miss, not keep scanning');
       T.eq(cache.size(), 2, 'the cache holds 2 distinct blocks');
+
+      // Simulate an eviction of block 0 by deleting its entry from the cache's Map directly.
+      const gap = new m.HashCache();
+      gap.insert(ramp(48));
+      gap.blocks.delete(m.blockHashes(ramp(48))[0]);
+      T.eq(gap.lookup(ramp(48)), { blocks: 0, tokens: 0 },
+        'block 0 is gone, so blocks 1 and 2 are unusable even though their hashes are still in the Map: the KV of block 1 was computed on top of block 0. lookup must stop at the first miss, not count every hash it finds');
+      const small = new m.HashCache(8);
+      T.eq(small.insert(ramp(33)), 4, 'a HashCache built with blockSize 8 stores four blocks of a 33-token prompt');
+      T.eq(small.lookup(ramp(40)), { blocks: 4, tokens: 32 }, 'and reports tokens in units of its own blockSize');
     },
   },
 
@@ -86,6 +96,9 @@ export const tests = [
       T.eq(tree.match([1, 2]).blocks, 2, 'a shorter query matches as far as it goes');
       T.eq(tree.match([9, 2, 3]).blocks, 0, 'a different first block means no shared prefix at all, even though blocks 2 and 3 are in the tree');
       T.eq(tree.match([]).blocks, 0, 'an empty query matches zero blocks');
+      T.ok(tree.match([9]).node === tree.root, 'when nothing matches, match must return the root as its node');
+      tree.insert([1, 2, 4]);
+      T.eq(tree.match([1, 2, 7]).node.key, [1, 2], 'match must return the deepest node FULLY covered by the match: here the shared head [1,2]');
     },
   },
   {
@@ -202,6 +215,15 @@ export const tests = [
       T.eq(pinnedTree.evict(0), 3,
         'the later insert split the pinned node in two; release must still unpin both halves, so the whole 3-block path is now evictable');
       T.eq(pinnedTree.size(), 0, 'a reference count that leaks on a split pins blocks forever and the cache slowly fills with garbage');
+
+      const shared = new m.PrefixTree();
+      const a = shared.acquire([1, 2]);   // request A is decoding over [1,2]
+      const b = shared.acquire([1, 2, 3]); // request B extends it
+      shared.release(b);                  // B finishes; A is still running
+      T.eq(shared.evict(0), 1, 'only B\'s private block [3] may go: A still holds [1,2]. If acquire pins only the end node, B\'s release drops [1,2] to a count of zero and A\'s KV is evicted under it');
+      T.eq(shared.match([1, 2]).blocks, 2, 'request A\'s prefix must survive while A is in flight');
+      shared.release(a);
+      T.eq(shared.evict(0), 2, 'after A is released its path is evictable too');
     },
   },
 
@@ -233,6 +255,19 @@ export const tests = [
             'turn t must be a strict token prefix of turn t+1; if it is not, prefix caching has nothing to hit and the whole module measures noise');
         }
       }
+      const sys = 64, fs = 96, user = 32, reply = 48; // the makeWorkload defaults
+      T.eq(a.map((r) => r.id), a.map((_, i) => i), 'ids must be 0, 1, 2, … in arrival order');
+      for (const r of a) {
+        T.eq(r.tokens.length, sys + fs + (r.turn + 1) * user + r.turn * reply,
+          `turn ${r.turn} must be system (${sys}) + few-shot (${fs}) + ${r.turn + 1} user messages (${user} each) + ${r.turn} replies (${reply} each); the assistant's replies are part of the history`);
+        T.eq(r.outputTokens, reply, 'outputTokens is the assistant reply length, replyTokens');
+      }
+      T.ok(a.every((r) => r.tokens.slice(0, sys).every((t, j) => t === a[0].tokens[j])),
+        'every request must open with the SAME system prompt; that shared prefix across conversations is what a cache exploits first');
+      const big = m.makeWorkload({ conversations: 30, turns: 1, seed: 8 });
+      const bundles = new Set(big.map((r) => r.tokens.slice(sys, sys + fs).join(',')));
+      T.ok(bundles.size > 1 && bundles.size <= 3,
+        `each conversation picks one of the 3 few-shot variants, so 30 conversations should show 2 or 3 distinct bundles; got ${bundles.size}`);
       const convs = new Set(a.slice(0, 12).map((r) => r.conv));
       T.ok(convs.size > 1, 'conversations must interleave rather than run one after another, or capacity would never matter');
       T.ok(a.every((r) => r.tokens.every((t) => Number.isInteger(t))), 'tokens must be integer ids');
@@ -253,6 +288,25 @@ export const tests = [
       T.ok(s.hitRate > 0.2, `with a shared system prompt and growing chats the hit rate must be well above zero; got ${s.hitRate.toFixed(3)}`);
       T.eq(s.evictedBlocks, 0, 'with a capacity of a million blocks nothing should ever be evicted');
       T.ok(s.nodes > 1 && s.sizeBlocks > 0, 'the tree must actually hold the traffic it saw');
+
+      const eight = m.simulate(w, { capacityBlocks: 1 << 20, blockSize: 8 });
+      T.eq(eight.totalBlocks, w.reduce((acc, r) => acc + m.blockHashes(r.tokens, 8).length, 0), 'simulate must hash with the blockSize it is given');
+      T.eq(eight.cachedTokens, eight.hitBlocks * 8, 'with blockSize 8 each hit block saves 8 tokens');
+
+      // Prompts that are not a whole number of blocks: the tail is never cached, so the block hit rate
+      // and the token hit rate differ. hitRate is defined on blocks.
+      const odd = m.makeWorkload({ conversations: 4, turns: 3, seed: 5, userTokens: 20, replyTokens: 30 });
+      const so = m.simulate(odd, { capacityBlocks: 1 << 20 });
+      T.ok(odd.some((r) => r.tokens.length % 16 !== 0), 'this workload has prompts with a partial last block');
+      T.close(so.hitRate, so.hitBlocks / so.totalBlocks, 1e-9, 'hitRate is hit BLOCKS over total BLOCKS, not cachedTokens / promptTokens');
+      T.eq(so.cachedTokens, so.hitBlocks * 16, 'a partial tail block is never cached, so cachedTokens is always a whole number of blocks');
+
+      // In-flight requests are pinned. With zero capacity, a window of 4 still shares the system prompt;
+      // a window of 0 releases every request before evicting, so nothing survives to be hit.
+      const pinned = m.simulate(w, { capacityBlocks: 0, concurrency: 4 });
+      const unpinned = m.simulate(w, { capacityBlocks: 0, concurrency: 0 });
+      T.eq(unpinned.hitBlocks, 0, 'with capacity 0 and concurrency 0, each request is released before evict runs (release first, then evict, as the instructions order it), so every block is gone before the next request arrives');
+      T.ok(pinned.hitBlocks > 0, 'with 4 requests pinned in flight, their blocks cannot be evicted and later requests hit them: simulate must keep `concurrency` requests acquired and release only the oldest');
 
       const single = m.simulate(w.slice(0, 1), { capacityBlocks: 1 << 20 });
       T.eq(single.hitBlocks, 0, 'a single request against a cold cache hits nothing');
@@ -307,6 +361,8 @@ export const tests = [
         'with a 1.25x write and a 0.1x read the prefix hit rate must reach about 21.7% before caching saves money');
       T.close(m.breakEvenHitRate({ base: 1, cacheWrite: 1, cacheRead: 0.1, output: 4 }), 0, 1e-9,
         'if writing to the cache is free, any hit rate at all is a win');
+      T.close(m.breakEvenHitRate({ base: 1, cacheWrite: 0.9, cacheRead: 0.1, output: 4 }), 0, 1e-9,
+        'if writing is cheaper than the base price, caching wins at every hit rate: return 0, never a negative rate');
       T.close(m.breakEvenHitRate({ base: 1, cacheWrite: 2, cacheRead: 0, output: 4 }), 0.5, 1e-9,
         'a 2x write and a free read need half the prompt to hit before caching pays');
       T.ok(m.breakEvenHitRate({ base: 1, cacheWrite: 1.5, cacheRead: 0.1, output: 4 }) > m.breakEvenHitRate(m.PRICING),
