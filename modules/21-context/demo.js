@@ -1,4 +1,4 @@
-// Module 21 — goal demo: run YOUR ContextManager through a scripted 60-turn conversation with five facts
+// Context management & retrieval — goal demo: run YOUR ContextManager through a scripted 60-turn conversation with five facts
 // planted in the first turns, tool results that bloat the history, and questions about the facts at
 // the end. Count every message with the lab's BPE tokenizer, hold each policy to an 800-token budget,
 // and measure how many of the late questions still have their fact somewhere in the context.

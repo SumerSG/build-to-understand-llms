@@ -1,4 +1,4 @@
-// Module 12 — RL with verifiable rewards (GRPO).
+// RL with verifiable rewards (GRPO).
 //
 // The environment: one-step arithmetic questions ("What is 7 + 3?") with a known answer. A program can
 // check any completion, so the reward is exact-match correctness and nothing is learned about "reward".

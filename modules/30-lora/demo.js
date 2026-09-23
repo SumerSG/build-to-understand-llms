@@ -7,6 +7,7 @@ import { rng } from 'lib/util.js';
 // The goal: fine-tune the checkpoint twice on the same instruction data for the same number of steps,
 // once through YOUR adapters and once in full, then merge the adapters away and show nothing changed.
 export default async function demo(m, lab) {
+  lab.md('**How to read this:** the lab\'s small model is fine-tuned twice on the same short list of instructions and answers, once through small add-on adapters (LoRA, which trains only a small fraction of the weights) and once by changing every weight, so compare how far each training loss falls (lower means the answers were learned better) against how many weights and how much memory each one needed.');
   const checkpoint = (await import('lib/checkpoints/tiny-gpt.json', { with: { type: 'json' } })).default;
   const tokenizerJson = (await import('lib/checkpoints/tokenizer.json', { with: { type: 'json' } })).default;
   const tokenizer = BPETokenizer.fromJSON(tokenizerJson);
@@ -100,6 +101,10 @@ export default async function demo(m, lab) {
       ['full', fullCount.trainable, fullMem.weights, fullMem.grads, fullMem.optimizer, fullMem.total, fullOptState],
     ],
   });
+  const replyCounts = new Map();
+  for (const r of [...mergedReplies, ...fullReplies]) replyCounts.set(r, (replyCounts.get(r) || 0) + 1);
+  const [commonReply, commonCount] = [...replyCounts].sort((a, b) => b[1] - a[1])[0];
+  lab.md(`${commonCount >= 3 && mergedReplies.includes(commonReply) && fullReplies.includes(commonReply) ? `Both fine-tuned models answer "${show(commonReply)}" to several unrelated prompts in the table below. That is expected, not a bug: ` : 'Do not judge the replies below on quality: '}a tiny model (${base.numParams().toLocaleString()} parameters) fine-tuned on only ${examples.length} short instruction pairs collapses to a reply that is common in its training answers. What it has learned is the format (a short answer after "Bot:"), and LoRA learned the same thing as full fine-tuning; this demo shows the mechanism and its cost, not answer quality.`);
   lab.table({
     title: 'Greedy replies to "User: <prompt>\\nBot:"',
     columns: ['prompt', 'checkpoint (raw continuation)', 'LoRA (merged)', 'full fine-tuning'],

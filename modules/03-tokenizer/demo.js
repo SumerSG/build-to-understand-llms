@@ -1,4 +1,4 @@
-// Module 03 demo: train your BPE tokenizer on the lab corpus at several vocabulary sizes, plot the
+// A BPE tokenizer demo: train your BPE tokenizer on the lab corpus at several vocabulary sizes, plot the
 // compression curve, and look at what the tokens actually are.
 import { CORPUS } from 'lib/data.js';
 

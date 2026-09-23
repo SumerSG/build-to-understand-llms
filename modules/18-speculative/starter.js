@@ -1,4 +1,4 @@
-// Module 18 — Speculative decoding (Leviathan et al. 2023; Chen et al. 2023).
+// Speculative decoding (Leviathan et al. 2023; Chen et al. 2023).
 //
 // Symbols used throughout:
 //   p  = the TARGET model's next-token distribution (the one whose samples you want)
@@ -17,7 +17,7 @@ import { sampleIndex } from 'lib/util.js';
 
 // ---------- worked examples (done for you; read them, they set the conventions) ----------
 
-/** Draw an index from a probability vector using one uniform u in [0, 1): the inverse-CDF walk of module 14. */
+/** Draw an index from a probability vector using one uniform u in [0, 1): the inverse-CDF walk of the decoding module. */
 export function sampleFrom(probs, u) {
   return sampleIndex(probs, u);
 }

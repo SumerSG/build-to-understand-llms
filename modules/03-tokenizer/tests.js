@@ -1,4 +1,4 @@
-// Module 03 tests. Every text here is a literal so results are exactly reproducible.
+// A BPE tokenizer — tests. Every text here is a literal so results are exactly reproducible.
 
 const LOW = 'low low low lower lowest';          // Sennrich et al. (2016)'s worked example
 const CATS = 'the cat sat on the mat. the cat ate the rat. the rat sat on the cat.';

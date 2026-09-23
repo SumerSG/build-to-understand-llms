@@ -1,4 +1,4 @@
-// Module 29 — Modern attention: RoPE, GQA, MLA and sliding windows.
+// Modern attention: RoPE, GQA, MLA and sliding windows.
 // Raw tensors are { shape: number[], data: Float32Array }, row-major (lib/ops.js conventions).
 // Head tensors are [H, T, dh]: H heads, T time steps, dh channels per head.
 // Everything marked TODO is yours; the worked examples set the conventions.

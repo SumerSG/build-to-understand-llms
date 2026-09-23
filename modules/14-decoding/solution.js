@@ -1,4 +1,4 @@
-// Module 14 — reference solution: the decoding pipeline (the same code lives in lib/sampling.js).
+// Decoding & sampling — reference solution: the decoding pipeline (the same code lives in lib/sampling.js).
 //
 // A language model outputs a distribution over every token, not a token. Decoding is the separate,
 // controllable policy that turns that distribution into one id, and every knob below is a different way

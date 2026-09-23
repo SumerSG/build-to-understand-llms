@@ -1,9 +1,9 @@
-// Module 10 — Supervised fine-tuning.
+// Supervised fine-tuning.
 // You turn the pre-trained checkpoint into a model that follows a chat template: render the template,
 // build (x, y, mask) examples whose loss counts only the assistant's tokens, pack several examples into
 // one window, grow the embedding table for the new marker tokens, and run the fine-tuning loop.
 //
-// Conventions (same as module 07): token ids are plain JS arrays, batches are number[][] (B×T), all
+// Conventions (same as the pre-training loop module): token ids are plain JS arrays, batches are number[][] (B×T), all
 // randomness comes through a `next` function from rng(seed), and every function returns new values
 // rather than mutating its inputs (except the optimizer step, which updates parameters in place).
 

@@ -10,7 +10,7 @@ const A = { flops: 312e12, bandwidth: 2.04e12 };   // A100 SXM, ridge = 152.9 FL
 const SLOW = { flops: 2e12, bandwidth: 0.2e12 };   // server CPU, ridge = 10 FLOP/byte
 const B = { flops: 2.25e15, bandwidth: 8e12 };     // B200 (NVIDIA DGX B200, per GPU), ridge = 281.25 FLOP/byte
 
-// The reference: lib/attention.js (module 05) on the same raw tensors. Returns { shape, data }.
+// The reference: lib/attention.js (the attention module) on the same raw tensors. Returns { shape, data }.
 function reference(q, k, v, causal) {
   return attention(new Tensor(q), new Tensor(k), new Tensor(v), { causal }).out;
 }

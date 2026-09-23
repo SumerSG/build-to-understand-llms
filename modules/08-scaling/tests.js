@@ -1,4 +1,4 @@
-// Module 08 tests. All numbers are computed independently here so a wrong constant (2ND, 4ND,
+// Scaling laws & the arithmetic of compute — tests. All numbers are computed independently here so a wrong constant (2ND, 4ND,
 // forgetting MFU, 8 bytes/param) is caught with a message that says which multiplication went wrong.
 
 const PAPER = { E: 1.69, A: 406.4, B: 410.7, alpha: 0.34, beta: 0.28 };

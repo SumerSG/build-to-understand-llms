@@ -1,4 +1,4 @@
-// Module 20 — The agent loop harness (reference solution).
+// The agent loop harness (reference solution).
 // An "agent" is a loop written in ordinary code: call the model, parse its intent, execute the tools it
 // asked for, append the results to the message array, repeat until a stop condition fires.
 

@@ -1,4 +1,4 @@
-// Module 24 — tests. Everything here is arithmetic on plain numbers, so every expectation is a
+// Data, tensor & pipeline parallelism — tests. Everything here is arithmetic on plain numbers, so every expectation is a
 // value you can check by hand. Where a number is not obvious, the comment shows the calculation.
 
 // A link with round numbers so the expected values are exact: 1 ms latency, 1 MB/s bandwidth.
@@ -69,7 +69,7 @@ export const tests = [
     run(m, T) {
       const cfg = { params: 8e9, tokensPerGpu: 16384, dp: 8, gpu: m.H100, link: m.INFINIBAND, overlap: 0 };
       const r = m.dataParallelStep(cfg);
-      T.close(r.compute, m.computeTime(8e9, 16384, m.H100), 1e-6, 'compute must be the module-08 6ND time on one GPU');
+      T.close(r.compute, m.computeTime(8e9, 16384, m.H100), 1e-6, 'compute must be the 6ND time of the scaling-laws module on one GPU');
       T.close(r.comm, m.ringAllReduceTime(2 * 8e9, 8, m.INFINIBAND), 1e-6,
         'gradients are bf16: 2 bytes per parameter, all-reduced over the dp replicas');
       T.close(r.exposed, r.comm, 1e-6, 'with overlap = 0 nothing is hidden');

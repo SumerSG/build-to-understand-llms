@@ -1,4 +1,4 @@
-// Module 05 — reference solution. The same layer lives in lib/attention.js; modules 06+ import that one.
+// Attention from scratch — reference solution. The same layer lives in lib/attention.js; later modules import that one.
 //
 // Attention in one line: out = softmax(q · kᵀ / sqrt(dh)) · v. Every position builds its output as a
 // weighted average of the values at every position it is allowed to see, and the weights come from how

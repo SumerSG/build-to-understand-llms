@@ -255,7 +255,7 @@ export const tests = [
     T.eq([none.steps.length, none.answer, none.tokens, none.truncated], [0, null, 4, true], 'at 13 not even one step fits: no answer, only the answer line is spent');
     T.eq(JSON.stringify(t), before, 'withBudget must not modify the trace it is given');
   } },
-  { step: 'budget', name: 'ttcCost matches the KV formula of module 15 and the iteration model of module 16', run(m, T) {
+  { step: 'budget', name: 'ttcCost matches the KV formula of the KV cache module and the iteration model of the continuous batching module', run(m, T) {
     const cfg = { model: { nLayer: 32, nHead: 32, nKVHead: 8, headDim: 128, nEmbd: 4096 }, bytesPerElement: 2, tFixed: 0.005, tPerToken: 0.00005, gpus: 1 };
     const perTok = 2 * 32 * 8 * 128 * 2;            // 131,072 bytes: K and V, 32 layers, 8 KV heads of 128, bf16
     const par = m.ttcCost({ samples: 8, traceTokens: 1000, promptTokens: 200 }, cfg);

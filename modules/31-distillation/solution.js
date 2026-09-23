@@ -1,4 +1,4 @@
-// Module 31 — reference solution: temperature-softened targets, the T²-scaled KL loss, the mixed objective,
+// Knowledge distillation — reference solution: temperature-softened targets, the T²-scaled KL loss, the mixed objective,
 // sequence-level and on-policy data paths, and the from-scratch vs distilled experiment.
 //
 // Conventions (the lab's): logits are [B, T, V] (batch, time, vocabulary) or [N, V] (in shapes T is time; the

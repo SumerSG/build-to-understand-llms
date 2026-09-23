@@ -1,4 +1,4 @@
-// Module 27 — Capstone: chat with your own model. Reference solution.
+// Capstone: chat with your own model. Reference solution.
 //
 // Nothing in this file is a new idea. Every function is plumbing between layers you built earlier:
 // the tokenizer (03), the inference model and its KV cache (15), prefix reuse (17), the sampler (14),
@@ -132,7 +132,7 @@ export function calculate(expression) {
   return Number(value.toPrecision(12));
 }
 
-/** The harness's tools (module 20's ToolRegistry): one calculator, `calc`, taking a single string argument. */
+/** The harness's tools (the agent loop module's ToolRegistry): one calculator, `calc`, taking a single string argument. */
 export function makeTools() {
   return new ToolRegistry().register('calc', {
     description: 'Evaluate an arithmetic expression with + - * / and parentheses.',

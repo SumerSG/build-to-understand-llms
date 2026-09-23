@@ -1,4 +1,4 @@
-// Module 26 — reference solution: serving at cluster scale.
+// Serving at scale — reference solution: serving at cluster scale.
 //
 // Symbols used throughout:
 //   promptLen  tokens in the prompt (prefix + user turn)
@@ -13,7 +13,7 @@ import { rng, hash32, sampleIndex, sumArray } from 'lib/util.js';
 // ---------- conventions and worked code (read these; they set the shapes everything else uses) ----------
 
 export const DEFAULT_CONFIG = {
-  // One replica = one GPU running one copy of an 8B-class model. Same linear cost model as module 16:
+  // One replica = one GPU running one copy of an 8B-class model. Same linear cost model as the continuous batching module:
   // an iteration costs tFixed (weight traffic, memory-bound) + tPerToken per token in the batch.
   tFixed: 0.005,          // s  — 16 GB of bf16 weights / approximately 3.35 TB/s HBM3 (NVIDIA H100 datasheet)
   tPerToken: 0.00005,     // s  — 50 us per token of prefill or decode work
@@ -24,7 +24,7 @@ export const DEFAULT_CONFIG = {
   overloadFactor: 1.5,    // cache affinity is dropped when a replica is this much busier than the mean
   kvBytesPerToken: 131072,// 128 KB/token: 32 layers x 8 KV heads x 128 dim x 2 (K and V) x 2 bytes (Llama-3-8B, GQA)
   kvBandwidth: 25e9,      // B/s — approximately 200 Gb/s of usable RDMA bandwidth per NIC
-  kvSetupSeconds: 0.0005, // s  — fixed cost of one transfer (the alpha of module 24's alpha-beta model)
+  kvSetupSeconds: 0.0005, // s  — fixed cost of one transfer (the alpha of the parallelism module's alpha-beta model)
   vnodes: 64,             // virtual nodes per replica on the hash ring
   scaleIntervalSeconds: 5,
   coldStartSeconds: 30,   // approximately how long an 8B replica takes to pull weights and warm up
@@ -46,7 +46,7 @@ export function percentile(values, p) {
 }
 
 /**
- * A synthetic hour of traffic. Prefix popularity is Zipf (module 00), output lengths are heavy-tailed,
+ * A synthetic hour of traffic. Prefix popularity is Zipf (the Zipf's law module), output lengths are heavy-tailed,
  * and the arrival rate follows a single diurnal hump `1 + peak*sin(pi*x)` over `seconds`.
  * A request is { id, arrival, prefix, prefixLen, promptLen, outputLen }.
  */
@@ -108,7 +108,7 @@ export function makeReplica(id, { role = 'both', readyAt = 0 } = {}) {
   };
 }
 
-/** Whole-prefix LRU. Module 17's radix tree is block-granular; this is one slot per prefix. */
+/** Whole-prefix LRU. The prefix caching module's radix tree is block-granular; this is one slot per prefix. */
 export function cacheTouch(replica, prefix, t, cfg = DEFAULT_CONFIG) {
   replica.cache.delete(prefix);
   replica.cache.set(prefix, t);

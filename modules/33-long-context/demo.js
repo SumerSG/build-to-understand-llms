@@ -1,4 +1,4 @@
-// Module 33 demo: run YOUR haystack generator, graders, grid runner and effective-context estimator on a
+// Long-context evaluation demo: run YOUR haystack generator, graders, grid runner and effective-context estimator on a
 // synthetic model that advertises an 8,192-word window, draw the accuracy heatmap and the depth curves,
 // price long prompts at Llama-3-8B dims with YOUR cost model, and finally probe what the 64-token lab
 // checkpoint can do with a fact placed inside (and outside) its window.

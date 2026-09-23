@@ -1,4 +1,4 @@
-// Module 04 — reference solution: a count-based bigram model and a neural bigram model.
+// From counting to learning: the bigram model — reference solution: a count-based bigram model and a neural bigram model.
 //
 // Both models end up as the same object: a raw tensor { shape: [V, V], data: Float32Array } whose row i is
 // the probability distribution over the token that follows token i. Everything downstream (perplexity,

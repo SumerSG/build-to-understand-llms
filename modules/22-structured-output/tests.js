@@ -1,4 +1,4 @@
-// Tests for module 22. Every schema, vocabulary and random model here is deterministic.
+// Tests for the structured outputs module. Every schema, vocabulary and random model here is deterministic.
 
 const PERSON = {
   type: 'object',

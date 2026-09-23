@@ -1,4 +1,4 @@
-// Module 29 demo — YOUR RoPE, GQA, MLA, sliding-window cache and budget, exercised three ways:
+// Modern attention variants demo — YOUR RoPE, GQA, MLA, sliding-window cache and budget, exercised three ways:
 //   1. RoPE scores vs absolute position and offset, on a real query and key from the checkpoint's layer 0;
 //   2. equivalence checks at the checkpoint's dims (random weights: nothing here is trained);
 //   3. the KV-cache budget at Llama-3-8B dims, and the context-extension trade at Llama-like dims.

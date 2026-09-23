@@ -1,4 +1,4 @@
-// Module 03 — A BPE tokenizer.
+// A BPE tokenizer.
 // A tokenizer is a lossless codec: encode(text) -> ids, decode(ids) -> the same text. BPE learns its
 // vocabulary by repeatedly merging the most frequent adjacent pair of symbols inside pre-tokens.
 // Symbols are strings (a character at first, longer after merges); ids are their index in `vocab`.

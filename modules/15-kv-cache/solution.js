@@ -1,6 +1,6 @@
-// Module 15 — reference solution: incremental decoding with a KV cache on raw tensors.
+// The KV cache — reference solution: incremental decoding with a KV cache on raw tensors.
 // The same architecture as lib/gpt.js, run forward-only on lib/ops.js kernels (no autograd graph).
-// lib/infer.js holds the vetted version of this file; module 14 and later import that one.
+// lib/infer.js holds the vetted version of this file; the decoding module and every later module import that one.
 
 import * as ops from 'lib/ops.js';
 

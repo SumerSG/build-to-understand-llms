@@ -1,4 +1,4 @@
-// Module 22 — Structured outputs & constrained decoding (reference solution).
+// Structured outputs & constrained decoding (reference solution).
 //
 // A "machine" is a character-level automaton: { start, step(state, ch), accepts(state) }.
 //   start            the initial state (plain data: numbers, strings, nested plain objects)

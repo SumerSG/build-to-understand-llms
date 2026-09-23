@@ -1,4 +1,4 @@
-// Module 29 — reference solution. Modern attention variants on raw tensors { shape, data: Float32Array }.
+// Modern attention: RoPE, GQA, MLA, sliding windows — reference solution. Modern attention variants on raw tensors { shape, data: Float32Array }.
 //
 // Every variant here is a trade against the KV cache or the position signal:
 //   RoPE     puts position into the q·k dot product as a rotation, so scores depend only on m − n.

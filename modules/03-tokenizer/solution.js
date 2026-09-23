@@ -1,4 +1,4 @@
-// Module 03 — reference solution. The same algorithm lives in lib/tokenizer.js, where the merge loop
+// A BPE tokenizer — reference solution. The same algorithm lives in lib/tokenizer.js, where the merge loop
 // updates pair counts incrementally instead of re-counting after every merge.
 
 /** GPT-2-style pre-tokenisation: words, numbers and punctuation runs (each with an optional leading space), or whitespace runs. */

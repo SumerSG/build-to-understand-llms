@@ -1,4 +1,4 @@
-// Module 16 — tests. Every workload here is built explicitly so the numbers are checkable by hand.
+// Continuous batching & paged attention — tests. Every workload here is built explicitly so the numbers are checkable by hand.
 
 const CFG = { tFixed: 0.01, tPerToken: 0.001, maxBatch: 4, blockSize: 16, numBlocks: 64 };
 

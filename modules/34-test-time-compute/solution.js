@@ -1,4 +1,4 @@
-// Module 34 — Reasoning & test-time compute: reference solution.
+// Reasoning & test-time compute: reference solution.
 //
 // Symbols used throughout:
 //   s     = the number of steps in a chain (3–6)
@@ -64,12 +64,12 @@ export function finishTrace(steps) {
   return { steps, answer: steps.length ? steps[steps.length - 1].value : null, tokens };
 }
 
-/** Module 12's verifier, specialised to numeric answers: reward 1 when the final answer is right, else 0. */
+/** The GRPO module's verifier, specialised to numeric answers: reward 1 when the final answer is right, else 0. */
 export function verify(chain, trace) {
   return trace && trace.answer === chain.answer ? 1 : 0;
 }
 
-/** Module 13's unbiased pass@k: the chance that k of n samples, c of them correct, include a correct one. */
+/** The eval harness module's unbiased pass@k: the chance that k of n samples, c of them correct, include a correct one. */
 export function passAtK(n, c, k) {
   if (k < 1 || k > n) throw new Error(`passAtK: k=${k} must be in 1..n=${n}`);
   if (n - c < k) return 1;
@@ -79,7 +79,7 @@ export function passAtK(n, c, k) {
 }
 
 /**
- * Module 15's KV-cache size for one sequence: 2 (K and V) · nLayer · nKVHead · headDim · tokens · bytes.
+ * KV-cache size for one sequence (the KV cache module): 2 (K and V) · nLayer · nKVHead · headDim · tokens · bytes.
  * nKVHead defaults to nHead (plain multi-head attention); GQA models such as Llama 3 set it lower.
  */
 export function cacheBytes(config, contextLen, { bytesPerElement = 4 } = {}) {
@@ -236,7 +236,7 @@ export function withBudget(trace, maxTokens) {
   return { ...finishTrace(kept), truncated: true };
 }
 
-/** Module 16's defaults, approximately a Llama-3-8B-class model in bf16 on one H100. */
+/** The continuous batching module's defaults, approximately a Llama-3-8B-class model in bf16 on one H100. */
 export const LLAMA3_8B = { nLayer: 32, nHead: 32, nKVHead: 8, headDim: 128, nEmbd: 4096 };
 export const DEFAULT_COST = { model: LLAMA3_8B, bytesPerElement: 2, tFixed: 0.005, tPerToken: 0.00005, gpus: 1 };
 

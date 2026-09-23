@@ -1,4 +1,4 @@
-// Module 24 — Data, tensor & pipeline parallelism (reference solution).
+// Data, tensor & pipeline parallelism (reference solution).
 // A cost simulator: every quantity is a plain number in SI units (seconds, bytes, bytes/s, FLOP/s).
 // Nothing here runs on a GPU; the formulas are the ones Megatron-LM, DeepSpeed and FSDP are built on.
 
@@ -7,7 +7,7 @@
 /**
  * One H100 SXM. flops is the dense bf16 tensor-core peak and memory the HBM3 capacity, both
  * approximately as listed in NVIDIA's H100 datasheet; mfu (model FLOPs utilisation) is a typical
- * large-scale training value from module 08, not a datasheet number.
+ * large-scale training value from the scaling-laws module, not a datasheet number.
  */
 export const H100 = { name: 'H100 SXM', flops: 989e12, memory: 80e9, mfu: 0.4 };
 
@@ -62,7 +62,7 @@ export const ZERO3_COMM_FACTOR = 1.5;
 
 /**
  * Time for one GPU to do the forward+backward FLOPs of `tokens` tokens through `params` parameters.
- * Module 08: training costs approximately 6 FLOPs per parameter per token. `gpu.mfu` scales the
+ * The scaling-laws module: training costs approximately 6 FLOPs per parameter per token. `gpu.mfu` scales the
  * datasheet peak down to what a real step achieves.
  * computeTime(8e9, 16384, H100) ≈ 1.99 s
  */

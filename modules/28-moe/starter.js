@@ -1,4 +1,4 @@
-// Module 28 — Mixture of experts.
+// Mixture of experts.
 // Tensors are lib/tensor.js Tensors (autograd). A batch of tokens is flattened to x: [N, C]
 // (N tokens, C channels). E is the number of experts and k the number each token is routed to.
 // The worked examples at the top and the plumbing at the bottom are done; every function marked
@@ -192,7 +192,7 @@ export function countParams({ nEmbd, hidden, nExperts, k }) {
 
 // ---------- worked plumbing (done for you): the block and the GPT swap ----------
 
-/** The module-06 pre-LN block with the MLP swapped for an MoE layer. */
+/** The pre-LN block from the GPT architecture module, with the MLP swapped for an MoE layer. */
 export class MoEBlock {
   constructor(cfg, moeOpts, { next } = {}) {
     this.ln1 = new LayerNorm(cfg.nEmbd);

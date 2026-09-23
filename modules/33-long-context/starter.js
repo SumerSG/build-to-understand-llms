@@ -1,4 +1,4 @@
-// Module 33 — Long-context evaluation.
+// Long-context evaluation.
 // A "model" here is a function (context, question, next) → answer string, where `next` is a seeded rng.
 // Lengths are counted in words (see countTokens); depths are fractions in [0, 1] of the way into the filler.
 // Everything below the worked examples marked TODO is yours. The worked examples set the conventions:
@@ -35,7 +35,7 @@ export function makeNeedle(key, next, avoid = []) {
   return { key, value, sentence: `The secret code for ${key} is ${value}.` };
 }
 
-/** Module 13's percentile bootstrap: resample the scores B times and read off the 2.5% and 97.5% means. */
+/** The eval harness module's percentile bootstrap: resample the scores B times and read off the 2.5% and 97.5% means. */
 export function bootstrapCI(scores, { B = 200, alpha = 0.05, next = rng(0) } = {}) {
   const n = scores.length;
   if (!n) throw new Error('bootstrapCI: need at least one score');
@@ -161,7 +161,7 @@ export function buildHaystack({ length, needles, depths, next, filler = FILLER }
 
 // ---------- step 2: graders ----------
 
-/** Module 13's normalisation, trimmed to what codes need: lowercase, trim, collapse spaces, one trailing period, thousands commas. */
+/** The eval harness module's normalisation, trimmed to what codes need: lowercase, trim, collapse spaces, one trailing period, thousands commas. */
 export function normalizeAnswer(s) {
   let t = String(s).toLowerCase().trim().replace(/\s+/g, ' ');
   t = t.replace(/\.$/, '').trim();
@@ -232,7 +232,7 @@ export function middleDrop(curve) {
 
 // ---------- step 5: the price of a long prompt ----------
 
-/** FLOPs to prefill T tokens: module 15's per-token cost 2N + 4·L·t·C summed over t = 1…T. */
+/** FLOPs to prefill T tokens: the KV cache module's per-token cost 2N + 4·L·t·C summed over t = 1…T. */
 export function prefillFlops(cfg, T) {
   // TODO: step 5
   return 0;

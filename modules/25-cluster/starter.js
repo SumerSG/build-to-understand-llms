@@ -1,4 +1,4 @@
-// Module 25 — Nodes, interconnects & clusters.
+// Nodes, interconnects & clusters.
 // Every quantity is a plain number in SI units: seconds, bytes, bytes/s, FLOP/s, watts.
 // A GPU is an integer id in [0, gpus). The topology turns that id into a place in the machine.
 // Everything below the "worked examples" line is yours to implement.
@@ -9,7 +9,7 @@
  * One H100 SXM. `flops` is the dense bf16 tensor-core peak and `memory` the HBM3 capacity, both
  * approximately as listed in NVIDIA's H100 datasheet; `watts` is the 700 W SXM board power from the
  * same datasheet. `mfu` (model FLOPs utilisation) is a typical large-scale training value from
- * module 08, not a datasheet number.
+ * the scaling-laws module, not a datasheet number.
  */
 export const H100 = { name: 'H100 SXM', flops: 989e12, memory: 80e9, mfu: 0.4, watts: 700 };
 
@@ -51,7 +51,7 @@ export const CLUSTER = {
 };
 
 /**
- * Llama-3-style dense config, identical to module 24 so the two planners can be compared.
+ * Llama-3-style dense config, identical to the parallelism module so the two planners can be compared.
  * `batchSeqs` is the global batch in sequences, so the global batch is 512 × 8192 = 4.19M tokens.
  */
 export const LLAMA3_70B = { name: 'Llama-3-70B', params: 70e9, layers: 80, dModel: 8192, dFF: 28672, seqLen: 8192, batchSeqs: 512 };
@@ -85,7 +85,7 @@ export function commTime(bytes, link) {
 }
 
 /**
- * Ring all-reduce over n GPUs that all share one link — the collective you built in module 24.
+ * Ring all-reduce over n GPUs that all share one link — the collective you built in the parallelism module.
  * 2(n−1) sequential steps, each moving one chunk of bytes/n. n = 1 is free.
  */
 export function ringAllReduceTime(bytes, n, link) {
@@ -96,7 +96,7 @@ export function ringAllReduceTime(bytes, n, link) {
 
 /**
  * Bytes one GPU holds under a Megatron-style 3D layout with ZeRO-1 (optimizer state sharded over the
- * data-parallel ranks), from module 24. Tensor and pipeline parallelism cut the parameters a GPU owns;
+ * data-parallel ranks), from the parallelism module. Tensor and pipeline parallelism cut the parameters a GPU owns;
  * 1F1B keeps min(pp, m) micro-batches of activations alive at once.
  * Returns { params, grads, optimizer, activations, total } in bytes.
  */
@@ -229,11 +229,11 @@ export function groupLink(kind, layout, topo) {
 /**
  * One training step of `model` on `gpus` GPUs under layout { tp, pp, dp }, with every collective
  * priced on the link its group actually lands on.
- *   compute    — 6 FLOPs per parameter per token (module 08), divided over the whole cluster:
+ *   compute    — 6 FLOPs per parameter per token (the scaling-laws module), divided over the whole cluster:
  *                `6 * model.params * tokens / (topo.gpu.flops * topo.gpu.mfu * gpus)`.
  *   tpComm     — m micro-batches x layersPerStage x 4 all-reduces of the [microTokens, dModel]
  *                activation (BYTES.params bytes each), over the tensor-parallel group. Zero if tp = 1.
- *   bubble     — `(compute + tpComm) * (pp - 1) / m` (module 24).
+ *   bubble     — `(compute + tpComm) * (pp - 1) / m` (the parallelism module).
  *   ppComm     — one activation across each of the pp−1 boundaries, forward and backward, per
  *                micro-batch: `m * 2 * (pp - 1) * commTime(actBytes, ppLink)`. Zero if pp = 1.
  *   dpComm     — an all-reduce of BYTES.grads per owned parameter over the data-parallel group.

@@ -1,4 +1,4 @@
-// Module 23 — GPUs, memory bandwidth & the roofline (reference solution).
+// GPUs, memory bandwidth & the roofline (reference solution).
 // Every quantity is a plain number in SI units: FLOP, bytes, seconds, FLOP/s, bytes/s.
 // Nothing here runs on a GPU. The formulas are the ones you would use with Nsight Compute
 // or with a spreadsheet before you write a kernel at all.
@@ -50,7 +50,7 @@ export function gflops(flops, seconds) {
   return flops / seconds / 1e9;
 }
 
-/** A deterministic n x n matrix as a flat Float32Array, row-major (module 01's layout). */
+/** A deterministic n x n matrix as a flat Float32Array, row-major (the tensors module's layout). */
 export function randomMatrix(n, seed = 1) {
   const next = rng(seed);
   const a = new Float32Array(n * n);
@@ -152,7 +152,7 @@ export function minBatchForCompute(hw, { K, N, bytesPerElement = 2 }) {
 /**
  * Decode throughput ceilings for one model on one device, in tokens per second.
  * Memory roof: every token re-reads all the weights, so batch tokens cost params*bytesPerParam bytes.
- * Compute roof: a forward pass is about 2 FLOPs per parameter per token (module 08), and both the
+ * Compute roof: a forward pass is about 2 FLOPs per parameter per token (the scaling-laws module), and both the
  * FLOPs and the batch grow together, so the compute ceiling does not depend on the batch size.
  */
 export function decodeThroughput(hw, { params, bytesPerParam = 2, batch = 1 }) {

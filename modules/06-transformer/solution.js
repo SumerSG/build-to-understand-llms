@@ -1,4 +1,4 @@
-// Module 06 — reference solution. The same architecture lives in lib/gpt.js; modules 07+ import that one.
+// The GPT architecture — reference solution. The same architecture lives in lib/gpt.js; later modules import that one.
 //
 // A GPT is a stack of identical residual blocks over a "residual stream" x of shape [B,T,C]. Each block
 // writes two updates into that stream and touches nothing else:
@@ -21,7 +21,7 @@ import { rng } from 'lib/util.js';
 /**
  * Normalise every position to zero mean and unit variance over its C channels, then rescale by gamma and
  * shift by beta. Conventions used by every layer in this file:
- *   - parameters are Tensor leaves made with Tensor.param(...) so the optimizer in module 07 can find them;
+ *   - parameters are Tensor leaves made with Tensor.param(...) so the optimizer in the pre-training loop module can find them;
  *   - forward(x) builds the autograd graph with Tensor methods (never raw ops, or gradients stop here);
  *   - parameters() lists every trainable tensor in a fixed, documented order.
  */
@@ -34,7 +34,7 @@ export class LayerNorm {
     this.beta = Tensor.param(Tensor.zeros([d]));
   }
 
-  /** x [..., d] -> [..., d], normalised along the last dimension (module 01's layerNorm, with autograd). */
+  /** x [..., d] -> [..., d], normalised along the last dimension (the tensors module's layerNorm, with autograd). */
   forward(x) {
     return x.layerNorm(this.gamma, this.beta, this.eps);
   }

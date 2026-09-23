@@ -1,4 +1,4 @@
-// Module 20 — tests. Every fixture here is a plain object or a hand-written string: an agent loop is
+// The agent loop harness — tests. Every fixture here is a plain object or a hand-written string: an agent loop is
 // ordinary control flow, so nothing in this file needs randomness, a model, or a clock.
 
 /** A registry with one recording tool, so a test can assert whether the handler ever ran. */

@@ -1,4 +1,4 @@
-// Module 16 demo — run one trace through three scheduling policies with the learner's engine,
+// Continuous batching & paged attention demo — run one trace through three scheduling policies with the learner's engine,
 // then measure what paging buys: fragmentation, preemption and prefix sharing.
 
 export default async function demo(m, lab) {

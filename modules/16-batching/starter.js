@@ -1,11 +1,11 @@
-// Module 16 — Continuous batching & paged attention.
+// Continuous batching & paged attention.
 // You are building a serving engine as a discrete-event simulator: requests arrive, a scheduler
 // decides every iteration who runs, and a block allocator decides who fits in the KV cache.
 //
 // Symbols used throughout:
 //   P  = promptLen, the number of prompt tokens of a request
 //   G  = generated, the number of tokens that request has emitted so far
-//   KV = the key/value cache entries a request currently owns (module 15)
+//   KV = the key/value cache entries a request currently owns (the KV cache module)
 // A "request" is plain data: { id, arrival, promptLen, outputLen, key }. Times are seconds.
 // A "request state" is the scheduler's mutable copy of it (see newRequestState below).
 
@@ -18,7 +18,7 @@ import { rng, meanArray } from 'lib/util.js';
  * tFixed: every iteration pays a fixed cost no matter how small the batch. Reading approximately
  *   16 GB of weights at the approximately 3.35 TB/s of HBM3 bandwidth in NVIDIA's H100 datasheet is
  *   about 4.8 ms; kernel launches and sampling round it to 5 ms. This is the memory-bound term.
- * tPerToken: each token in the batch costs approximately 2N = 16 GFLOP (module 08); at an assumed
+ * tPerToken: each token in the batch costs approximately 2N = 16 GFLOP (the scaling-laws module); at an assumed
  *   350 TFLOP/s of achieved bf16 throughput that is about 46 us, rounded to 50 us for the KV reads.
  * blockSize 16 is vLLM's default. numBlocks is set deliberately small so memory pressure is visible.
  */

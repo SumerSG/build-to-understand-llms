@@ -1,4 +1,4 @@
-// Goal demo for module 13 — run a full eval with your harness and read the error bars.
+// Goal demo for the eval harness module — run a full eval with your harness and read the error bars.
 import { rng, hash32, meanArray } from 'lib/util.js';
 
 export default async function demo(m, lab) {

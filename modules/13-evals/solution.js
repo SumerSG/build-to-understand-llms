@@ -1,4 +1,4 @@
-// Module 13 — An eval harness: reference solution.
+// An eval harness: reference solution.
 // Graders are pure functions (answer, reference, question) → score in [0, 1].
 // A task is { id, question, answer }. A model is (question, next) → string, where `next` is a seeded rng.
 import { rng, randInt, choice, meanArray } from 'lib/util.js';

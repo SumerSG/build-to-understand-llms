@@ -1,4 +1,4 @@
-// Module 09 — The pre-training data pipeline.
+// The pre-training data pipeline.
 // A document is { id, text, domain }. Every stage is a pure function that returns what it kept,
 // what it removed, and why, so the final report is a set of counts rather than a feeling.
 // Everything below the "worked examples" line is yours to implement; TODO markers name the step.

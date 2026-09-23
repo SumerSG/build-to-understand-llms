@@ -1,4 +1,4 @@
-// Module 17 — tests. Block hashes are opaque 32-bit numbers, so the tests never assert a specific
+// Prefix caching & prompt caching — tests. Block hashes are opaque 32-bit numbers, so the tests never assert a specific
 // hash value; they assert the *relationships* a hash chain must have. The radix tree is checked
 // against a brute-force "longest common prefix over everything inserted so far" reference.
 

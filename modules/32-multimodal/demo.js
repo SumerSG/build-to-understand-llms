@@ -25,7 +25,7 @@ export default async function demo(m, lab) {
     rows: rows(grid), rowLabels: Array.from({ length: nPatches }, (_, i) => `patch ${i} (r${Math.floor(i / 4)} c${i % 4})`), min: 0, max: 1,
   });
 
-  // 2. The captioner: a fresh module-06 GPT that has never seen an image, plus your vision tower and projector.
+  // 2. The captioner: a fresh GPT (the GPT architecture module's model) that has never seen an image, plus your vision tower and projector.
   const gpt = new GPT({ vocabSize: tokenizer.vocabSize, blockSize: 32, nLayer: 2, nHead: 2, nEmbd: 32, seed: 1 });
   const model = new m.Captioner({ gpt, tokenizer, eos: tokenizer.eos, patch, dVision: 32, seed: 2 });
   const visionParams = model.vision.parameters().concat(model.projector.parameters()).reduce((s, p) => s + p.size, 0);

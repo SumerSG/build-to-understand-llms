@@ -1,4 +1,4 @@
-// Goal demo for module 22: the trained checkpoint (lib/checkpoints/tiny-gpt.json) has never seen JSON.
+// Goal demo for the structured outputs module: the trained checkpoint (lib/checkpoints/tiny-gpt.json) has never seen JSON.
 // YOUR schema compiler, token mask, constrained sampler and mask cache make it emit schema-valid objects
 // anyway; the same model sampled without the mask shows what the grammar is doing for it.
 

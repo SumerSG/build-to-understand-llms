@@ -1,4 +1,4 @@
-// Goal demo for module 18: the trained checkpoint (lib/checkpoints/tiny-gpt.json) is the TARGET; two drafts
+// Goal demo for the speculative decoding module: the trained checkpoint (lib/checkpoints/tiny-gpt.json) is the TARGET; two drafts
 // propose tokens for it — a bigram table counted from the corpus (cheap, often wrong) and the checkpoint
 // itself at a lower temperature (expensive, usually right). YOUR acceptance rule, residual, verify step,
 // measurements and speedup model do all of the decoding.

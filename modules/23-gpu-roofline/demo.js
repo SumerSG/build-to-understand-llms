@@ -77,7 +77,7 @@ export default async function demo(m, lab) {
   lab.log(`${m.B200.name}: ${fmt(m.B200.flops)}FLOP/s bf16, ${fmt(m.B200.bandwidth)}B/s HBM3e -> ridge point ${b200Ridge.toFixed(1)} FLOP/byte ` +
     `(${(m.B200.flops / hw.flops).toFixed(2)}x the ${hw.name}'s FLOP/s, ${(m.B200.bandwidth / hw.bandwidth).toFixed(2)}x its bandwidth)`);
 
-  // ---------- 2b. your online-softmax attention against module 05's ----------
+  // ---------- 2b. your online-softmax attention against the attention module's layer ----------
   const seq = 256, dh = 64;
   const q = ops.randn([seq, dh], rng(71)), k = ops.randn([seq, dh], rng(72)), v = ops.randn([seq, dh], rng(73));
   const refOut = attention(new Tensor(q), new Tensor(k), new Tensor(v), { causal: true }).out;
@@ -183,7 +183,7 @@ the crossover is a batch of **${minBatch.toFixed(0)}** once the activations are 
 Attention at 4096 tokens moves **${fmt(attn.bytes / 1e6)} MB** per head naively and **${fmt(flash.bytes / 1e6)} MB** when the
 score tiles stay in SRAM — **${(attn.bytes / flash.bytes).toFixed(0)}x less traffic** for identical arithmetic, which is FlashAttention's
 whole argument; at headDim ${L.headDim} in bf16, 228 KiB (233,472 bytes) of shared memory holds a block of **${sram}** rows.
-Your online-softmax \`tiledAttention\` matched module 05's attention to within **${flashWorst.toExponential(1)}** at every block size
+Your online-softmax \`tiledAttention\` matched the attention layer from the attention module to within **${flashWorst.toExponential(1)}** at every block size
 while holding only one block of scores per query row. On the plot, the ${m.B200.name} line sits higher on both roofs, but its
 ridge of **${b200Ridge.toFixed(0)} FLOP/byte** is close to the H100's, so a batch-1 decode stays just as far on the memory side.
 

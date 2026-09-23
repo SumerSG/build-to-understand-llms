@@ -1,4 +1,4 @@
-// Module 08 — reference solution: the arithmetic of a training run.
+// Scaling laws & the arithmetic of compute — reference solution: the arithmetic of a training run.
 // Every function here is a few multiplications. The point of the module is that this is enough.
 
 import { fmt } from 'lib/util.js';

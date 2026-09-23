@@ -1,4 +1,4 @@
-// Module 12 — reference solution: GRPO on a verifiable toy environment.
+// RL with verifiable rewards (GRPO) — reference solution: GRPO on a verifiable toy environment.
 //
 // The policy is deliberately small: a softmax over the integers 0..99 (one "token" per completion),
 // whose logits are a sum of learned rows indexed by hashed features of the question. Everything the

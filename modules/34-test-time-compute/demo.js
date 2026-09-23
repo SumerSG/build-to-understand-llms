@@ -158,7 +158,7 @@ export default async function demo(m, lab) {
   row('beam 4 × 4', { samples: 16, traceTokens: T, promptTokens: PROMPT_TOKENS }, pct(acc.beam[i16]));
   const longOne = row('long trace (o1-scale)', { samples: 1, traceTokens: 8000, promptTokens: 500 }, 'n/a (scale)');
   const longPar = row('16 × long traces', { samples: 16, traceTokens: 8000, promptTokens: 500 }, 'n/a (scale)');
-  lab.table({ title: 'Serving one problem alone (Llama-3-8B-like dims, bf16 KV, module 16 iteration model): sixteen sequences cost barely more than one',
+  lab.table({ title: 'Serving one problem alone (Llama-3-8B-like dims, bf16 KV, the iteration model from the continuous batching module): sixteen sequences cost barely more than one',
     columns: ['strategy', 'sequences', 'tokens each', 'decode tokens', 'peak KV (MiB)', 'GPU-seconds', 'accuracy'], rows });
 
   const reach = strategies.map((s) => {             // the cheapest cost at which each strategy reaches 80%

@@ -1,4 +1,4 @@
-// Tests for module 33. Models are (context, question, next) → string; lengths are word counts.
+// Tests for the long-context module. Models are (context, question, next) → string; lengths are word counts.
 
 const NEEDLE_RE = /The secret code for (\w+) is (\d+)\./g;
 
@@ -199,7 +199,7 @@ export const tests = [
   } },
 
   // ---------- step 5: cost ----------
-  { step: 'cost', name: 'prefillFlops sums module 15\'s per-token cost over positions 1…T', run(m, T) {
+  { step: 'cost', name: 'prefillFlops sums the KV cache module\'s per-token cost over positions 1…T', run(m, T) {
     const cfg = { params: 100, layers: 2, dModel: 4 };
     T.eq(m.prefillFlops(cfg, 3), 792, '2·N·T = 600 for the weights, plus attention 4·L·C·(1+2+3) = 192 for the causal triangle');
     let sum = 0;

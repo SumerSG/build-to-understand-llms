@@ -1,4 +1,4 @@
-// Module 11 — reference solution: the Bradley–Terry loss, sequence log-probs, the DPO loss, a reward-model
+// Reward models & DPO — reference solution: the Bradley–Terry loss, sequence log-probs, the DPO loss, a reward-model
 // head on the GPT's final hidden state, and the DPO training loop against a frozen reference.
 
 import { GPT, Linear } from 'lib/gpt.js';
@@ -24,7 +24,7 @@ export function tokenizePair(tokenizer, prompt, response) {
   return { ids, mask };
 }
 
-/** Token stream -> (x, y, mask): y is x shifted left by one and the mask follows y (module 10). */
+/** Token stream -> (x, y, mask): y is x shifted left by one and the mask follows y (the supervised fine-tuning module). */
 export function shift({ ids, mask }) {
   return { x: ids.slice(0, -1), y: ids.slice(1), mask: mask.slice(1) };
 }

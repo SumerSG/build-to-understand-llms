@@ -1,4 +1,4 @@
-// Goal demo for module 27: YOUR chat pipeline (buildPrompt, syncCache, decodeReply, runToolCalls, chat)
+// Goal demo for the capstone: YOUR chat pipeline (buildPrompt, syncCache, decodeReply, runToolCalls, chat)
 // drives the checkpoint pre-trained in this lab through a scripted four-turn conversation, once with the
 // KV cache kept across turns and once with a fresh cache every turn, and reports what each turn cost.
 import { BPETokenizer } from 'lib/tokenizer.js';

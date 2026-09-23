@@ -1,4 +1,4 @@
-// Module 05 — Attention from scratch.
+// Attention from scratch.
 //
 // You build scaled dot-product attention on autograd Tensors (lib/tensor.js), then wrap it into a causal
 // multi-head self-attention layer, then prove two things about it: it never reads the future, and its

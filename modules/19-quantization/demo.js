@@ -1,4 +1,4 @@
-// Module 19 demo — quantise the pre-trained checkpoint with YOUR quantisers, run the model through YOUR
+// Quantisation demo — quantise the pre-trained checkpoint with YOUR quantisers, run the model through YOUR
 // weight-only kernel, and measure what the integers cost: reconstruction error against group size,
 // next-token agreement with fp32 over 100 positions, the memory arithmetic for Llama 3, what a single
 // outlier weight does to each scheme, and how the MXFP4 and NVFP4 block-float formats compare with int4 g128.

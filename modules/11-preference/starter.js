@@ -1,9 +1,9 @@
-// Module 11 — Reward models & DPO.
+// Reward models & DPO.
 // A preference "A beats B" becomes a training signal in two ways. The Bradley–Terry loss turns a score
 // difference into a logistic loss; a reward model learns those scores from the GPT's final hidden state.
 // DPO skips the reward model: the policy's own log-ratio against a frozen reference IS the score.
 //
-// Conventions (same as module 10): token ids are plain JS arrays, batches are number[][] (B×T) with a
+// Conventions (same as the supervised fine-tuning module): token ids are plain JS arrays, batches are number[][] (B×T) with a
 // mask that follows y, all randomness comes through a `next` function from rng(seed), and functions
 // return new values rather than mutating inputs (except optimizer steps, which update parameters in place).
 
@@ -26,7 +26,7 @@ export function asTensor(x) {
 
 /**
  * prompt + '\n' + response + eos as ids, with mask 1 on the response tokens (and the eos) only.
- * This is module 10's tokenizeExample with a plain-text template: the checkpoint has no chat markers,
+ * This is the supervised fine-tuning module's tokenizeExample with a plain-text template: the checkpoint has no chat markers,
  * and the preference signal only needs to know which tokens belong to the response.
  */
 export function tokenizePair(tokenizer, prompt, response) {
@@ -37,7 +37,7 @@ export function tokenizePair(tokenizer, prompt, response) {
   return { ids, mask };
 }
 
-/** Token stream -> (x, y, mask): y is x shifted left by one and the mask follows y (module 10). */
+/** Token stream -> (x, y, mask): y is x shifted left by one and the mask follows y (the supervised fine-tuning module). */
 export function shift({ ids, mask }) {
   return { x: ids.slice(0, -1), y: ids.slice(1), mask: mask.slice(1) };
 }

@@ -1,4 +1,4 @@
-// Module 14 demo — one prompt, one set of logits, five decoding policies. The model is the pre-trained
+// Decoding & sampling demo — one prompt, one set of logits, five decoding policies. The model is the pre-trained
 // checkpoint (lib/checkpoints/tiny-gpt.json); YOUR processors, sampler and generate loop do the decoding.
 // If the checkpoint cannot be loaded (mid-retrain, or a browser without JSON imports) the demo falls back
 // to a random-weight model so every step still runs; the text is then noise, the mechanics are the same.

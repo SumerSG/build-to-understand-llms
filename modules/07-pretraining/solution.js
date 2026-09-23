@@ -1,4 +1,4 @@
-// Module 07 — The pre-training loop (reference solution).
+// The pre-training loop (reference solution).
 //
 // Pre-training is one loop: draw a batch of token windows, predict every next token at once, take an
 // AdamW step on the mean cross-entropy, repeat. Everything else in this file (the schedule, clipping,

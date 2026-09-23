@@ -1,4 +1,4 @@
-// Module 15 — The KV cache: incremental decoding on raw tensors.
+// The KV cache: incremental decoding on raw tensors.
 // A "model" here is { config, w } from loadModel() in lib/infer.js: config is the GPT config and w maps
 // parameter names ('wte.weight', 'blocks.0.attn.qkv.weight', …) to raw tensors { shape, data }.
 // Everything runs forward-only on lib/ops.js kernels: no autograd graph, no gradients.

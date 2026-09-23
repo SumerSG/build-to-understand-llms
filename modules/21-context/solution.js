@@ -1,4 +1,4 @@
-// Module 21 — Context management & retrieval: reference solution.
+// Context management & retrieval: reference solution.
 //
 // The context window is a scarce, ORDERED budget of tokens. Everything here is a policy for spending
 // it: count what each message costs, trim what is bloated, replace old turns by a summary, and fetch

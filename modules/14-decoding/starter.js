@@ -1,4 +1,4 @@
-// Module 14 — Decoding & sampling.
+// Decoding & sampling.
 //
 // The model gives you a vector of logits, one per token in the vocabulary. Decoding turns that vector
 // into one token id. Everything below is a "logit processor": it takes logits (a Float32Array or a plain
@@ -19,7 +19,7 @@ export function copyLogits(logits) {
 }
 
 /**
- * Numerically stable softmax over logits (subtract the max first, as in module 01). A -Infinity entry
+ * Numerically stable softmax over logits (subtract the max first, as in the tensors module). A -Infinity entry
  * gets exp(-Infinity) = 0, so filtered-out tokens get probability 0 and the survivors are renormalised.
  * An all -Infinity input falls back to uniform rather than 0/0 = NaN.
  */

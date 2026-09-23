@@ -1,4 +1,4 @@
-// Module 13 — An eval harness.
+// An eval harness.
 // Conventions used throughout this file:
 //   a task   is { id, question, answer }          (answer is the reference, as a string)
 //   a grader is (answer, reference, question) → score in [0, 1]   (pure: no state, no randomness)

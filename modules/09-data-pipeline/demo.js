@@ -1,4 +1,4 @@
-// Module 09 — goal demo: run YOUR pipeline on a small corpus with known junk, exact copies and
+// The pre-training data pipeline — goal demo: run YOUR pipeline on a small corpus with known junk, exact copies and
 // near-copies planted in it, and chart what every stage removed, how MinHash tracks the exact Jaccard,
 // how the mixer holds the domain shares, and what the shards look like.
 

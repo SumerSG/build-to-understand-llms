@@ -1,4 +1,4 @@
-// Module 31 — Knowledge distillation.
+// Knowledge distillation.
 // Conventions: logits are [B, T, V] (batch, time, vocabulary) or [N, V] (in shapes T is time; the argument
 // named T in the loss functions is the temperature); a "raw" tensor is
 // { shape, data: Float32Array }. The teacher is FROZEN: everything computed from it is a constant raw tensor

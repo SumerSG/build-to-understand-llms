@@ -1,4 +1,4 @@
-// Module 25 — tests. Everything here is arithmetic on plain numbers, so every expectation is a value
+// Nodes, interconnects & clusters — tests. Everything here is arithmetic on plain numbers, so every expectation is a value
 // you can check by hand. Where a number is not obvious, the comment shows the calculation.
 
 // A toy cluster with round bandwidths and ZERO latency, so every expected time is exact:
@@ -272,7 +272,7 @@ export const tests = [
       T.close(r.bubble, (1.536 + 8.388608) / 4, 1e-7,
         'expected (compute + tpComm) x (pp - 1) / m = 9.9246 x 1/4 = 2.481 s. Leaving tpComm out of the bubble (0.384 s) forgets that the idle stages also wait for its all-reduces');
       T.close(r.ppComm, 4 * 2 * 13.1072, 1e-6,
-        'expected m x 2 x (pp - 1) x (131072 B / 10 KB/s) = 4 x 2 x 13.1072 = 104.86 s on the spine. Charging it once per step (module 24) gives 26.2 s; every micro-batch crosses every boundary, forward and backward');
+        'expected m x 2 x (pp - 1) x (131072 B / 10 KB/s) = 4 x 2 x 13.1072 = 104.86 s on the spine. Charging it once per step (the parallelism module) gives 26.2 s; every micro-batch crosses every boundary, forward and backward');
       // dp all-reduce of 2 bytes x 2.5e8 owned params = 5e8 B over [0, 2] on the pod link: 2 x (2.5e8 / 1e5) = 5000 s.
       T.close(r.dpComm, 5000, 1e-6, 'expected a 2-way ring of 5e8 gradient bytes on the 100 KB/s pod link: 2 x 2.5e8 / 1e5 = 5000 s');
       T.close(r.dpExposed, 5000 - 0.5 * 1.536, 1e-6, 'expected dpComm - overlap x compute = 5000 - 0.768 s: half the compute hides some of the gradient traffic');

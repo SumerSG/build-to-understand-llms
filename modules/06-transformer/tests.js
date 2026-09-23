@@ -82,7 +82,7 @@ export const tests = [
     const rows = T.arr(emb.weight);
     T.close(T.arr(out), [[rows[1], rows[3]], [rows[0], rows[0]]], 1e-7, 'each output vector must be the row of the table at that id');
     T.eq(emb.parameters().length, 1, 'an embedding has one parameter tensor and no bias');
-    T.ok(emb.weight.requiresGrad === true, 'the table must be created with Tensor.param so module 07 can train it');
+    T.ok(emb.weight.requiresGrad === true, 'the table must be created with Tensor.param so the pre-training loop module can train it');
     const big = new m.Embedding(256, 64, { next: T.rng(5) });
     T.ok(Math.abs(stats(big.weight.data).std - 0.02) < 0.003, 'the table is initialised with std 0.02, like Linear');
     const wide = new m.Embedding(256, 64, { next: T.rng(5), std: 0.1 });

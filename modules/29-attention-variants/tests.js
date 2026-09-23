@@ -74,7 +74,7 @@ export const tests = [
     T.eq(m.kvHeadFor(7, 8, 1), 0, 'with one KV head (MQA) every query head reads head 0');
     T.throws(() => m.kvHeadFor(0, 6, 4), '6 query heads cannot be split evenly over 4 KV heads; throw');
   } },
-  { step: 'gqa', name: 'H_kv = H is exactly multi-head attention (module-05 reference)', run(m, T) {
+  { step: 'gqa', name: 'H_kv = H is exactly multi-head attention (the attention module\'s reference)', run(m, T) {
     const q = rand(T, [4, 6, 8], 10), k = rand(T, [4, 6, 8], 11), v = rand(T, [4, 6, 8], 12);
     const out = m.gqaAttention(q, k, v);
     T.shape(out, [4, 6, 8], 'the output has one row per query head and time step: [H, T, dh]');

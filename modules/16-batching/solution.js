@@ -1,4 +1,4 @@
-// Module 16 — reference solution: a serving engine as a discrete-event simulator.
+// Continuous batching & paged attention — reference solution: a serving engine as a discrete-event simulator.
 // Symbols: P = prompt length in tokens, G = tokens generated so far, KV = key/value cache entries.
 
 import { rng, meanArray } from 'lib/util.js';

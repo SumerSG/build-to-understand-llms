@@ -1,4 +1,4 @@
-// Module 32 — Vision tokens: a tiny multimodal model.
+// Vision tokens: a tiny multimodal model.
 // An image becomes a sequence of vectors in the GPT's embedding space; from then on the GPT treats them
 // exactly like token embeddings. Raw tensors are { shape, data: Float32Array }; Tensor is lib/tensor.js.
 // Everything above the "step 1" line is done for you: read it, it sets the conventions (in particular
@@ -109,7 +109,7 @@ export function concatTokens(a, b) {
 }
 
 /**
- * The module-06 GPT forward pass, started from embeddings instead of token ids.
+ * The GPT forward pass from the GPT architecture module, started from embeddings instead of token ids.
  * lib/gpt.js GPT.forward(ids) begins with wte.forward(ids); everything after that line is here unchanged:
  * add the learned position embedding, run the blocks, final LayerNorm, tied LM head.
  * x: Tensor [B, N, C] -> logits Tensor [B, N, V].

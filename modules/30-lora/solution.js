@@ -1,4 +1,4 @@
-// Module 30 — reference solution: LoRA adapters, freezing, targeting, merging, and the fine-tuning loop.
+// Parameter-efficient fine-tuning (LoRA) — reference solution: LoRA adapters, freezing, targeting, merging, and the fine-tuning loop.
 // Layout convention (the lab's, from lib/layers.js): a Linear stores W with shape [nIn, nOut] and computes
 // y = x · W + b. The adapter is A [nIn, r] (down-projection, Gaussian) and B [r, nOut] (up-projection,
 // zeros), so the update it represents is ΔW = (alpha / r) · A · B, a matrix of shape [nIn, nOut] and rank ≤ r.
@@ -9,7 +9,7 @@ import { Linear, paramNames } from 'lib/gpt.js';
 import { AdamW, clipGradNorm } from 'lib/optim.js';
 import { randInt, argmaxArray } from 'lib/util.js';
 
-// ---------- worked examples: the SFT plumbing from module 10, trimmed to what this module needs ----------
+// ---------- worked examples: the SFT plumbing from the supervised fine-tuning module, trimmed to what this module needs ----------
 
 /** The plain-text chat format used here (the checkpoint's vocabulary has no special chat markers). */
 export function formatPrompt(prompt) {
@@ -42,7 +42,7 @@ export function makeBatch(examples, { batchSize, next, pad = 0 }) {
   return { x, y, mask };
 }
 
-/** Mean cross-entropy over the positions where mask is 1 (module 10's assistant-only loss). */
+/** Mean cross-entropy over the positions where mask is 1 (the supervised fine-tuning module's assistant-only loss). */
 export function maskedLoss(logits, y, mask) {
   const V = logits.shape[logits.shape.length - 1];
   const targets = y.flat(Infinity);
@@ -198,7 +198,7 @@ export function mergeLora(model) {
 // ---------- step 5: what training costs, and the loop ----------
 
 /**
- * Persistent training memory in bytes under mixed-precision AdamW (the ZeRO accounting from module 08):
+ * Persistent training memory in bytes under mixed-precision AdamW (the ZeRO accounting from the scaling-laws module):
  * bf16 weights for every parameter (2 B), bf16 gradients for trainable ones (2 B), and an fp32 master copy
  * plus two fp32 moments for trainable ones (12 B). Frozen: 2 B each. Trainable: 16 B each.
  */

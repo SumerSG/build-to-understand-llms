@@ -1,4 +1,4 @@
-// Module 33 — Long-context evaluation: reference solution.
+// Long-context evaluation: reference solution.
 // A "model" here is a function (context, question, next) → answer string, where `next` is a seeded rng.
 // Lengths are counted in words (see countTokens); depths are fractions in [0, 1] of the way into the filler.
 import { rng, randInt, shuffle, meanArray } from 'lib/util.js';
@@ -33,7 +33,7 @@ export function makeNeedle(key, next, avoid = []) {
   return { key, value, sentence: `The secret code for ${key} is ${value}.` };
 }
 
-/** Module 13's percentile bootstrap: resample the scores B times and read off the 2.5% and 97.5% means. */
+/** The eval harness module's percentile bootstrap: resample the scores B times and read off the 2.5% and 97.5% means. */
 export function bootstrapCI(scores, { B = 200, alpha = 0.05, next = rng(0) } = {}) {
   const n = scores.length;
   if (!n) throw new Error('bootstrapCI: need at least one score');

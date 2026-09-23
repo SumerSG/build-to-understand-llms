@@ -1,4 +1,4 @@
-// Module 04 demo: build the count-based and the neural bigram model on the character-level corpus,
+// Bigram model demo: build the count-based and the neural bigram model on the character-level corpus,
 // compare their perplexities, watch the neural table converge towards the counts, and sample from both.
 import { CORPUS, interleavedSplit } from 'lib/data.js';
 import { CharTokenizer } from 'lib/tokenizer.js';

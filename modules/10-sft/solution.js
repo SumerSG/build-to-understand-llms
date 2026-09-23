@@ -1,4 +1,4 @@
-// Module 10 — reference solution: chat template, assistant-only loss masking, packing, and the SFT loop.
+// Supervised fine-tuning — reference solution: chat template, assistant-only loss masking, packing, and the SFT loop.
 
 import { CHAT } from 'lib/data.js';
 import { BPETokenizer } from 'lib/tokenizer.js';

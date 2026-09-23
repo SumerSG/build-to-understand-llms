@@ -1,10 +1,10 @@
-// Module 21 — Context management & retrieval.
+// Context management & retrieval.
 // The context window is a scarce, ORDERED budget of tokens. Everything you build here is a policy for
 // spending it: count what each message costs, trim what is bloated, replace old turns by a summary,
 // and fetch back from a note store only what the current turn needs.
 //
 // A message is a plain object { role, content, name? } with role 'system' | 'user' | 'assistant' | 'tool'
-// (the same array module 20's agent loop builds). A tokenizer is anything with encode(str) → number[]
+// (the same array the agent loop from the agent loop module builds). A tokenizer is anything with encode(str) → number[]
 // and decode(ids) → string: the demo uses the lab's BPE tokenizer, the tests use a one-id-per-word one
 // so every count can be checked by hand.
 //

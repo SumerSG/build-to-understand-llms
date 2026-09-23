@@ -1,4 +1,4 @@
-// Module 23 — GPUs, memory bandwidth & the roofline.
+// GPUs, memory bandwidth & the roofline.
 // Every quantity is a plain number in SI units: FLOP, bytes, seconds, FLOP/s, bytes/s.
 // Nothing here runs on a GPU: you are building the model you would use *before* writing a kernel.
 // Everything below the "worked examples" line is yours to implement.
@@ -50,7 +50,7 @@ export function gflops(flops, seconds) {
   return flops / seconds / 1e9;
 }
 
-/** A deterministic n x n matrix as a flat Float32Array, row-major (module 01's layout). */
+/** A deterministic n x n matrix as a flat Float32Array, row-major (the tensors module's layout). */
 export function randomMatrix(n, seed = 1) {
   const next = rng(seed);
   const a = new Float32Array(n * n);

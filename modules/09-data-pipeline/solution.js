@@ -1,4 +1,4 @@
-// Module 09 — reference solution: the pre-training data pipeline.
+// The pre-training data pipeline — reference solution: the pre-training data pipeline.
 // A document is { id, text, domain }. Every stage is a pure function that returns what it kept,
 // what it removed, and why, so the final report is a set of counts rather than a feeling.
 

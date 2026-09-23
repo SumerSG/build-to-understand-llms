@@ -1,9 +1,9 @@
-// Module 04 — From counting to learning: the bigram model.
+// From counting to learning: the bigram model.
 //
 // A bigram model is a table: row i holds P(next token | previous token = i). You will build that table two
 // ways, by counting and by gradient descent, and everything downstream (perplexity, sampling) works on the
 // table without caring which way it was made. Tables are raw tensors { shape: [V, V], data: Float32Array },
-// row-major as in module 01: entry (i, j) lives at data[i * V + j].
+// row-major as in the tensors module: entry (i, j) lives at data[i * V + j].
 
 import { randInt } from 'lib/util.js';
 import { Tensor, crossEntropy, noGrad } from 'lib/tensor.js';

@@ -1,4 +1,4 @@
-// Module 19 — Quantisation.
+// Quantisation.
 //
 // A quantised tensor stores each float as a small integer `q` times a shared float `scale`
 // (plus an integer `zero` point when the scheme is asymmetric): x ≈ (q − zero) · scale.

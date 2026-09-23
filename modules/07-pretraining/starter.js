@@ -1,6 +1,6 @@
-// Module 07 — The pre-training loop.
+// The pre-training loop.
 //
-// You will build the loop that turns a randomly initialised GPT (lib/gpt.js, your module 06) into one
+// You will build the loop that turns a randomly initialised GPT (lib/gpt.js, the GPT you built in the GPT architecture module) into one
 // that writes text like its corpus: sample a batch of token windows, predict every next token at once,
 // take an AdamW step on the mean cross-entropy, repeat. The schedule, clipping, validation and sampling
 // exist to keep that loop stable and to let you watch it work.

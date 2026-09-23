@@ -1,4 +1,4 @@
-// Module 15 demo — generate from the pre-trained checkpoint twice, with and without YOUR cache, timing
+// The KV cache demo — generate from the pre-trained checkpoint twice, with and without YOUR cache, timing
 // every token; confirm the two paths agree token for token; then size the cache for real models.
 // If the checkpoint cannot be loaded (mid-retrain, or a browser without JSON imports) the demo falls back
 // to a random-weight model: the text is then noise, the mechanics and the equality check are the same.
@@ -30,6 +30,7 @@ const fmtInt = (n) => Math.round(n).toLocaleString('en-US');
 const show = (text) => text.replace(/\n/g, ' ⏎ ').trim();
 
 export default async function demo(m, lab) {
+  lab.md('**How to read this:** the lab\'s small model writes the same text twice, once re-reading everything so far for every new token and once reusing the notes it already made on earlier tokens (the KV cache), so look for identical text, a cached line that stays flat while the uncached one climbs on the first chart, and, in the last table, how much memory those notes take for real models at long context (the right-hand columns).');
   const { model, tokenizer, trained } = await loadCheckpoint(lab);
   const cfg = model.config;
   const promptIds = tokenizer.encode(PROMPT);
@@ -118,8 +119,8 @@ export default async function demo(m, lab) {
   ];
   const sizes = models.map((r) => contexts.map((t) => m.cacheBytes(r.cfg, t, { bytesPerElement: r.bytes })));
   lab.heatmap({
-    title: 'KV cache per sequence, log10(bytes): rows are models, columns are context lengths',
-    rows: sizes.map((r) => r.map((b) => +Math.log10(b).toFixed(2))),
+    title: 'KV cache per sequence: rows are models, columns are context lengths (colour on a log scale)',
+    rows: sizes.map((r) => r.map((b) => +Math.log10(b).toFixed(2))), format: 'log10-bytes',
     rowLabels: models.map((r) => r.name), colLabels: contexts.map((t) => (t >= 1024 ? `${t / 1024}k` : String(t))),
   });
   lab.table({
@@ -131,5 +132,5 @@ export default async function demo(m, lab) {
   const weightBytes = m.paramCount(cfg) * 4;
 
   const speedup = uncachedTotal / cachedTotal;
-  lab.done(`Your cache reproduced full recomputation **token for token** (${NEW} of ${NEW} tokens identical). Uncached generation took **${uncachedTotal.toFixed(0)} ms** (${meanUncached.toFixed(2)} ms per token, rising with context); cached took **${cachedTotal.toFixed(0)} ms** (${prefillMs.toFixed(1)} ms prefill of ${promptIds.length} token(s), ${(prefillMs / promptIds.length).toFixed(2)} ms each, + ${meanCached.toFixed(2)} ms per decode step), a **${speedup.toFixed(1)}×** speedup. Your cost model says the last token cost ${fmtInt(flopsUncached.at(-1))} FLOPs uncached versus ${fmtInt(flopsCached.at(-1))} cached (**${flopRatio.toFixed(0)}×**). The full ${cfg.blockSize}-token cache of this model is ${fmtBytes(ourCache)} against ${fmtBytes(weightBytes)} of weights; a Llama-3-8B-shaped cache is ${fmtBytes(sizes[2][0] / contexts[0])} per token and **${fmtBytes(sizes[2][4])}** at 128k context.`);
+  lab.done(`Your cache reproduced full recomputation **token for token** (${NEW} of ${NEW} tokens identical). Uncached generation took **${uncachedTotal.toFixed(0)} ms** (${meanUncached.toFixed(2)} ms per token, rising with context); cached took **${cachedTotal.toFixed(0)} ms** (${prefillMs.toFixed(1)} ms prefill of ${promptIds.length} token(s), ${(prefillMs / promptIds.length).toFixed(2)} ms each, + ${meanCached.toFixed(2)} ms per decode step), a **${speedup.toFixed(1)}×** speedup. Your cost model says the last token cost ${fmtInt(flopsUncached.at(-1))} FLOPs uncached versus ${fmtInt(flopsCached.at(-1))} cached (**${flopRatio.toFixed(0)}×**). The full ${cfg.blockSize}-token cache of this model is ${fmtBytes(ourCache)} against ${fmtBytes(weightBytes)} of weights; a Llama-3-8B-shaped cache is ${fmtBytes(sizes[2][0] / contexts[0])} per token and **${fmtBytes(sizes[2][4])}** at 128k context, and a Llama-3-70B-shaped one is **${fmtBytes(sizes[3][4])}** at 128k, for a single conversation.`);
 }

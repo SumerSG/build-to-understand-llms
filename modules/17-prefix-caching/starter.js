@@ -1,4 +1,4 @@
-// Module 17 — Prefix caching & prompt caching.
+// Prefix caching & prompt caching.
 // A "KV block" here is represented by a single 32-bit hash of the token window it covers. That is
 // exactly how vLLM's automatic prefix caching identifies a block: it never compares tokens at
 // serving time, only hashes.
@@ -187,7 +187,7 @@ export function makeWorkload({
 
 /**
  * Replay the requests against a PrefixTree of bounded capacity, keeping up to `concurrency`
- * requests pinned at once (the continuous-batching window from module 16).
+ * requests pinned at once (the continuous-batching window from the continuous batching module).
  */
 export function simulate(requests, { capacityBlocks = 1 << 20, blockSize = BLOCK_SIZE, concurrency = 4 } = {}) {
   // TODO: step 4

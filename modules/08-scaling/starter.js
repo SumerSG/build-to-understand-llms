@@ -1,4 +1,4 @@
-// Module 08 — Scaling laws & the arithmetic of compute.
+// Scaling laws & the arithmetic of compute.
 // Nothing here is a simulation. Every function you write is a handful of multiplications
 // applied to four numbers: parameters (N), tokens (D), chips, and seconds.
 // Symbols used throughout: N = parameter count, D = training tokens, C = training FLOPs,
@@ -68,7 +68,7 @@ export function trainingFlops(N, D) {
 /**
  * FLOPs to push `tokens` tokens through the same model at inference: 2·N each, because
  * inference is the forward pass only. (The attention terms that depend on context length
- * are small for short contexts; module 15 puts them back: `2N + 4·L·T·C` per token with a KV cache.)
+ * are small for short contexts; the KV cache module puts them back: `2N + 4·L·T·C` per token with a KV cache.)
  */
 export function inferenceFlops(N, tokens = 1) {
   // TODO: step 1

@@ -1,5 +1,5 @@
-// Module 30 — Parameter-efficient fine-tuning (LoRA).
-// Everything without a TODO is done for you: the SFT plumbing from module 10 (formatPrompt, encodeExample,
+// Parameter-efficient fine-tuning (LoRA).
+// Everything without a TODO is done for you: the SFT plumbing from the supervised fine-tuning module (formatPrompt, encodeExample,
 // makeBatch, maskedLoss, reply), getModule/setModule for finding and replacing sub-modules by dotted path,
 // the weight/bias getters on LoRALinear, and loraLayers(), which shows how to walk a model by paramNames.
 // Read them first; they set the conventions. Each TODO names the step it belongs to.
@@ -47,7 +47,7 @@ export function makeBatch(examples, { batchSize, next, pad = 0 }) {
   return { x, y, mask };
 }
 
-/** Mean cross-entropy over the positions where mask is 1 (module 10's assistant-only loss). */
+/** Mean cross-entropy over the positions where mask is 1 (the supervised fine-tuning module's assistant-only loss). */
 export function maskedLoss(logits, y, mask) {
   const V = logits.shape[logits.shape.length - 1];
   const targets = y.flat(Infinity);
@@ -186,7 +186,7 @@ export function mergeLora(model) {
 // ---------- step 5: what training costs, and the loop ----------
 
 /**
- * Persistent training memory in bytes under mixed-precision AdamW (the ZeRO accounting from module 08):
+ * Persistent training memory in bytes under mixed-precision AdamW (the ZeRO accounting from the scaling-laws module):
  * bf16 weights for every parameter (2 B), bf16 gradients for trainable ones (2 B), and an fp32 master copy
  * plus two fp32 moments for trainable ones (12 B). Frozen: 2 B each. Trainable: 16 B each.
  */
