@@ -87,11 +87,13 @@ Your model is GPT-2's architecture at 1/1000 scale; the differences are mostly w
       instructions: `
 Two layers, following the conventions of the worked \`LayerNorm\` above.
 
-\`new Linear(nIn, nOut, { bias = true, next, std = 0.02 })\`: \`weight\` is a trainable \`[nIn, nOut]\` Tensor drawn from \`Tensor.randn(shape, next, std)\`; \`bias\` is a trainable zero \`[nOut]\` Tensor, or \`null\` when \`bias\` is false. \`forward(x)\` returns \`x · W + b\` for any \`x [..., nIn]\` (a 2-D weight is shared over every leading dimension by \`Tensor.matmul\`). \`parameters()\` returns \`[weight, bias]\` or \`[weight]\`.
+\`new Linear(nIn, nOut, { bias = true, next, std = 0.02 })\`: \`weight\` is a trainable \`[nIn, nOut]\` Tensor drawn from \`Tensor.randn(shape, next, std)\` and wrapped in \`Tensor.param(...)\`, which accepts a Tensor exactly as LayerNorm passes it \`Tensor.ones([d])\`; \`bias\` is a trainable zero \`[nOut]\` Tensor, or \`null\` when \`bias\` is false. \`forward(x)\` returns \`x · W + b\` for any \`x [..., nIn]\` (a 2-D weight is shared over every leading dimension by \`Tensor.matmul\`). \`parameters()\` returns \`[weight, bias]\` or \`[weight]\`.
 
 \`new Embedding(n, d, { next, std = 0.02 })\`: a trainable \`[n, d]\` table, same init. \`forward(ids)\` picks rows with \`Tensor.embed\` (ids may be nested, so \`[[B×T]]\` gives \`[B, T, d]\`). \`parameters()\` returns \`[weight]\`.
 
 The std of 0.02 is GPT-2's choice (nanoGPT keeps it). With std 1 the logits at initialisation are in the hundreds and the first loss is far above \`ln(V)\`; the tests check both the std and that gradients reach the weight, bias and table, which they cannot if you use raw \`ops\` instead of Tensor methods.
+
+\`lib/gpt.js\` (and the \`lib/gpt.js\` section of \`docs/LIB_API.md\`) is the reference answer for this whole module; the tests compare your model with it. Build your own first and open it only to compare afterwards.
 `,
       hints: [
         'Look at how LayerNorm above creates its parameters: `Tensor.param(...)` around a raw-shaped Tensor. Linear needs one Gaussian leaf (`Tensor.randn([nIn, nOut], next, std)`) and one zero leaf (`Tensor.zeros([nOut])`).',
@@ -134,7 +136,7 @@ Why pre-LN: the tests zero both output projections and require the block to retu
       id: 'gpt',
       title: 'Stack, final LayerNorm, tied head',
       instructions: `
-\`new GPT({ vocabSize, blockSize, nLayer, nHead, nEmbd, seed = 0 })\`: with the single \`next = rng(seed)\` already in the constructor, build \`wte = Embedding(vocabSize, nEmbd)\`, \`wpe = Embedding(blockSize, nEmbd)\`, then \`nLayer\` Blocks into \`this.blocks\`, in that order. \`lnF\` is already there.
+\`new GPT({ vocabSize, blockSize, nLayer, nHead, nEmbd, seed = 0 })\`: with the single \`next = rng(seed)\` already in the constructor, build \`wte = Embedding(vocabSize, nEmbd)\`, \`wpe = Embedding(blockSize, nEmbd)\`, then \`nLayer\` Blocks into \`this.blocks\`, in that order and all from that one \`next\` (the tests check that your initial wte, wpe and first block equal \`lib/gpt.js\`'s for the same seed). \`lnF\` is already there.
 
 \`forward(ids)\`: \`embedInputs\` → every block in turn → \`lnF\` → \`logits = x · wteᵀ\`, a Tensor \`[B, T, V]\`. Use \`this.wte.weight.transpose()\`; do **not** create a separate head matrix. \`parameters()\` returns wte, wpe, each block's parameters, lnF, in that order. \`numParams()\` sums \`p.size\`.
 
@@ -153,7 +155,7 @@ The tests copy the weights of \`lib/gpt.js\` into your model by \`parameters()\`
       instructions: `
 Three pure functions of a config object \`{ vocabSize, blockSize, nLayer, nHead, nEmbd }\` (call them V, T, L, C):
 
-- \`paramBreakdown(config)\` → \`{ tokenEmbedding, positionEmbedding, attention, mlp, layerNorm, total }\`, each an exact count for the model you just built, biases and LayerNorm gains included. Use the table in the concept section.
+- \`paramBreakdown(config)\` → \`{ tokenEmbedding, positionEmbedding, attention, mlp, layerNorm, total }\`, each an exact count for the model you just built, biases and LayerNorm gains included. Use the table in the concept section; it is per block, so multiply by L, and note that \`layerNorm\` also counts the final \`lnF\`: \`L·4C + 2C\`.
 - \`countParams(config)\` → the total, \`V·C + T·C + L·(12C² + 13C) + 2C\`.
 - \`flopsPerToken(config, contextLen)\` → \`2·countParams + 4·L·contextLen·C\`.
 

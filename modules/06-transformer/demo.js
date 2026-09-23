@@ -109,7 +109,7 @@ export default async function demo(m, lab) {
 
   lab.done(
     `Your GPT has **${fmtInt(built)}** parameters and \`countParams\` agrees exactly; ` +
-    `**${pct(breakdown.mlp, built)}** of them are MLP weights and **${pct(breakdown.attention, built)}** attention, ` +
+    `**${pct(breakdown.mlp, built)}** of them are MLP parameters and **${pct(breakdown.attention, built)}** attention (46% and 23% in GPT-2 small, where the 50k-token table takes a bigger share), ` +
     `and the same formula gives **${fmtInt(gpt2)}** for GPT-2 small (published: 124M). ` +
     `On ${T} random tokens the residual stream norm grew from ${norms[0].toFixed(3)} after the embeddings to ${norms[norms.length - 1].toFixed(3)} after block ${LAB.nLayer} ` +
     `(lnF then rescales every position to ${normAfterLnF.toFixed(3)} ≈ sqrt(C) = ${Math.sqrt(LAB.nEmbd).toFixed(1)}), and the untrained head puts ${(100 * top[0][1]).toFixed(2)}% on token ${top[0][0]} with an entropy of ${entropy.toFixed(3)} nats (uniform would be ${Math.log(V).toFixed(3)}). ` +

@@ -62,8 +62,10 @@ export const tests = [
   { step: 'layers', name: 'Linear initialises with std 0.02 and works on [B,T,C] inputs', run(m, T) {
     const lin = new m.Linear(64, 96, { next: T.rng(2) });
     const { mean, std } = stats(lin.weight.data);
-    T.ok(Math.abs(mean) < 0.005, `weights must be centred on zero (mean ${mean.toFixed(4)})`);
-    T.ok(Math.abs(std - 0.02) < 0.003, `weight std should be 0.02, got ${std.toFixed(4)}: with std 1 the residual stream explodes after a few blocks`);
+    // Check the std first: a wrong std (for example randn's default of 1) is the common mistake, and the
+    // mean of 6,144 std-1 draws already wanders by about 0.013, so a mean check alone would misname the cause.
+    T.ok(Math.abs(std - 0.02) < 0.003, `weight std should be 0.02, got ${std.toFixed(4)} (mean ${mean.toFixed(4)}): pass the std option through as Tensor.randn([nIn, nOut], next, std); with std 1 the residual stream explodes after a few blocks and the first loss is far above ln(V)`);
+    T.ok(Math.abs(mean) < 0.005, `weights must be centred on zero: std ${std.toFixed(4)} is right but the mean is ${mean.toFixed(4)}; draw them from Tensor.randn, which is zero-mean, and do not shift them`);
     const custom = new m.Linear(64, 96, { next: T.rng(2), std: 0.1 });
     T.ok(Math.abs(stats(custom.weight.data).std - 0.1) < 0.01, 'the std option must be honoured');
     const x = randomInput(T, [2, 5, 64], 4);
@@ -186,6 +188,11 @@ export const tests = [
     T.shape(logits, [2, 5, 64], 'one row of vocabSize scores per position');
     T.ok(Number.isFinite(logits.data[0]), 'logits must be finite');
     T.throws(() => model.forward([[1, 2, 3, 4, 5, 6, 7, 8, 9]]), 'T=9 > blockSize=8 must throw');
+    // Construction order fixes which random numbers each table and block draws from the one seeded `next`.
+    const ref = new RefGPT(SMALL);
+    T.close(model.wte.weight, ref.wte.weight, 1e-7, 'from the same seed your initial wte must equal lib/gpt.js\'s: build wte first, then wpe, then the blocks, all from the one `next = rng(seed)`');
+    T.close(model.wpe.weight, ref.wpe.weight, 1e-7, 'from the same seed your initial wpe must equal lib/gpt.js\'s: build wpe right after wte and before the blocks, from the same `next`');
+    T.close(model.blocks[0].attn.qkv.weight, ref.blocks[0].attn.qkv.weight, 1e-7, 'from the same seed your first block\'s weights must equal lib/gpt.js\'s: build the blocks after wte and wpe, passing the same `next` to each');
   } },
   { step: 'gpt', name: 'with the reference weights copied in, logits match lib/gpt.js (tied head, final LayerNorm, block order)', run(m, T) {
     const ref = new RefGPT(SMALL);
