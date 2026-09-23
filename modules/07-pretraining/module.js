@@ -4,7 +4,7 @@ export default {
   track: 'transformer',
   minutes: 120,
   threshold: 'Pre-training is one loop: sample a batch of token windows, predict every next token at once, take an AdamW step on the mean cross-entropy, repeat; every trick (schedules, clipping, mixed precision) exists to keep that loop stable and efficient.',
-  goal: 'A training loop (batches, AdamW, warmup+cosine schedule, gradient clipping, eval) that trains a small GPT in your browser until it generates recognisable text.',
+  goal: 'A training loop (batches, AdamW, warmup+cosine schedule, gradient clipping, eval) that trains a small GPT in your browser until its samples have English-like spelling, spacing and punctuation, with some real words from the corpus.',
   prereqs: ['02-autograd', '04-bigram', '06-transformer'],
   recall: [
     { q: 'In module 02, what does `loss.backward()` do to a leaf tensor\'s `.grad` when it already holds a value?', options: ['Overwrites it', 'Adds to it (accumulates)', 'Throws an error'], answer: 1,
@@ -187,14 +187,14 @@ Two functions that assemble everything.
 
 1. set \`optimizer.lr = cosineWithWarmup(step, { warmup, total: steps, peak: lr })\`;
 2. draw a batch from \`trainIds\` with \`next\`, call \`trainStep\`;
-3. build \`record = { step, lr, loss, gradNorm }\`; every \`evalInterval\` steps (that is, when \`(step + 1) % evalInterval === 0\`) and on the last step, add \`record.valLoss = estimateLoss(model, valIds, …)\` using the same \`next\`;
+3. build \`record = { step, lr: optimizer.lr, loss, gradNorm }\`: the \`lr\` in the record is this step's scheduled rate, not the peak \`lr\` destructured from \`config\`, so the object shorthand \`{ step, lr, … }\` would record the wrong value; every \`evalInterval\` steps (that is, when \`(step + 1) % evalInterval === 0\`) and on the last step, add \`record.valLoss = estimateLoss(model, valIds, …)\` using the same \`next\`;
 4. push the record to \`history\` and \`await onStep(record, model)\` if a callback was given.
 
 Resolve to \`{ model, history, tokensSeen }\` with \`tokensSeen = steps · batchSize · blockSize\`.
 
 The tests replay your run against a reference loop built from these exact rules and compare the loss, gradient norm and validation loss at every step, so pass \`maxGradNorm\` to \`trainStep\`, use \`valIds\` (not \`trainIds\`) for evaluation, and draw validation batches from the same \`next\` right after that step's training batch.
 
-\`sample(model, tokenizer, prompt, { maxNewTokens, temperature, next })\`: encode the prompt, call \`model.generate(ids, { maxNewTokens, temperature, next })\` (\`lib/gpt.js\`'s \`GPT.generate\`, which runs under \`noGrad\`), decode the result and return the whole string, prompt included.
+\`sample(model, tokenizer, prompt, { maxNewTokens, temperature, next })\`: encode the prompt, call \`model.generate(ids, { maxNewTokens, temperature, next })\` (\`lib/gpt.js\`'s \`GPT.generate\`, which runs under \`noGrad\`), decode the result and return that string. \`generate\` returns the prompt ids followed by the \`maxNewTokens\` new ids, so decoding its result already gives the whole text, prompt included; do not prepend the prompt again.
 `,
       hints: [
         'Build the optimizer once, before the loop; its m and v buffers must persist. The schedule is a property write on the optimizer each step, not a new optimizer.',
