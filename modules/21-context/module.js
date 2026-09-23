@@ -19,6 +19,9 @@ export default {
     { q: 'Module 15: the KV cache for one sequence grows how with the number of tokens in the context?',
       options: ['Constant', 'Linearly', 'Quadratically'], answer: 1,
       why: 'Every token stores one key and one value per layer. A longer context costs memory on the server as well as money and attention quality, which is part of why providers cap context length.' },
+    { q: 'Module 32: in the InfoNCE loss of your CLIP head, a batch holds B image-caption pairs. Where do the negatives for an image come from?',
+      options: ['A separate set of hand-labelled mismatches', 'The other B − 1 captions in the same batch', 'Random noise vectors'], answer: 1,
+      why: 'Every other pair in the batch is a negative, which is why CLIP trained on batches of 32,768. Text embedding models for retrieval are trained the same way on (query, passage) pairs, and step 6 ranks notes with the kind of vectors that loss produces.' },
   ],
   review: [
     { q: 'Why does `dropOldest` skip messages with role "system" even when the result stays over budget?',
@@ -42,7 +45,7 @@ export default {
 
 Every model call sees exactly one array of messages, and that array has a hard limit: the **context window**, measured in tokens. Claude and GPT-4-class models advertise windows of approximately 128,000 to 1,000,000 tokens (per their providers' documentation). An agent fills it fast: module 20 showed that each tool result is re-sent on every later turn. The window is a **budget**, and it is **ordered**: position matters as much as presence.
 
-Two effects shrink it further. Liu et al. (2023, "Lost in the Middle") showed that models answer questions best when the relevant passage is near the start or the end of the context, and noticeably worse when it sits in the middle. Chroma's 2025 "Context Rot" report found that accuracy on simple retrieval tasks drops as input length grows, well before the advertised limit. The **effective context** is shorter than the nominal one.
+Two effects shrink it further. Liu et al. (2023, "Lost in the Middle") showed that models answer questions best when the relevant passage is near the start or the end of the context, and noticeably worse when it sits in the middle (module 33 measured this curve on a synthetic model). Chroma's 2025 "Context Rot" report found that accuracy on simple retrieval tasks drops as input length grows, well before the advertised limit. The **effective context** is shorter than the nominal one.
 
 :::predict
 Your demo conversation runs 60 turns with a 24-line log dump every fifth turn. Unmanaged, how large do you expect the final context to be, and what share of it is raw tool output?
@@ -71,7 +74,7 @@ norm  = 1 - b + b * len / avgdl
 score = Σ over query terms of  idf * tf * (k1 + 1) / (tf + k1 * norm)      k1 = 1.5, b = 0.75
 \`\`\`
 
-\`avgdl\` is the average note length. Rare terms weigh more, repeats saturate (k1), long notes are discounted (b). Dense retrievers embed text as vectors and match by meaning, not spelling; on the BEIR benchmark (Thakur et al. 2021) plain BM25 still beat many of them on unseen domains, and it needs no model at all. Production systems (Elasticsearch, Vespa and most RAG stacks) commonly run both and merge the rankings.
+\`avgdl\` is the average note length. Rare terms weigh more, repeats saturate (k1), long notes are discounted (b).
 
 :::predict
 The store holds "the deploy key is in vault slot 7" and "the build server is called atlas". The user asks "which slot holds the key?". Which note does BM25 return, and would it find the right note for "where are my credentials?"
@@ -79,13 +82,19 @@ The store holds "the deploy key is in vault slot 7" and "the build server is cal
 The deploy-key note: "slot" and "key" are rare terms that match. (The atlas note scores a little too, through "the", whose idf is small.) The second query shares no word with any note, so every score is 0 and nothing comes back. That is the lexical gap dense embeddings close, and why hybrid retrieval exists.
 :::
 
+## Dense and hybrid retrieval
+
+A **dense retriever** maps each text to one vector and ranks notes by cosine similarity to the query's vector, so it can match "credentials" to "key" if its embedding model has learned they are related. DPR (Karpukhin et al. 2020) and Contriever (Izacard et al. 2021) train that model contrastively, with an InfoNCE loss like your CLIP head's in module 32: each query must pick its own passage out of many negatives, such as the other passages in its batch. Dense is not strictly better: on the BEIR benchmark (Thakur et al. 2021) plain BM25 beat many dense retrievers on unseen domains.
+
+At scale, stores do not score every vector; they search an **approximate nearest-neighbour** index such as HNSW (a layered proximity graph, Malkov and Yashunin 2016) or FAISS's IVF-PQ (probe only the nearest k-means clusters, over product-quantised vectors). **Hybrid search** merges the BM25 and dense rankings by **reciprocal rank fusion** (step 6); Elasticsearch and Vespa both offer it. A **cross-encoder reranker** (Nogueira and Cho 2019) then reads the query and each candidate passage together in one transformer: more accurate than comparing two vectors, but one forward pass per candidate, so it only reorders a shortlist.
+
 ## Ordering and caching
 
 Module 17 showed that a provider's prefix cache only hits on an identical prefix, so **stable content goes first** (system prompt, pinned summary) and volatile content last. Retrieved notes change every turn, so your manager injects them just before the newest message: the end of the context, which is also where "lost in the middle" says the model reads best. A sliding window, by contrast, changes the second message on every turn and defeats the cache; compaction changes the prefix only when it runs.
 
 ## Where this toy differs from production
 
-Your summariser is a regular expression that keeps tagged facts perfectly; a real one is a model call that paraphrases, drops details it judged unimportant, and costs its own tokens and latency. Your notes are one-line strings and your index is rebuilt from scratch; production stores chunk documents, keep inverted indexes updated incrementally, and usually add an embedding index and a reranker. Your 800-token budget and small BPE make absolute counts unlike any commercial model. The policies, the ordering rules and the failure modes are the same.
+Your summariser is a regular expression that keeps tagged facts perfectly; a real one is a model call that paraphrases, drops details it judged unimportant, and costs its own tokens and latency. Your notes are one-line strings and your index is rebuilt from scratch; production stores chunk documents and keep inverted and ANN indexes updated incrementally. The step 6 tests write the embedding rows by hand and pool them without context; a real embedding model is a trained transformer whose token vectors depend on their neighbours. Your 800-token budget and small BPE make absolute counts unlike any commercial model. The policies, the ordering rules and the failure modes are the same.
 `,
   steps: [
     {
@@ -189,6 +198,28 @@ Two methods of \`ContextManager\` remain; \`remember\` and \`add\` are done for 
         '`const fixed = [this.system]; if (retrievalMsg) fixed.push(retrievalMsg); … const historyBudget = /* reserve the fixed parts */; … for (let i = 0; i < history.length; i++) { if (retrievalMsg && i === history.length - 1) messages.push(retrievalMsg); messages.push(history[i]); }` — and handle an empty history.',
       ],
     },
+    {
+      id: 'hybrid',
+      title: 'Dense and hybrid retrieval',
+      instructions: `
+BM25 cannot match "credentials" to "key". A dense retriever can, if its embedding model puts the two words near each other. Build the four pieces, then fuse the two rankings.
+
+- **\`meanPool(table, ids)\`**: a text's vector is the mean of its tokens' rows in a \`[V, C]\` table with \`shape\` and flat row-major \`data\`, such as \`model.wte.weight\` of a \`lib/gpt.js\` GPT. Row \`id\` starts at \`data[id * C]\`. A repeated id counts every time; no ids gives \`C\` zeros.
+- **\`cosine(a, b)\`**: \`a·b / (|a| |b|)\`, where \`|a|\` is the Euclidean length; 0 when either vector is all zeros.
+- **\`denseSearch(docVectors, queryVector, k = 3)\`**: \`[{ index, score }]\` for the \`k\` highest cosines, best first, ties by index. Unlike BM25's \`search\`, keep zero and negative scores: a nearest neighbour always exists.
+- **\`reciprocalRankFusion(rankings, { k = 60 } = {})\`**: \`rankings\` is a list of hit lists, each best first. Document \`d\` scores \`Σ 1 / (k + rank_d)\` over the lists it appears in, with \`rank_d\` counted from 1; the hits' own scores are ignored. Return every document that appears in any list as \`[{ index, score }]\`, best first, ties by index.
+
+RRF fuses ranks rather than scores because BM25 scores are unbounded and cosines lie in [−1, 1]: added together, whichever scale is larger would decide. The constant \`k = 60\` is the one Cormack et al. (2009) used. It keeps first place from dominating: a note ranked second by both retrievers (\`2/62\`) beats one ranked first by only one of them (\`1/61\`).
+
+The tests write the embedding rows by hand as a stand-in for a contrastively trained model, so that "credentials", "key", "password" and "passphrase" share one direction. On their query BM25 ranks the deploy-key note second, behind a shorter note that also says "vault"; dense retrieval ranks it second, behind the password note; the fused ranking puts it first.
+`,
+      predict: { question: 'With k = 60, one note is first in the BM25 list and absent from the dense list; another is tenth in both. Which does RRF rank higher?', answer: 'The one that is tenth in both: 2/70 ≈ 0.029 against 1/61 ≈ 0.016. Agreement between two different retrievers counts for more than one retriever\'s favourite. For k below 8 the answer flips, because 1/(k + 1) then exceeds 2/(k + 10) (they tie at k = 8; at k = 0 it is 1/1 against 2/10). A large k stops one retriever\'s favourite from outvoting agreement.' },
+      hints: [
+        'Each function is a few lines. For the fusion, ask what you must accumulate per document across all the lists, and what a hit\'s position in its list tells you that its score does not.',
+        'meanPool: a Float64Array of C zeros; add row id for each id, then divide by ids.length. cosine: one loop that accumulates a·b, |a|² and |b|². denseSearch: score every document, sort with the same comparator as BM25 search, slice to k. Fusion: a Map from index to score; for each ranking and each position r counted from 0, add 1 / (k + r + 1); then turn the Map into hits and sort.',
+        '`for (const ranking of rankings) ranking.forEach((hit, r) => scores.set(hit.index, (scores.get(hit.index) ?? 0) + /* 1 / (k + the 1-based rank) */)); const fused = [...scores].map(([index, score]) => ({ index, score }));` and for cosine: `if (na === 0 || nb === 0) return 0; return /* dot over the product of the two lengths */;`',
+      ],
+    },
   ],
   reflection: [
     'Explain to a colleague why a model with a 200,000-token window still needs a context manager. Use "effective context", cost per turn and tool-result bloat in your answer.',
@@ -197,7 +228,7 @@ Two methods of \`ContextManager\` remain; \`remember\` and \`add\` are done for 
   ],
   stretch: [
     'Replace the scripted summariser with a prompt to the lab\'s tiny GPT (module 14\'s sampler), then measure how many facts survive. This is the gap between your compact() and Claude Code\'s LLM-written auto-compact summaries.',
-    'Add a dense retriever: embed notes with mean-pooled token embeddings from lib/gpt.js, rank by cosine similarity, and merge with BM25 by reciprocal rank fusion, as Elasticsearch and Vespa hybrid search do. Find a query BM25 misses that the hybrid finds.',
+    'Train the embeddings instead of writing them: fit a lib/gpt.js embedding table with module 32\'s InfoNCE loss on (question, fact) pairs, plug `denseSearch` and `reciprocalRankFusion` into `ContextManager.retrieve`, and count how many of the demo\'s ten late questions BM25, dense and hybrid retrieval each answer. DPR, Contriever and E5 are this recipe at scale.',
     'Make compaction cache-aware: compact in large steps only when the budget is nearly full, and count how many turns keep an identical prefix, using your prefix cache from module 17. Compare against the sliding window.',
     'Implement MemGPT-style (Packer et al. 2023) memory tools: let the scripted model call `memory_write` and `memory_search` through your module 20 harness instead of harvesting `remember:` lines automatically.',
   ],

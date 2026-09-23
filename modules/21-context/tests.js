@@ -1,4 +1,5 @@
 import { CharTokenizer } from 'lib/tokenizer.js';
+import { GPT } from 'lib/gpt.js';
 
 // A whitespace "tokenizer": one id per word, so every count in these tests can be done by hand.
 // Anything with encode(str) → ids and decode(ids) → str works with the learner's code.
@@ -43,6 +44,32 @@ function converse(m, T, opts, turns = 50) {
   }
   cm.add({ role: 'user', content: 'where is the deploy key?' });
   return { cm, tok };
+}
+
+// Step 6 fixture: a lib/gpt.js GPT whose token-embedding rows are written by hand, standing in for an
+// embedding model trained contrastively. Dimension 0 means "secret" and is shared by credentials, key,
+// password and passphrase; each other concept word gets its own dimension; every other word is a zero row.
+const HYBRID_NOTES = [
+  'the deploy key is in vault slot 7',          // the note the user wants
+  'the vault cleaning crew comes on fridays',   // shares "vault" with the query, and is shorter
+  'rotate the api password every month',        // shares only the meaning "secret"
+  'lunch is at noon',
+  'the wifi passphrase is on the fridge',
+];
+const HYBRID_QUERY = 'which vault holds my credentials?';
+function hybridFixture(m) {
+  const concept = { credentials: [0, 1], key: [0, 1], password: [0, 1], passphrase: [0, 1], vault: [1, 0.3],
+    deploy: [2, 1], cleaning: [3, 1], crew: [3, 1], lunch: [4, 1], wifi: [5, 1], fridge: [6, 1] };
+  const vocab = new Map();
+  for (const text of [...HYBRID_NOTES, HYBRID_QUERY, 'where are my credentials?']) {
+    for (const w of m.tokenizeTerms(text)) if (!vocab.has(w)) vocab.set(w, vocab.size);
+  }
+  const model = new GPT({ vocabSize: vocab.size, blockSize: 8, nLayer: 1, nHead: 1, nEmbd: 8, seed: 21 });
+  const table = model.wte.weight; // [V, 8]
+  table.data.fill(0);
+  for (const [w, [dim, value]] of Object.entries(concept)) table.data[vocab.get(w) * 8 + dim] = value;
+  const embed = (text) => m.meanPool(table, m.tokenizeTerms(text).map((w) => vocab.get(w)));
+  return { embed, vectors: HYBRID_NOTES.map(embed) };
 }
 
 export const tests = [
@@ -344,5 +371,56 @@ export const tests = [
     T.eq(b.messages.filter((x) => x.summary).length, 1, 'this history does not fit, so it is compacted');
     const tool = b.messages.find((x) => x.role === 'tool');
     T.ok(tool && m.countTokens(tok, tool.content) <= 10, 'compact the TRUNCATED history: a kept tool result must still be cut to maxToolTokens');
+  } },
+
+  // ---------- step 6 ----------
+  { step: 'hybrid', name: 'meanPool averages rows of a lib/gpt.js embedding table, counting repeats', run(m, T) {
+    const model = new GPT({ vocabSize: 5, blockSize: 4, nLayer: 1, nHead: 1, nEmbd: 3, seed: 7 });
+    const table = model.wte.weight; // [5, 3]: V ≠ C, so reading columns instead of rows gives other numbers
+    const row = (i) => Array.from(table.data.slice(i * 3, i * 3 + 3));
+    const before = Array.from(table.data);
+    T.close(m.meanPool(table, [4]), row(4), 1e-7, 'one id: its own row (row id starts at data[id · C])');
+    const expect = [0, 1, 2].map((c) => (2 * row(1)[c] + row(3)[c]) / 3);
+    T.close(m.meanPool(table, [1, 3, 1]), expect, 1e-7, 'ids [1, 3, 1]: (2 · row 1 + row 3) / 3. A repeated token counts every time, and the result is a mean, not a sum, so long and short texts are comparable');
+    T.close(m.meanPool(table, []), [0, 0, 0], 0, 'no ids: C zeros, not NaN');
+    T.eq(Array.from(table.data), before, 'the embedding table is the model\'s weight: meanPool must not modify it');
+  } },
+  { step: 'hybrid', name: 'cosine measures direction, not length', run(m, T) {
+    T.close(m.cosine([3, 4], [4, 3]), 24 / 25, 1e-9, '(3·4 + 4·3) / (5 · 5) = 0.96');
+    T.close(m.cosine([1, 2, 3], [2, 4, 6]), 1, 1e-9, 'parallel vectors have cosine 1 whatever their lengths; a raw dot product would say 28');
+    T.close(m.cosine([1, 0], [0, 1]), 0, 1e-12, 'orthogonal vectors share nothing');
+    T.close(m.cosine([1, 0], [-2, 0]), -1, 1e-12, 'opposite directions give -1');
+    T.eq(m.cosine([0, 0], [1, 2]), 0, 'a zero vector (e.g. a text made only of unknown words) has no direction: return 0, not NaN');
+  } },
+  { step: 'hybrid', name: 'denseSearch ranks by cosine and always returns k neighbours', run(m, T) {
+    const docs = [[10, 10], [1, 0.1], [-1, 0], [1, 0.1]];
+    const hits = m.denseSearch(docs, [1, 0], 4);
+    T.eq(hits.map((h) => h.index), [1, 3, 0, 2], 'the short vector pointing the query\'s way beats the long diagonal one (a dot product would rank [10, 10] first); equal cosines keep index order');
+    T.close(hits[2].score, Math.SQRT1_2, 1e-9, 'hits carry their cosine');
+    T.close(hits[3].score, -1, 1e-9, 'a document pointing away still comes back when k asks for it: nearest neighbours always exist, unlike BM25 hits with score > 0');
+    T.eq(m.denseSearch(docs, [1, 0], 2).map((h) => h.index), [1, 3], 'k limits the result');
+  } },
+  { step: 'hybrid', name: 'reciprocalRankFusion sums 1 / (k + rank) with rank counted from 1', run(m, T) {
+    const a = [{ index: 0, score: 99 }, { index: 1, score: 50 }, { index: 2, score: 0.1 }];
+    const b = [{ index: 2, score: 0.9 }, { index: 1, score: 0.8 }];
+    const fused = m.reciprocalRankFusion([a, b]);
+    T.eq(fused.map((h) => h.index), [2, 1, 0], 'doc 2 (ranks 3 and 1) edges out doc 1 (ranks 2 and 2); doc 0 is first in one list and absent from the other');
+    T.close(fused.map((h) => h.score), [1 / 63 + 1 / 61, 2 / 62, 1 / 61], 1e-12, 'k = 60 and ranks start at 1: 1/61 for a first place. Ranks from 0, or the hits\' raw scores, give other numbers');
+    const k1 = m.reciprocalRankFusion([a, b], { k: 1 });
+    T.close(k1.map((h) => h.score), [1 / 4 + 1 / 2, 1 / 3 + 1 / 3, 1 / 2], 1e-12, 'with k = 1: doc 2 = 1/4 + 1/2, doc 1 = 1/3 + 1/3, doc 0 = 1/2');
+    T.eq(m.reciprocalRankFusion([[{ index: 3 }], [{ index: 1 }]]).map((h) => h.index), [1, 3], 'equal fused scores keep index order');
+    T.eq(m.reciprocalRankFusion([[], []]), [], 'nothing retrieved, nothing fused');
+  } },
+  { step: 'hybrid', name: 'on one query the hybrid finds the note that BM25 and dense retrieval each rank second', run(m, T) {
+    const { embed, vectors } = hybridFixture(m);
+    const bm25 = new m.BM25Index(HYBRID_NOTES);
+    const lexical = bm25.search(HYBRID_QUERY, 3);
+    T.eq(lexical.map((h) => h.index), [1, 0], 'BM25 matches only "vault", and the shorter cleaning-crew note wins on length normalisation');
+    const dense = m.denseSearch(vectors, embed(HYBRID_QUERY), 3);
+    T.eq(dense.map((h) => h.index), [2, 0, 4], 'dense retrieval matches the meaning "secret": the password note is closest, the deploy-key note second, the wifi passphrase third');
+    const hybrid = m.reciprocalRankFusion([lexical, dense]);
+    T.eq(hybrid[0].index, 0, `the deploy-key note is second in both lists, so fusion puts it first: 2/62 beats 1/61. Got ${JSON.stringify(hybrid.slice(0, 3))}`);
+    T.eq(bm25.search('where are my credentials?', 3), [], 'no shared word: BM25 returns nothing (the lexical gap)');
+    T.ok([0, 2, 4].includes(m.denseSearch(vectors, embed('where are my credentials?'), 1)[0].index), 'dense retrieval still returns a note about a secret for the same query');
   } },
 ];

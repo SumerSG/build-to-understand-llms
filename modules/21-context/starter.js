@@ -218,3 +218,41 @@ export class ContextManager {
     return { messages: [], tokens: 0, retrieved: [] };
   }
 }
+
+// ---------- step 6: dense and hybrid retrieval ----------
+
+/**
+ * Mean of the rows `ids` of an embedding table: a [V, C] tensor with a flat row-major `data`, such as a
+ * lib/gpt.js GPT's `model.wte.weight` (row `id` starts at `data[id * C]`). A repeated id counts every
+ * time it occurs. No ids → C zeros. Return a new array of length C; never modify the table.
+ */
+export function meanPool(table, ids) {
+  // TODO: step 6
+  return new Float64Array(table.shape[1]);
+}
+
+/** Cosine similarity `a·b / (|a| |b|)`; 0 when either vector is all zeros. */
+export function cosine(a, b) {
+  // TODO: step 6
+  return 0;
+}
+
+/**
+ * The `k` documents whose vectors have the highest cosine with `queryVector`: `[{ index, score }]`,
+ * best first, ties by index. No score threshold: nearest neighbours always exist.
+ */
+export function denseSearch(docVectors, queryVector, k = 3) {
+  // TODO: step 6
+  return [];
+}
+
+/**
+ * Reciprocal rank fusion: each ranking is a list of hits `{ index, … }`, best first. A document scores
+ * `Σ 1 / (k + rank)` over the rankings it appears in, with rank counted from 1 (the hits' own scores
+ * are ignored). Return every document that appears anywhere as `[{ index, score }]`, best first,
+ * ties by index.
+ */
+export function reciprocalRankFusion(rankings, { k = 60 } = {}) {
+  // TODO: step 6
+  return [];
+}

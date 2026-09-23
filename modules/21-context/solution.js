@@ -277,3 +277,58 @@ export class ContextManager {
     return { messages, tokens: contextTokens(tok, messages), retrieved };
   }
 }
+
+// ---------- step 6: dense and hybrid retrieval ----------
+
+/**
+ * Mean of the rows `ids` of an embedding table: a [V, C] tensor with a flat row-major `data`, such as a
+ * lib/gpt.js GPT's `model.wte.weight`. A repeated id counts every time it occurs. No ids → C zeros.
+ */
+export function meanPool(table, ids) {
+  const C = table.shape[1];
+  const out = new Float64Array(C);
+  if (!ids.length) return out;
+  for (const id of ids) {
+    const row = id * C;
+    for (let c = 0; c < C; c++) out[c] += table.data[row + c];
+  }
+  for (let c = 0; c < C; c++) out[c] /= ids.length;
+  return out;
+}
+
+/** Cosine similarity `a·b / (|a| |b|)`; 0 when either vector is all zeros. */
+export function cosine(a, b) {
+  let dot = 0, na = 0, nb = 0;
+  for (let i = 0; i < a.length; i++) {
+    dot += a[i] * b[i];
+    na += a[i] * a[i];
+    nb += b[i] * b[i];
+  }
+  if (na === 0 || nb === 0) return 0;
+  return dot / Math.sqrt(na * nb);
+}
+
+/**
+ * The `k` documents whose vectors have the highest cosine with `queryVector`: `[{ index, score }]`,
+ * best first, ties by index. No score threshold: nearest neighbours always exist.
+ */
+export function denseSearch(docVectors, queryVector, k = 3) {
+  const hits = docVectors.map((v, index) => ({ index, score: cosine(v, queryVector) }));
+  hits.sort((a, b) => b.score - a.score || a.index - b.index);
+  return hits.slice(0, k);
+}
+
+/**
+ * Reciprocal rank fusion (Cormack et al. 2009): each ranking is a list of hits `{ index, … }`, best
+ * first. A document scores `Σ 1 / (k + rank)` over the rankings it appears in, with rank counted from 1.
+ * Returns every document that appears anywhere as `[{ index, score }]`, best first, ties by index.
+ */
+export function reciprocalRankFusion(rankings, { k = 60 } = {}) {
+  const scores = new Map();
+  for (const ranking of rankings) {
+    ranking.forEach((hit, r) => scores.set(hit.index, (scores.get(hit.index) ?? 0) + 1 / (k + r + 1)));
+  }
+  const fused = [...scores].map(([index, score]) => ({ index, score }));
+  fused.sort((a, b) => b.score - a.score || a.index - b.index);
+  return fused;
+}
