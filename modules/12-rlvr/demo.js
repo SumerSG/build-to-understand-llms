@@ -35,6 +35,7 @@ export default async function demo(m, lab) {
     },
   });
   const accAfter = m.accuracy(policy, tasks);
+  lab.log('Greedy accuracy moves before the sampled reward does: on a near-uniform policy a single rewarded sample is enough to lift its answer to the argmax, while the mean sampled reward only rises once the probability mass itself has moved there, so it lags behind.');
   const after = showTasks.map((t) => topAnswer(policy, t));
   const last = history.at(-1);
   const meanSignal = history.reduce((s, h) => s + h.signalFrac, 0) / history.length;
