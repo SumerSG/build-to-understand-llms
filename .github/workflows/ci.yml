@@ -12,8 +12,7 @@ jobs:
         with:
           node-version: 22
       - run: node --test 'lib/tests/*.test.mjs'
-      # --skip-incomplete: modules still being written are reported, not failed; drop it once all modules land
-      - run: node tools/verify.mjs --quiet --skip-incomplete
+      - run: node tools/verify.mjs --quiet
   pages:
     if: github.ref == 'refs/heads/main' && github.event_name == 'push'
     needs: verify

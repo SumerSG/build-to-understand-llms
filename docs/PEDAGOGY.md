@@ -98,7 +98,8 @@ you can talk to.
 Modules keep their original ids when the path is reordered, so a module's number is a name, not its
 position. `prereqs` and recall questions must point backwards in the path: a module may build on, and
 quiz, only modules that come before it in `MODULES` (modules/index.js). A pointer to a later module
-belongs in concept text or a stretch goal, phrased as a forward pointer.
+belongs in concept text or a stretch goal, phrased as a forward pointer. `tools/verify.mjs` fails a
+module whose prereqs or recall questions point forward.
 
 ## Authoring rule of thumb
 

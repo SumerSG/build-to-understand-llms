@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // tools/verify.mjs — headless verifier for modules.
 //   node tools/verify.mjs                 verify every module marked ready
-//   node tools/verify.mjs --module 05-attention
+//   node tools/verify.mjs --module 05-attention   (any status, so a planned module can be checked while written)
 //   node tools/verify.mjs --skip-demo     skip running demos (faster)
 //   node tools/verify.mjs --demo-only     run only demos
 // Checks: schema + pedagogy checklist (mechanical parts), tests pass on solution, tests fail on
@@ -83,6 +83,20 @@ function checkSchema(def, meta) {
   if (words > 1400) warns.push(`concept is long (${words} words; aim for 400–900)`);
   if (/\$[^$]+\$/.test(def.concept)) warns.push('concept seems to contain LaTeX ($…$); use code spans instead');
   if (num > 1 && !(def.prereqs || []).length) warns.push('no prereqs listed');
+  // Ids are names, not positions: the path is the MODULES order. Prereqs and recall questions must point
+  // backwards along it; a pointer to a later module belongs in concept text or a stretch goal.
+  const order = MODULES.filter((m) => m.status === 'ready' || m.id === meta.id).map((m) => m.id);
+  const at = (id) => order.indexOf(id);
+  for (const p of def.prereqs || []) {
+    if (at(p) < 0) errs.push(`prereq ${p} is not a ready module`);
+    else if (at(p) > at(meta.id)) errs.push(`prereq ${p} comes after ${meta.id} on the path (MODULES order)`);
+  }
+  for (const q of recall) {
+    for (const [, n] of String(q.q).matchAll(/\b[Mm]odules?[\s-](\d\d)\b/g)) {
+      const cited = order.find((id) => id.startsWith(n + '-'));
+      if (cited && at(cited) > at(meta.id)) errs.push(`recall question cites ${cited}, which comes later on the path: ${String(q.q).slice(0, 60)}`);
+    }
+  }
   return { errs, warns };
 }
 
@@ -185,8 +199,10 @@ async function runTests(tests, m) {
   return { results, passed: results.filter((r) => r.pass).length, failed: results.filter((r) => !r.pass).length, ms: performance.now() - t0 };
 }
 
-const targets = MODULES.filter((m) => m.status === 'ready' && (!only || m.id === only));
-if (!targets.length) { console.error(only ? `No ready module with id ${only}` : 'No ready modules'); process.exit(2); }
+// --module names one module explicitly, so it is checked whatever its registry status (a module being
+// written is still 'planned'); without it, only modules marked ready are checked.
+const targets = MODULES.filter((m) => (only ? m.id === only : m.status === 'ready'));
+if (!targets.length) { console.error(only ? `No module with id ${only} in modules/index.js` : 'No ready modules'); process.exit(2); }
 let failed = 0, skipped = 0;
 const REQUIRED = ['module.js', 'starter.js', 'solution.js', 'tests.js', 'demo.js'];
 for (const meta of targets) {
