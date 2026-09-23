@@ -813,16 +813,19 @@ function renderChat() {
   const wrap = h(`<div class="measure">
     <h1>Chat playground</h1>
     <p class="muted lede-p">Talk to the lab's own model, running in this page: the BPE tokenizer (module 03), the GPT (module 06) trained by
-    <code>tools/pretrain.mjs</code> (module 07), decoded through a KV cache that is reused across turns (modules 15 and 17) and the sampling pipeline (module 14),
-    wrapped in the chat template from module 10. It is a ~100k-parameter model trained on a toy corpus, so expect corpus-like text, not answers. The point is that
-    every piece of it is something you built.</p>
+    <code>tools/pretrain.mjs</code> (module 07), decoded through a KV cache (modules 15 and 17) and the sampling pipeline (module 14),
+    wrapped in the chat template from module 10. It is a ~100k-parameter model trained on a toy corpus about cats, dogs and the weather,
+    so expect corpus-like text, not answers. The point is that every piece of it is something you built.</p>
+    <p class="muted lede-p">Try: send "the cat", then press <b>Regenerate</b>. The prompt is already in the KV cache, so the stats line shows
+    almost every prompt token reused and the prefill time dropping to about a millisecond. The context window is only 64 tokens, so a
+    second turn does not fit next to the first; the stats line says when the oldest tokens were dropped.</p>
     <div class="card">
       <div class="row small" id="chat-info"><span class="muted">Loading model…</span></div>
       <div class="row chat-controls">
         <label class="small">temperature <input type="number" id="chat-temp" value="0.8" min="0" max="3" step="0.1"></label>
         <label class="small">top-p <input type="number" id="chat-topp" value="0.95" min="0" max="1" step="0.05"></label>
         <label class="small">top-k <input type="number" id="chat-topk" value="0" min="0" step="1"></label>
-        <label class="small">max tokens <input type="number" id="chat-max" value="40" min="1" max="200" step="1"></label>
+        <label class="small">max tokens <input type="number" id="chat-max" value="20" min="1" max="200" step="1"></label>
         <span class="spacer"></span>
         <button class="btn btn-small" id="chat-load" type="button">Load checkpoint JSON…</button>
         <button class="btn btn-small" id="chat-reset" type="button">New conversation</button>
@@ -831,7 +834,7 @@ function renderChat() {
     <div class="card chat-log" id="chat-log"></div>
     <div class="card">
       <div class="chat-composer"><input type="text" class="chat-input" id="chat-input" placeholder="Say something to the model… (the toy corpus is about cats, dogs, and the weather)" autocomplete="off">
-      <button class="btn btn-primary" id="chat-send" type="button" disabled>Send</button><button class="btn" id="chat-stop" type="button" disabled>Stop</button></div>
+      <button class="btn btn-primary" id="chat-send" type="button" disabled>Send</button><button class="btn" id="chat-stop" type="button" disabled>Stop</button><button class="btn" id="chat-regen" type="button" disabled title="Answer the last message again: its prompt is already in the KV cache">Regenerate</button></div>
       <div class="small muted" id="chat-stats"></div>
     </div>
   </div>`);
@@ -854,13 +857,23 @@ function renderChat() {
       if (m.type === 'ready') { $info.innerHTML = `<span>Model: ${m.info.config.nLayer} layers · ${m.info.config.nEmbd} dims · ${m.info.config.nHead} heads · context ${m.info.config.blockSize} · vocab ${m.info.vocab} · <b>${m.info.params.toLocaleString()}</b> parameters</span>`; $send.disabled = false; }
       else if (m.type === 'prefill') { $stats.textContent = `prompt ${m.promptTokens} tokens, ${m.reusedTokens} reused from the KV cache, prefill ${m.ms.toFixed(0)} ms`; }
       else if (m.type === 'token') { if (current) { current.dataset.raw = (current.dataset.raw || '') + m.text; current.textContent = current.dataset.raw.replace(/\n{3,}/g, '\n\n').replace(/^\n+/, ''); $log.scrollTop = $log.scrollHeight; } }
-      else if (m.type === 'done') { messages.push({ role: 'assistant', content: m.text }); $stats.textContent += ` · generated ${m.tokens} tokens in ${m.ms.toFixed(0)} ms (${(1000 * m.tokens / Math.max(1, m.ms)).toFixed(1)} tok/s)`; busy = false; current = null; $send.disabled = false; $stop.disabled = true; }
+      else if (m.type === 'done') { messages.push({ role: 'assistant', content: m.text }); $stats.textContent += ` · generated ${m.tokens} tokens in ${m.ms.toFixed(0)} ms (${(1000 * m.tokens / Math.max(1, m.ms)).toFixed(1)} tok/s)`; busy = false; current = null; $send.disabled = false; $regen.disabled = false; $stop.disabled = true; }
       else if (m.type === 'note') { $stats.textContent += ` · ${m.text}`; }
-      else if (m.type === 'reset-done') { messages.length = 0; $log.innerHTML = ''; $stats.textContent = ''; }
+      else if (m.type === 'reset-done') { messages.length = 0; $log.innerHTML = ''; $stats.textContent = ''; $regen.disabled = true; }
       else if (m.type === 'error') { addBubble('error', m.message); busy = false; $send.disabled = false; $stop.disabled = true; }
     };
     chatWorker.onerror = (e) => { addBubble('error', e.message || 'worker error'); busy = false; $send.disabled = false; };
     chatWorker.postMessage({ type: 'init', base: BASE });
+  }
+  const $regen = wrap.querySelector('#chat-regen');
+  let runs = 0;   // varies the sampling seed, so Regenerate gives a new reply
+  function run() {
+    current = addBubble('assistant', '');
+    busy = true; $send.disabled = true; $regen.disabled = true; $stop.disabled = false;
+    chatWorker.postMessage({ type: 'generate', messages: messages.slice(), opts: {
+      temperature: +wrap.querySelector('#chat-temp').value, topP: +wrap.querySelector('#chat-topp').value,
+      topK: +wrap.querySelector('#chat-topk').value, maxNewTokens: +wrap.querySelector('#chat-max').value, seed: messages.length + 1000 * runs++,
+    } });
   }
   function send() {
     const text = $input.value.trim();
@@ -868,13 +881,18 @@ function renderChat() {
     $input.value = '';
     messages.push({ role: 'user', content: text });
     addBubble('user', text);
-    current = addBubble('assistant', '');
-    busy = true; $send.disabled = true; $stop.disabled = false;
-    chatWorker.postMessage({ type: 'generate', messages: messages.slice(), opts: {
-      temperature: +wrap.querySelector('#chat-temp').value, topP: +wrap.querySelector('#chat-topp').value,
-      topK: +wrap.querySelector('#chat-topk').value, maxNewTokens: +wrap.querySelector('#chat-max').value, seed: messages.length,
-    } });
+    run();
   }
+  // Drop the last reply and answer the same prompt again. The prompt is already in the KV cache, so the
+  // stats show a prefill of almost nothing: the saving module 17's prefix cache is built on.
+  function regenerate() {
+    if (busy || !messages.length || messages[messages.length - 1].role !== 'assistant') return;
+    messages.pop();
+    const bubbles = $log.querySelectorAll('.chat-msg');
+    if (bubbles.length) bubbles[bubbles.length - 1].remove();
+    run();
+  }
+  $regen.addEventListener('click', regenerate);
   $send.addEventListener('click', send);
   $input.addEventListener('keydown', (e) => { if (e.key === 'Enter') send(); });
   $stop.addEventListener('click', () => { if (chatWorker) { chatWorker.terminate(); } busy = false; current = null; $stop.disabled = true; $send.disabled = true; $info.innerHTML = '<span class="muted">Restarting model…</span>'; startWorker(); });

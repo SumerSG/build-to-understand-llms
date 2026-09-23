@@ -25,6 +25,19 @@ async function loadCheckpoint(modelJson, tokJson) {
   return { config: model.config, params, vocab: lib.tokenizer.vocabSize };
 }
 
+/** Keep only the first n positions of a KV cache: every layer's [H, T, headDim] keys and values. */
+function truncateCache(c, n) {
+  for (const kv of [c.k, c.v]) {
+    for (let layer = 0; layer < kv.length; layer++) {
+      const [H, T, hd] = kv[layer].shape;
+      const data = new Float32Array(H * n * hd);
+      for (let h = 0; h < H; h++) data.set(kv[layer].data.subarray(h * T * hd, h * T * hd + n * hd), h * n * hd);
+      kv[layer] = { shape: [H, n, hd], data };
+    }
+  }
+  c.length = n;
+}
+
 /** Longest common prefix between the cached ids and the new prompt ids. */
 function sharedPrefix(a, b) {
   let i = 0;
@@ -40,12 +53,16 @@ async function generate({ messages, opts }) {
   const blockSize = model.config.blockSize;
   // Keep the prompt inside the context window (drop from the front, keeping the newest turns).
   const maxPrompt = Math.max(8, blockSize - Math.min(opts.maxNewTokens, blockSize - 8));
-  if (ids.length > maxPrompt) ids = ids.slice(ids.length - maxPrompt);
-  // Reuse the KV cache for the shared prefix; prefill only the new suffix.
+  let trimmed = false;
+  if (ids.length > maxPrompt) { ids = ids.slice(ids.length - maxPrompt); trimmed = true; }
+  // Reuse the KV cache for the shared prefix; prefill only the new suffix. The cache may hold more than
+  // the shared prefix (the reply as generated can tokenize differently from the reply as re-encoded), so
+  // keep the matching part and drop the rest. Dropping old turns shifts every position, so nothing matches.
   let reused = 0;
   if (cache && cachedIds.length) {
-    reused = sharedPrefix(cachedIds, ids);
-    if (reused === 0 || reused < cachedIds.length) { cache = null; cachedIds = []; reused = 0; }
+    reused = Math.min(sharedPrefix(cachedIds, ids), ids.length - 1);
+    if (reused <= 0) { cache = null; cachedIds = []; reused = 0; }
+    else if (reused < cachedIds.length) { truncateCache(cache, reused); cachedIds = cachedIds.slice(0, reused); }
   }
   if (!cache) cache = infer.newCache(model);
   const t0 = performance.now();
@@ -57,6 +74,7 @@ async function generate({ messages, opts }) {
   if (!logits) logits = infer.forwardStep(model, cache, ids[ids.length - 1]);
   const prefillMs = performance.now() - t0;
   self.postMessage({ type: 'prefill', promptTokens: ids.length, reusedTokens: reused, ms: prefillMs });
+  if (trimmed) self.postMessage({ type: 'note', text: `the conversation is longer than the ${blockSize}-token context window, so the oldest tokens were dropped; every position shifted, so the cache was rebuilt` });
   const out = [];
   const t1 = performance.now();
   const endId = tokenizer.encode(data.CHAT.end)[0];
