@@ -37,7 +37,7 @@ Every model from modules 04–06 ends the same way: \`V\` logits, one per vocabu
 
 Greedy decoding, \`argmax\` at every step, loops: once "The painter is quiet in the garden." is in the context, its continuation is the most likely token again and argmax cannot break out. Holtzman et al. 2019 measured this on GPT-2: likelihood-maximising text is far more repetitive and less surprising than human text.
 
-Sampling from the full distribution fixes the loops and introduces the opposite failure. A 50,000-token vocabulary has a long **tail**: thousands of tokens, each nearly impossible, that together carry real mass, often 5–10% of a step. Sample from all of it and every twentieth token is one the model would never have chosen, and it becomes context for the next. The tail is where errors live; decoding is mostly about where to cut it.
+Sampling from the full distribution fixes the loops and introduces the opposite failure. A 50,000-token vocabulary has a long **tail**: thousands of tokens, each nearly impossible, that together can carry several percent of a step's mass. Sample from all of it and, if the tail holds 5%, about one token in twenty comes from it, and it becomes context for the next. The tail is where errors live; decoding is mostly about where to cut it.
 
 ## Temperature: a sharpening operator
 
@@ -46,7 +46,7 @@ Temperature divides every logit by \`t\` before softmax: \`p_i ∝ exp(l_i / t)\
 :::predict
 The logits \`[2, 1, 0, -1]\` give probabilities \`[0.64, 0.24, 0.09, 0.03]\`. At temperature \`0.5\`, what is the probability of the first token, roughly?
 ---
-About \`0.87\`. Dividing by 0.5 doubles every gap: the logits become \`[4, 2, 0, -2]\` and \`e⁴ / (e⁴ + e² + 1 + e⁻²) ≈ 0.867\`. The tail token fell from 0.03 to 0.002 but is still there.
+About \`0.86\`. Dividing by 0.5 doubles every gap: the logits become \`[4, 2, 0, -2]\` and \`e⁴ / (e⁴ + e² + 1 + e⁻²) ≈ 0.865\`. The tail token fell from 0.03 to 0.002 but is still there.
 :::
 
 ## Cutting the tail: top-k, top-p, min-p
@@ -65,9 +65,9 @@ Flat: top-p keeps 90 (float rounding can make it 91), top-k keeps 10. Peaked: to
 
 ## Penalties, and why order matters
 
-Two families discourage repetition. The **repetition penalty** of CTRL (Keskar et al. 2019) divides a seen token's logit by \`penalty\` if positive and multiplies it if negative, so both move towards \`-Infinity\`. The OpenAI-style **frequency** and **presence** penalties are additive: subtract \`frequency × count\` and \`presence × [seen at all]\`. Typical values are 1.1–1.3 and 0.1–0.5.
+Two families discourage repetition. The **repetition penalty** comes from CTRL (Keskar et al. 2019), whose paper divides a seen token's logit by the penalty (they used 1.2). Dividing a negative logit would *raise* it, so the HF implementation, which vLLM copies, divides positive logits and multiplies negative ones: both move towards \`-Infinity\`. The OpenAI-style **frequency** and **presence** penalties are additive: subtract \`frequency × count\` and \`presence × [seen at all]\`. Typical values are 1.1–1.3 for the first and, per OpenAI's API docs, about 0.1–1 for the other two.
 
-Your pipeline runs penalties, then temperature, then top-k, top-p and min-p, as HF \`generate\` and vLLM do. The order matters because each stage changes what the next one measures: a penalty can push a token out of the top-k, and cooling the logits shrinks the set the same \`p\` covers. The tests check it.
+Your pipeline runs penalties, then temperature, then top-k, top-p and min-p, the order HF \`generate\` uses; vLLM and SGLang also run penalties, then temperature, then truncation. The order matters because each stage changes what the next one measures: a penalty can push a token out of the top-k, an additive penalty does not commute with dividing by \`t\`, cooling the logits shrinks the set the same \`p\` covers, and top-p after top-k measures mass among the k survivors only. Min-p is the exception: it compares each probability with the largest, a ratio that renormalising after a cut does not change, which is why vLLM can apply it before top-k and top-p without changing the result. The tests check the orders that matter.
 
 ## Beam search, and why chat models skip it
 
@@ -79,7 +79,7 @@ Your sampler draws one uniform per token, so the same seed gives the same text; 
 
 ## Where this toy differs from production
 
-You run one sequence at a time on a 256-token vocabulary with plain loops over a \`Float32Array\`, and top-p sorts the whole vector every step. A serving engine samples a whole batch in one fused GPU kernel, uses a partial sort for top-k, approximates top-p on a 128,000-token vocabulary where a full sort per step is too slow, and checks stop sequences incrementally in the detokenizer. The arithmetic is what you write here; only the batching and the kernels change.
+You run one sequence at a time on a 256-token vocabulary with plain loops over a \`Float32Array\`, and top-p sorts the whole vector every step. A serving engine samples a whole batch in one fused GPU kernel, uses a partial sort for top-k, avoids a full sort for top-p on a 128,000-token vocabulary (FlashInfer's sampling kernels, which vLLM and SGLang can use, draw from the top-p set by rejection sampling without sorting), and checks stop sequences incrementally in the detokenizer. The arithmetic is what you write here; only the batching and the kernels change.
 `,
   steps: [
     {
@@ -109,7 +109,7 @@ Implement \`topKFilter(logits, k)\`: keep the \`k\` largest logits with their va
 
 A dropped token must be \`-Infinity\`, not \`0\`: a logit of 0 still has probability \`exp(0) / Z\` after softmax. Ties keep the earlier index, which \`indicesByLogitDesc\` already guarantees.
 
-This is the cheapest tail cut (a sort and a threshold) and the one GPT-2's original sampling code used (\`top_k = 40\`). Its weakness, a fixed count on a distribution whose shape changes every step, is what the next step fixes; one test makes that visible.
+This is the cheapest tail cut (a sort and a threshold) and the one behind OpenAI's published GPT-2 samples (\`top_k = 40\`). Its weakness, a fixed count on a distribution whose shape changes every step, is what the next step fixes; one test makes that visible.
 `,
       hints: [
         'You need the indices of the k largest values, not the values themselves: `indicesByLogitDesc(logits)` gives you all indices in descending order.',
@@ -142,12 +142,12 @@ Three processors, each a few lines.
 
 \`minPFilter(logits, p)\`: compute probabilities, find the largest, and set to \`-Infinity\` every token whose probability is below \`p × maxProb\`. The threshold is relative to the mode, not absolute: with \`p = 0.2\` and a top probability of 0.5, the floor is 0.1. \`p <= 0\` is off. The argmax always passes its own floor, so the result is never empty.
 
-\`repetitionPenalty(logits, prevIds, penalty)\`: for every distinct id in \`prevIds\` (use a \`Set\`; ids outside the vocabulary are ignored), divide the logit by \`penalty\` if it is positive and multiply it by \`penalty\` if it is negative. Both cases push the token towards \`-Infinity\`; a plain subtraction or a plain division gets one sign wrong. \`penalty = 1\` is off. This is the rule from CTRL (Keskar et al. 2019) and the one \`repetition_penalty\` implements in HF and vLLM.
+\`repetitionPenalty(logits, prevIds, penalty)\`: for every distinct id in \`prevIds\` (use a \`Set\`; ids outside the vocabulary are ignored), divide the logit by \`penalty\` if it is positive and multiply it by \`penalty\` if it is negative. Both cases push the token towards \`-Infinity\`; a plain subtraction or a plain division gets one sign wrong. \`penalty = 1\` is off. CTRL (Keskar et al. 2019) introduced the penalty as a plain division; the sign rule is how \`repetition_penalty\` is implemented in HF and vLLM, and it is what the test checks.
 
 \`frequencyPresencePenalty(logits, prevIds, { frequency, presence })\`: count how many times each id occurs in \`prevIds\`, then subtract \`frequency × count + presence\` from each seen id's logit. Presence is paid once per distinct id, frequency once per occurrence. These are the OpenAI API's \`frequency_penalty\` and \`presence_penalty\`.
 `,
       hints: [
-        'Min-p: the floor is `p * maxProb`, computed once; then a single pass comparing `probs[i] < floor`. Repetition: iterate the Set, and the sign test is on the current logit value.',
+        'All three are elementwise edits of a copy. Min-p works in probability space (you need the softmax and its maximum); the two penalties work on logits and only touch ids that appear in prevIds.',
         'For the additive penalties, build a `Map` from id to count in one pass over prevIds, then one pass over the map: `out[id] -= frequency * n + presence`.',
         'Repetition penalty core: `const out = copyLogits(logits); for (const id of new Set(prevIds)) { if (id < 0 || id >= out.length) continue; out[id] = /* positive ? divide : multiply */; } return out;`',
       ],
@@ -163,16 +163,16 @@ Three processors, each a few lines.
 3. \`applyTemperature\` with \`opts.temperature\` (default 1)
 4. \`topKFilter\` with \`opts.topK\` (default 0), then \`topPFilter\` with \`opts.topP\` (default 1), then \`minPFilter\` with \`opts.minP\` (default 0)
 
-Every default is that processor's "off" value, so \`processLogits(logits)\` is a copy. The order is the one HF \`generate\` and vLLM use, and the first test checks two consequences: a penalty applied before top-k can change which tokens survive, and temperature applied before top-p changes how many.
+Every default is that processor's "off" value, so \`processLogits(logits)\` is a copy. The order is the one HF \`generate\` uses, and the tests check its consequences: a penalty applied before top-k can change which tokens survive, a frequency penalty applied before temperature gives a different logit than one applied after, temperature applied before top-p changes how many tokens survive, and top-p after top-k measures mass among the k survivors.
 
 \`sample(logits, opts)\`: \`softmaxLogits(processLogits(logits, opts))\`, then draw **one** uniform \`u = opts.next()\` and return the first index whose cumulative probability exceeds \`u\` (the inverse-CDF walk from module 04). If rounding leaves the cumulative sum a hair below 1, return the last token with non-zero probability. Throw if \`opts.next\` is not a function.
 
 The empirical test takes 20,000 draws and compares the histogram with \`softmax(processed)\`: a missing temperature, a missing renormalisation, or sampling from the unprocessed logits all show up as a gap of several points.
 `,
-      predict: { question: 'You apply top-p 0.9 first and temperature 0.3 second, instead of the pipeline order. Do more or fewer tokens survive than in the correct order?', answer: 'More. On `[2, 1, 0, -1]` top-p at temperature 1 keeps three tokens; cooling afterwards cannot remove any. In the correct order the cooled logits put 0.965 on the first token and top-p keeps one.' },
+      predict: { question: 'You apply top-p 0.9 first and temperature 0.3 second, instead of the pipeline order. Do more or fewer tokens survive than in the correct order?', answer: 'More. On `[2, 1, 0, -1]` top-p at temperature 1 keeps three tokens; cooling afterwards cannot remove any. In the correct order the cooled logits put 0.964 on the first token and top-p keeps one.' },
       hints: [
         'processLogits is six calls, each feeding the previous result. Destructure the options with defaults in the signature (the starter already does) so an absent option is "off".',
-        'sample: `const probs = softmaxLogits(processLogits(logits, opts)); const u = next();` then `acc += probs[i]; if (u < acc) return i;` exactly as in module 04.',
+        'sample: turn the processed logits into probabilities, draw one uniform, then walk the vocabulary accumulating probability and return the first index where the running total passes the uniform, as `sampleNext` did in module 04.',
         '`let out = repetitionPenalty(logits, prevIds, rep); out = frequencyPresencePenalty(out, prevIds, { frequency: frequencyPenalty, presence: presencePenalty }); /* temperature, then the three truncations */ return out;`',
       ],
     },
@@ -193,7 +193,7 @@ Check stop sequences on the decoded **text**, not on ids: a two-character stop c
       hints: [
         'Write the loop first without stop sequences or eos and get the "identical to the reference loop" test passing; then add the two early exits.',
         'Keep `text = tokenizer.decode(ids)` up to date each step. For the stop check, loop over `stop`, use `text.indexOf(s)`, and remember the smallest non-negative index so the earliest stop wins.',
-        '`while (ids.length < maxNewTokens) { const id = sample(logits, { ...samplingOpts, prevIds: promptIds.concat(ids), next }); if (stopAtEos && id === tokenizer.eos) { finishReason = "eos"; break; } ids.push(id); text = tokenizer.decode(ids); /* stop-sequence check: cut text, set "stop", break */ if (ids.length >= maxNewTokens || cache.length >= blockSize) break; logits = forwardStep(model, cache, id); }`',
+        '`while (ids.length < maxNewTokens) { const id = /* sample with the pass-through options, prevIds and next */; if (stopAtEos && id === tokenizer.eos) { finishReason = "eos"; break; } ids.push(id); text = tokenizer.decode(ids); /* stop-sequence check: cut text, set "stop", break */ if (ids.length >= maxNewTokens || cache.length >= blockSize) break; logits = forwardStep(model, cache, id); }`',
       ],
     },
   ],

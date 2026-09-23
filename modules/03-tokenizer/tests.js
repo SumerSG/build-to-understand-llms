@@ -19,6 +19,7 @@ export const tests = [
     T.eq(m.pretokenize('abc123'), ['abc', '123'], 'a digit run must not merge into the letters before it');
     T.eq(m.pretokenize("don't"), ['don', "'", 't'], 'an apostrophe is punctuation, so it splits the word');
     T.eq(m.pretokenize('well-lit!!'), ['well', '-', 'lit', '!!'], 'a run of punctuation is one pre-token');
+    T.eq(m.pretokenize('a -- b.'), ['a', ' --', ' b', '.'], 'punctuation takes an optional leading space too, exactly like words and numbers');
     T.eq(m.pretokenize('x  y'), ['x', '  ', 'y'], 'two spaces: the run of whitespace is one pre-token, and "y" gets no leading space');
     T.eq(m.pretokenize('a\n\nb'), ['a', '\n\n', 'b'], 'newlines are whitespace');
   } },
@@ -72,6 +73,7 @@ export const tests = [
     T.eq(tok.merges, [['l', 'o'], ['lo', 'w'], [' ', 'low'], [' low', 'e']],
       '(l,o) and (o,w) both occur 5 times; (l,o) is seen first. Then (lo,w)=5, (␣,low)=4, (␣low,e)=2; every remaining pair occurs once, so training stops');
     T.eq(tok.vocabSize, 14, '8 characters + <|unk|> + 4 merges + 1 special = 14, fewer than the 20 requested because no pair occurs twice any more');
+    T.eq(tok.vocab.slice(0, 9), [' ', 'e', 'l', 'o', 'r', 's', 't', 'w', '<|unk|>'], 'ids 0-7 are the sorted distinct characters, then <|unk|>; merged symbols come after');
     T.eq(tok.vocab[tok.vocab.length - 1], '<|endoftext|>', 'specials are appended last');
     T.eq(tok.eos, 13, 'eos is the id of specials[0]');
     T.ok(tok.vocab.includes(m.UNK), 'the vocabulary must contain the <|unk|> symbol so unseen characters have an id');
@@ -89,6 +91,12 @@ export const tests = [
     T.eq(tok.decode(tok.encode(CATS)), CATS, 'the training text must round-trip exactly');
     const ab = m.BPETokenizer.train('a b a b a b', { vocabSize: 20 });
     T.eq(ab.merges[0], [' ', 'b'], '(␣,b) occurs 3 times inside pre-tokens; (a,␣) also occurs 3 times but crosses a pre-token boundary and must not be counted');
+  } },
+  { step: 'train', name: 'each merge replaces every occurrence of the pair in a word, not just the first', run(m, T) {
+    const tok = m.BPETokenizer.train('abab abab abab', { vocabSize: 20 });
+    T.eq(tok.merges, [['a', 'b'], ['ab', 'ab'], [' ', 'abab']],
+      '(a,b) occurs twice inside every "abab": after merge 0 each word must be [ab, ab] (not [ab, a, b]), so (ab,ab)=3 is next, then (␣,abab)=2');
+    T.eq(tok.encode('abab abab'), [tok.stoi.get('abab'), tok.stoi.get(' abab')], 'the training segmentation is one token per word');
   } },
 
   // ---------- step 4: encode and decode ----------
@@ -114,8 +122,19 @@ export const tests = [
     T.eq(tok.encode('low<|endoftext|>low'), [low, tok.eos, low], 'the special must be recognised before pre-tokenisation, or it would be split into "<", "|", "endoftext", ...');
     T.eq(tok.decode([low, tok.eos, low]), 'low<|endoftext|>low');
     T.eq(tok.encode('¿'), [tok.unkId], 'a character never seen in training has no id of its own and must map to unkId (real byte-level BPE has no such case)');
+    T.eq(tok.decode([low, 9999, -1, low]), 'lowlow', 'ids outside the vocabulary are skipped, not decoded as "undefined"');
     const noSpecials = m.BPETokenizer.train(LOW, { vocabSize: 20, specials: [] });
     T.eq(noSpecials.decode(noSpecials.encode('lowest')), 'lowest', 'a tokenizer without specials must still work');
+  } },
+  { step: 'codec', name: 'encode replays merges by rank; it is not a greedy longest match against the vocabulary', run(m, T) {
+    const tok = new m.BPETokenizer({ vocab: ['a', 'b', 'c', 'bc', 'ab'], merges: [['b', 'c'], ['a', 'b']] });
+    const id = (s) => tok.stoi.get(s);
+    T.eq(tok.encode('abc'), [id('a'), id('bc')], '(b,c) has rank 0, so "abc" is a|bc. Longest-match-first would give ab|c, a segmentation training never produced');
+    T.eq(tok.encode('abcab'), [id('a'), id('bc'), id('ab')], 'after (b,c) fires there is no (a,b) left in "a bc"; the trailing "ab" still merges');
+    const big = m.BPETokenizer.train(PARA, { vocabSize: 120 });
+    const expected = [];
+    for (const pre of m.pretokenize(PARA)) for (const s of m.applyMerges([...pre], big.ranks)) expected.push(big.stoi.get(s));
+    T.eq(big.encode(PARA), expected, 'encode must be exactly: pretokenize, split into characters, applyMerges by rank, look up ids');
   } },
   { step: 'codec', name: 'merges are applied inside pre-tokens only', run(m, T) {
     const tok = new m.BPETokenizer({ vocab: ['!', 'a', 'c', 's', 't', 's!'], merges: [['s', '!']] });

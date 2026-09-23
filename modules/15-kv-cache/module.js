@@ -13,7 +13,7 @@ export default {
       why: 'You will write the same closed-form count here (`paramCount`) and check it against `GPT.numParams()`; the tied head is the classic place to double-count.' },
     { q: 'From modules 06 and 08: processing one token through a model with N parameters costs approximately how many FLOPs in the forward pass?', options: ['N', '2N', '6N'], answer: 1,
       why: 'One multiply and one add per weight. 6N is the training figure (forward plus a backward that is twice as expensive). Serving pays 2N per token, for every token, forever.' },
-    { q: 'In module 14, `generate` called `prefill(model, cache, promptIds)` from lib/infer.js once. What did it return?', options: ['The logits after the LAST prompt token', 'Logits for every prompt position', 'The prompt embedded as vectors'], answer: 0,
+    { q: 'In module 14, `generate` called `prefill(model, cache, promptIds)` from lib/infer.js. What did it return?', options: ['The logits after the LAST prompt token', 'Logits for every prompt position', 'The prompt embedded as vectors'], answer: 0,
       why: 'One Float32Array of vocabSize logits: the distribution for the first generated token. This module is where you build that function yourself.' },
     { q: 'In module 01, `reshape` did not touch the data. What about `concat` in lib/ops.js?', options: ['Also free: it only changes the shape', 'It allocates a new Float32Array and copies both inputs into it', 'It mutates the first argument in place'], answer: 1,
       why: 'Your cache grows by concat, so every decode step copies the whole cache. That is fine here and is exactly what production engines avoid with preallocated, paged buffers (module 16).' },
@@ -24,11 +24,11 @@ export default {
     { q: 'Your cost model gives cached = `2N + 4·L·T·C` FLOPs per token at context T. The uncached cost is…', options: ['The same', 'T times the cached cost', '2 times the cached cost'], answer: 1,
       why: 'Without a cache the whole T-token context goes through the model again to produce one token. Over a generation of n tokens that sums to about n²/2 token-forwards instead of n.' },
     { q: 'A Llama-3-8B-shaped model (32 layers, 8 KV heads, head dim 128, bf16) stores approximately how much KV cache per token?', options: ['8 KB', '128 KB', '2 MB'], answer: 1,
-      why: '2 · 32 · 8 · 128 · 2 bytes = 131,072 bytes. At 128k tokens of context that is 16 GiB for one sequence, the same as the model\'s weights.' },
+      why: '2 · 32 · 8 · 128 · 2 bytes = 131,072 bytes. At 128k tokens of context that is 16 GiB for one sequence, about the size of the model\'s own bf16 weights (8B parameters · 2 bytes ≈ 16 GB).' },
     { q: 'Why is the decode phase memory-bandwidth-bound at batch size 1?', options: ['Because softmax is slow', 'Because every weight is read from HBM once to do only one token\'s worth of arithmetic on it', 'Because the cache is on the CPU'], answer: 1,
-      why: 'Approximately 16 GB of weights at approximately 3.35 TB/s (NVIDIA H100 datasheet) is about 5 ms, while 2N = 16 GFLOP takes tens of microseconds. Batching (module 16) exists to amortise that read.' },
+      why: 'Approximately 16 GB of weights at approximately 3.35 TB/s (NVIDIA H100 SXM datasheet) is about 5 ms, while 2N = 16 GFLOP takes tens of microseconds. Batching (module 16) exists to amortise that read.' },
     { q: 'Grouped-query attention (Llama 3, Mistral) shrinks the KV cache by…', options: ['Storing keys in int8', 'Sharing one key/value head among a group of query heads, so only nKVHead heads are stored', 'Dropping the value tensor'], answer: 1,
-      why: 'Llama-3-8B has 32 query heads but 8 KV heads: a 4× smaller cache with almost no quality loss (Ainslie et al. 2023). Multi-query attention (Shazeer 2019) is the limit with one KV head.' },
+      why: 'Llama-3-8B has 32 query heads but 8 KV heads: a 4× smaller cache. Ainslie et al. (2023), who introduced GQA, report quality close to full multi-head attention at speed close to MQA. Multi-query attention (Shazeer 2019) is the limit with one KV head.' },
   ],
   concept: `
 ## What the uncached model wastes
@@ -49,7 +49,7 @@ The weight matmuls do not depend on \`T\`: one token goes through them whatever 
 
 **Prefill** pushes the whole prompt through the model. All \`T\` prompt positions are independent given the causal mask, so a real engine does it in one batched pass: \`[T, C]\` activations against every weight matrix, lots of arithmetic per byte of weight read. Prefill is **compute-bound**, and its attention term is quadratic in the prompt length.
 
-**Decode** produces one token per step. Every weight matrix is read once from GPU memory to do a single row's worth of arithmetic on it. For a Llama-3-8B-shaped model in bf16 that is approximately 16 GB of weights per token; NVIDIA's H100 datasheet lists approximately 3.35 TB/s of HBM3 bandwidth, so the read alone takes about 5 ms, while the \`2N ≈ 16 GFLOP\` of arithmetic would take tens of microseconds at the datasheet's roughly 990 TFLOP/s of dense bf16. Decode at batch size 1 is **memory-bandwidth-bound** by a factor of a few hundred. Module 16 amortises the weight read across a batch; module 23's roofline model says which regime you are in.
+**Decode** produces one token per step. Every weight matrix is read once from GPU memory to do a single row's worth of arithmetic on it. For a Llama-3-8B-shaped model in bf16 that is approximately 16 GB of weights per token; NVIDIA's H100 datasheet lists approximately 3.35 TB/s of HBM3 bandwidth for the SXM part, so the read alone takes about 5 ms, while the \`2N ≈ 16 GFLOP\` of arithmetic would take tens of microseconds at the datasheet's roughly 990 TFLOP/s of dense bf16. Decode at batch size 1 is **memory-bandwidth-bound** by a factor of a few hundred. Module 16 amortises the weight read across a batch; module 23's roofline model says which regime you are in.
 
 ## The arithmetic of the cache
 
@@ -57,9 +57,9 @@ For one sequence of \`T\` tokens:
 
 \`bytes = 2 · nLayer · nKVHead · headDim · T · bytesPerElement\`
 
-The leading 2 is keys plus values. For Llama-3-8B (32 layers, 8 key/value heads, head dim 128, bf16): \`2 · 32 · 8 · 128 · 2 = 131,072\` bytes, 128 KiB per token. At its 128k-token context that is 16 GiB for a single sequence, as much as the weights. A serving GPU holds many sequences, so the cache, not the weights, limits batch size.
+The leading 2 is keys plus values. For Llama-3-8B (32 layers, 8 key/value heads, head dim 128, bf16): \`2 · 32 · 8 · 128 · 2 = 131,072\` bytes, 128 KiB per token. At its 128k-token context that is 16 GiB for a single sequence, about as much as the model's own bf16 weights (≈16 GB). A serving GPU holds many sequences, so the cache, not the weights, limits batch size.
 
-Why 8 heads when the model has 32? **Grouped-query attention** (GQA, Ainslie et al. 2023) shares one key/value head among a group of query heads; Llama 3 uses groups of 4, so the cache is 4× smaller. **Multi-query attention** (MQA, Shazeer 2019) is the limit with one shared head. DeepSeek-V2 and V3 cache a compressed latent vector per token instead (multi-head latent attention). Each is a cache-size decision first.
+Why 8 heads when the model has 32? **Grouped-query attention** (GQA, Ainslie et al. 2023) shares one key/value head among a group of query heads; Llama-3-8B has 32 query heads sharing 8 key/value heads (groups of 4), so its cache is 4× smaller; Llama-3-70B shares 8 among 64 (groups of 8). **Multi-query attention** (MQA, Shazeer 2019) is the limit with one shared head. DeepSeek-V2 and V3 cache a compressed latent vector per token instead (multi-head latent attention). Each is a cache-size decision first.
 
 :::predict
 Llama-3-70B has 80 layers, 8 key/value heads and head dim 128, served in bf16. How many bytes of cache per token, and how much at 128k context?
@@ -69,7 +69,7 @@ Llama-3-70B has 80 layers, 8 key/value heads and head dim 128, served in bf16. H
 
 ## What context length costs
 
-Memory grows **linearly** with \`T\` per sequence. Prefill compute grows **quadratically**, because each of \`T\` queries attends to up to \`T\` keys. Decode compute per token grows linearly in \`T\` but is dominated by the fixed \`2N\` until the context is very long; that is most of why input tokens are priced below output tokens.
+Memory grows **linearly** with \`T\` per sequence. Prefill compute grows **quadratically**, because each of \`T\` queries attends to up to \`T\` keys. Decode compute per token grows linearly in \`T\` but is dominated by the fixed \`2N\` until the context is long: for Llama-3-8B the attention term \`4·L·T·C = 4 · 32 · T · 4096\` only catches up with \`2N ≈ 16 GFLOP\` at around 30k tokens. Note also which phase is cheap per token: prefill tokens share one read of the weights, while every decode token pays for its own. That difference in hardware efficiency, not a difference in FLOPs, is a large part of why APIs price input tokens below output tokens.
 
 Two consequences are whole modules. Reserving the worst-case cache per request up front wastes most of a GPU's memory; **paged attention** (module 16) allocates it in fixed blocks. The cache of a shared prompt prefix is identical across requests; **prefix caching** (module 17) reuses it.
 
@@ -132,12 +132,12 @@ Mirror \`forward\`, but for a single position \`position = cache.length\`:
 3. For each layer: \`ln1\`; \`projectQKV(w, prefix, normed, 1, nHead, headDim)\` for this position's \`q, k, v\` (\`[H, 1, dh]\` each); \`appendKV\`; \`attendOne\` over the returned blocks; \`mergeHeads(…, 1, nEmbd)\`; the \`attn.proj\` residual; \`ln2\` and the MLP residual, exactly as in \`forward\`.
 4. \`cache.length = position + 1\`; return \`head(w, x).data\`.
 
-The test feeds a sequence one token at a time and checks that every step's logits equal the corresponding row of \`forward\` within \`1e-4\`. The order of the residual adds and LayerNorms matters; copy it from the reference rather than from memory.
+The tests feed a sequence one token at a time and check that every step's logits equal the corresponding row of \`forward\` within \`1e-4\`. They also check that each step embeds only its own token, that \`cache.k[0]\` and \`cache.v[0]\` hold the real layer-0 keys and values, and that zeroing the stored values changes the next step's logits: a \`forwardStep\` that quietly calls \`forward\` over every token so far gets the right numbers without caching anything, and fails these. The order of the residual adds and LayerNorms matters; copy it from the reference rather than from memory.
 `,
       predict: { question: 'You feed token id 3 twice in a row into a fresh cache. Are the two logit vectors the same?', answer: 'No. The second copy is embedded at position 1 (a different position embedding) and attends over two stored keys instead of one. Identical logits would mean the position or the cache is being ignored.' },
       hints: [
         'Start by copying the body of forward and deleting what a single position does not need: the mask, causalMask, and the time argument becomes 1. The scores/softmax/values lines become one call to attendOne.',
-        'Per layer: `normed = layerNorm(x, ln1)`; `{ q, k, v } = projectQKV(w, prefix, normed, 1, nHead, headDim)`; `stored = appendKV(cache, layer, k, v)`; `attended = mergeHeads(attendOne(q, stored.k, stored.v), 1, nEmbd)`; `x = add(x, linear(attended, proj.weight, proj.bias))`; then ln2 and mlpForward with a second residual add.',
+        'In each layer the order is: normalise x with ln1, project that one row to q, k and v, append k and v to this layer\'s cache FIRST (so the token can attend to itself), attend the one query over everything now stored, merge the heads back to one row, project and add to x; then normalise with ln2, run the MLP and add again. Only after the last layer does the cache count go up.',
         '`let x = embedTokens(w, [id], position); for (…layers…) { const normed = ops.layerNorm(x, w[`${prefix}.ln1.gamma`], w[`${prefix}.ln1.beta`]); const { q, k, v } = projectQKV(w, prefix, normed, 1, nHead, headDim); ‹append, attend, merge, proj residual›; const normed2 = …; x = ops.add(x, mlpForward(w, prefix, normed2)); } cache.length = position + 1; return head(w, x).data;`',
       ],
     },
@@ -152,12 +152,12 @@ The test feeds a sequence one token at a time and checks that every step's logit
 - **cached**: \`prefill\` once, then loop: argmax, push, \`forwardStep\` on the pushed id. Do not run a \`forwardStep\` after the final token: its logits would never be used, and at the cache limit it would throw for nothing.
 - **uncached**: loop: \`forward\` over \`promptIds\` plus everything generated so far, take the last row (\`ops.slice(all, 0, T − 1, T).data\`), argmax, push.
 
-Do not mutate \`promptIds\`. The test compares both paths against an independent greedy loop written with lib/infer.js, so it catches the case where your two paths agree with each other but not with the reference.
+Do not mutate \`promptIds\`. The tests compare both paths against an independent greedy loop written with lib/infer.js, so they catch the case where your two paths agree with each other but not with the reference. They also count how many token positions each path pushes through the model: the cached path must embed each position once (prompt length + maxNewTokens − 1 in total), and the uncached path must recompute the whole sequence every step.
 `,
       hints: [
         'The uncached path is what module 14 would have done without lib/infer.js: recompute, read the last row, repeat. The cached path is the same loop with forwardStep replacing forward.',
-        'Cached: `let logits = prefill(model, cache, promptIds); for (i < n) { const id = argmaxOf(logits); out.push(id); if (i === n − 1) break; logits = forwardStep(model, cache, id); }`.',
-        'Uncached: `const ids = promptIds.slice(); for (i < n) { const all = forward(model, ids); const last = ops.slice(all, 0, ‹start›, ‹end›).data; const id = argmaxOf(last); out.push(id); ids.push(id); }`',
+        'Cached: one fresh cache, prefill the prompt into it, and keep the returned logits. Each iteration picks the argmax of the current logits, records it, and, unless it was the last token asked for, feeds that id to forwardStep to get the next logits. Uncached: keep a copy of the prompt, append each chosen id to it, and run forward over the whole copy every iteration.',
+        'Cached: `const cache = newCache(model); let logits = prefill(model, cache, promptIds); for (…) { const id = argmaxOf(logits); out.push(id); if (‹last one›) break; logits = ‹one step›; }`. Uncached: `const ids = promptIds.slice(); … const last = ops.slice(forward(model, ids), 0, ‹start›, ‹end›).data; …`',
       ],
     },
     {
@@ -168,14 +168,14 @@ Three functions of a config, no model needed.
 
 \`paramCount(config)\`: \`V·C + T·C\` for the token and position embeddings, \`L · (12C² + 13C)\` for the blocks (qkv \`3C²\`, proj \`C²\`, MLP \`8C²\`; \`9C\` of biases; \`4C\` of LayerNorm gains and shifts), plus \`2C\` for the final LayerNorm. The head is tied to \`wte\`. Must equal \`new GPT(config).numParams()\`.
 
-\`flopsPerToken(config, contextLen, { cached = true })\`: cached is \`2 · paramCount + 4 · L · T · C\` (two FLOPs per parameter, plus the query-key scores and the weighted values, \`2·L·T·C\` each). Uncached is that times \`T\`, because the whole context is recomputed. This is the rule of thumb behind the \`2N\` in Kaplan et al. (2020); it counts matmuls only.
+\`flopsPerToken(config, contextLen, { cached = true })\`: cached is \`2 · paramCount + 4 · L · T · C\` (two FLOPs per parameter, plus the query-key scores and the weighted values, \`2·L·T·C\` each). Uncached is that times \`T\`, because the whole context is recomputed; this counts the full \`T × T\` score matrix that \`forward\` computes before masking, so a kernel that skips the masked half would do about half the attention FLOPs (the \`2N\` part does not change). The \`2N\` is the forward-pass rule of thumb from Kaplan et al. (2020), whose own context term counts only the query-key scores (\`2·L·T·C\`); here the weighted sum of values is counted too. Both count matmuls only.
 
 \`cacheBytes(config, contextLen, { bytesPerElement = 4 })\`: \`2 · nLayer · nKVHead · headDim · T · bytesPerElement\`, where \`nKVHead = config.nKVHead ?? nHead\` and \`headDim = config.headDim ?? nEmbd / nHead\`, so the same function sizes this model (float32, no GQA) and Llama-3-8B (bf16, 8 KV heads out of 32).
 `,
       hints: [
         'Write paramCount as three named terms and add them; the test message spells the formula out. flopsPerToken and cacheBytes are each one expression once you have the symbols.',
-        'flops: `perToken = 2 * paramCount(config) + 4 * nLayer * contextLen * nEmbd`; return `cached ? perToken : perToken * contextLen`. bytes: read nKVHead with `??` so a plain config still works.',
-        '`const perBlock = 12 * nEmbd * nEmbd + 13 * nEmbd; return ‹embeddings› + nLayer * perBlock + 2 * nEmbd;` and `return 2 * nLayer * nKVHead * headDim * contextLen * bytesPerElement;`',
+        'flopsPerToken: the cached cost is two FLOPs for every parameter plus the attention term, which is the only part that depends on the context length; the uncached cost repeats that work once for every token in the context. cacheBytes: count the stored numbers (K and V, per layer, per KV head, per channel, per token) and multiply by the element size; fall back to nHead when the config has no nKVHead, so a plain config still works.',
+        '`const perBlock = 12 * nEmbd * nEmbd + 13 * nEmbd; return ‹embeddings› + nLayer * perBlock + 2 * nEmbd;` then `const perToken = 2 * paramCount(config) + ‹attention term›; return cached ? ‹…› : ‹…›;` and `const nKVHead = config.nKVHead ?? nHead;`',
       ],
     },
   ],

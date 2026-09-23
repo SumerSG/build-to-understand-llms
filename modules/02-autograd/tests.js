@@ -183,6 +183,10 @@ export const tests = [
     const wrong = m.crossEntropy(m.Tensor.from([[1000, 0, 0]], { requiresGrad: true }), [1]);
     T.close(wrong.item(), 1000, 1e-3, 'a confident wrong answer costs about 1000 nats and must stay finite (log(0) would be −Infinity)');
     T.throws(() => m.crossEntropy(logits, [0, 1, 2]), '3 targets for 2 rows of logits must throw');
+    const huge = m.Tensor.from([[1000, 0, 0], [0, 1000, 1000]], { requiresGrad: true });
+    m.crossEntropy(huge, [1, 2]).backward();
+    T.ok(huge.grad !== null && Array.from(huge.grad).every(Number.isFinite), 'the gradient for logits of 1000 must be finite: take softmax from exp(logProbs), which is already stable, not from exp(logits)');
+    T.close(huge.grad, [0.5, -0.5, 0, 0, 0.25, -0.25], 1e-5, '(softmax − onehot) / N with N = 2: row 0 puts all its probability on class 0, row 1 splits it evenly between classes 1 and 2');
   } },
   { step: 'nonlinear', name: 'crossEntropy gradient is (softmax − onehot) / N', run(m, T) {
     const logits = randomTensor(m, [4, 5], 9, { requiresGrad: true });
@@ -194,7 +198,7 @@ export const tests = [
     const expect = new Float32Array(20);
     for (let i = 0; i < 4; i++) for (let j = 0; j < 5; j++) expect[i * 5 + j] = (p.data[i * 5 + j] - (j === targets[i] ? 1 : 0)) / 4;
     T.eq(logits.grad.length, 20, 'logits.grad is a flat Float32Array with one entry per logit');
-    T.close(logits.grad, expect, 1e-5, 'dL/dlogits = (softmax − onehot) / N with N = 4 rows; without the 1/N the gradient is 4× too large and training with a tuned lr diverges');
+    T.close(logits.grad, expect, 1e-5, 'dL/dlogits = (softmax − onehot) / N with N = 4 rows; without the 1/N the gradient is 4× too large, so every learning rate acts 4× bigger');
     for (let i = 0; i < 4; i++) {
       let rowSum = 0;
       for (let j = 0; j < 5; j++) rowSum += logits.grad[i * 5 + j];
@@ -243,6 +247,17 @@ export const tests = [
     T.eq(res.details.length, 3);
     T.close(res.details[0].analytic, 2, 1e-6);
     T.close(res.details[0].numeric, 1, 1e-2);
+    // A closure that produces NaN must fail the check: NaN > maxRelErr is false, so a plain max would hide it.
+    const nanSum = (t) => {
+      const out = buggySum(t);
+      out._backward = () => {
+        if (t.grad === null) t.grad = new Float32Array(t.data.length);
+        for (let i = 0; i < t.grad.length; i++) t.grad[i] += i === 1 ? NaN : out.grad[0];   // right everywhere except one element
+      };
+      return out;
+    };
+    const bad = m.gradCheck(nanSum, [m.Tensor.from([1, 2, 3], { requiresGrad: true })]);
+    T.ok(bad.ok === false, `a NaN gradient must fail the check (got ok=${bad.ok}, maxRelErr=${bad.maxRelErr}): NaN > max is false, so a plain running max skips it, and a later element must not overwrite it either`);
   } },
   { step: 'gradcheck', name: 'uses central differences and honours eps and tol', run(m, T) {
     const x = m.Tensor.from([2], { requiresGrad: true });
@@ -257,6 +272,18 @@ export const tests = [
     T.throws(() => m.gradCheck(cube, [m.Tensor.from([2])]), 'an input without requiresGrad has no analytic gradient to compare: throw');
     const v = m.Tensor.from([1, 2], { requiresGrad: true });
     T.throws(() => m.gradCheck((t) => t.mul(t), [v]), 'fn must return a scalar: throw when it returns a size-2 vector');
+  } },
+  { step: 'gradcheck', name: 'starts from a clean gradient and divides by the perturbation that actually landed in float32', run(m, T) {
+    const x = m.Tensor.from([0.5, -1.5, 2], { requiresGrad: true });
+    x.grad = new Float32Array([100, 100, 100]);    // stale gradient left over from, say, a training step
+    const res = m.gradCheck((t) => t.mul(t).sum(), [x]);
+    T.ok(res.ok, `a stale x.grad must not leak into the analytic gradient: zeroGrad every input before the backward pass (maxRelErr=${res.maxRelErr})`);
+    T.close(res.details.map((d) => d.analytic), [1, -3, 4], 1e-5, 'analytic d(Σx²)/dx = 2x, from a fresh backward pass');
+    // Near 1000 float32 values are 6.1e-5 apart, so 1000.3 ± 1e-3 lands on ± 0.000977, not ± 0.001.
+    const big = m.Tensor.from([1000.3], { requiresGrad: true });
+    const r = m.gradCheck((t) => t.sum(), [big]);
+    T.close(r.details[0].numeric, 1, 1e-4, `d(sum)/dx is exactly 1, but got numeric ${r.details[0].numeric}: dividing by 2·eps instead of (hi − lo), the perturbation that actually landed, gives 0.977`);
+    T.ok(r.ok, 'a correct gradient at a large value must pass');
   } },
 
   // ---------- step 6: SGD and linear regression ----------
@@ -290,6 +317,6 @@ export const tests = [
     const r = m.trainLinear(xs, ys, { steps: 100, lr: 0.05 });
     T.ok(Math.abs(r.w - 3) < 0.15 && Math.abs(r.b - 2) < 0.15, `expected w ≈ 3, b ≈ 2, got w=${r.w.toFixed(3)} b=${r.b.toFixed(3)}`);
     T.ok(r.losses[99] < r.losses[0] / 10, `loss went ${r.losses[0].toFixed(3)} → ${r.losses[99].toFixed(4)}; gradient descent should cut it by more than 10×`);
-    T.ok(r.losses.every(Number.isFinite), 'no NaN or Infinity: if gradients accumulate across steps the effective learning rate grows and training diverges');
+    T.ok(r.losses.every(Number.isFinite), 'no NaN or Infinity: check the sign of the update and the learning rate');
   } },
 ];

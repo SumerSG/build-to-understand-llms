@@ -329,7 +329,8 @@ export function gradCheck(fn, inputs, { eps = 1e-3, tol = 1e-2 } = {}) {
       const a = analytic[k][index];
       const relErr = Math.abs(a - numeric) / Math.max(1, Math.abs(a), Math.abs(numeric));
       details.push({ input: k, index, analytic: a, numeric, relErr });
-      if (!(relErr <= maxRelErr)) maxRelErr = relErr; // also catches NaN
+      // NaN compares false with everything: let it in, and once in, nothing larger can replace it.
+      if (Number.isNaN(relErr) || relErr > maxRelErr) maxRelErr = relErr;
     }
   });
   return { ok: maxRelErr <= tol, maxRelErr, details };

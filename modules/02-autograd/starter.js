@@ -279,6 +279,7 @@ export function crossEntropy(logits, targets) {
  *   relErr  = |analytic − numeric| / max(1, |analytic|, |numeric|)
  * Returns { ok: maxRelErr <= tol, maxRelErr, details: [{ input, index, analytic, numeric, relErr }] }.
  * Throw if an input lacks requiresGrad or fn does not return a size-1 Tensor. Restore every value you perturb.
+ * Clear each input's old gradient first, and make a NaN relErr fail the check (NaN > x is always false).
  */
 export function gradCheck(fn, inputs, { eps = 1e-3, tol = 1e-2 } = {}) {
   // TODO: step 5

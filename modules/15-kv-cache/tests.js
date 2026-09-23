@@ -49,6 +49,35 @@ function attendOneReference(q, k, v, scaled = true) {
   return out;
 }
 
+/**
+ * A copy of `model` whose position table counts how many rows are looked up. ops.embed reads one row per
+ * embedded position with table.data.subarray, so the counter is the number of token-positions pushed
+ * through the model: 1 per forwardStep, T per uncached forward over T tokens. This is how the tests tell
+ * a real cache from a full recompute that happens to give the same numbers.
+ */
+function countingModel(model) {
+  const counter = { rows: 0 };
+  class CountingF32 extends Float32Array {
+    subarray(...a) { counter.rows++; return super.subarray(...a); }
+  }
+  const wpe = model.w['wpe.weight'];
+  const data = new CountingF32(wpe.data.length);
+  data.set(wpe.data);
+  return { model: { ...model, w: { ...model.w, 'wpe.weight': { shape: wpe.shape.slice(), data } } }, counter };
+}
+
+/** Layer-0 keys and values for `ids`, [H, T, dh] each, computed directly from the weights (no cache). */
+function layer0KV(model, ids) {
+  const { nHead, nEmbd } = model.config;
+  const w = model.w;
+  const dh = nEmbd / nHead, T = ids.length;
+  const x = ops.add(ops.embed(w['wte.weight'], ids), ops.embed(w['wpe.weight'], ids.map((_, i) => i)));
+  const normed = ops.layerNorm(x, w['blocks.0.ln1.gamma'], w['blocks.0.ln1.beta']);
+  const qkv = ops.add(ops.matmul(normed, w['blocks.0.attn.qkv.weight']), w['blocks.0.attn.qkv.bias']);
+  const heads = (from) => ops.permute(ops.reshape(ops.slice(qkv, 1, from, from + nEmbd), [T, nHead, dh]), [1, 0, 2]);
+  return { k: heads(nEmbd), v: heads(2 * nEmbd) };
+}
+
 const lastRow = (logits2d, ids) => Array.from(ops.slice(logits2d, 0, ids.length - 1, ids.length).data);
 const argmax = (a) => { let b = 0; for (let i = 1; i < a.length; i++) if (a[i] > a[b]) b = i; return b; };
 
@@ -134,6 +163,29 @@ export const tests = [
     }
     for (let l = 0; l < TINY.nLayer; l++) T.shape(cache.k[l], [2, ids.length, 4], `layer ${l} must hold one key per token seen`);
   } },
+  { step: 'step', name: 'forwardStep does one position of work, stores the real keys and values, and reads them back', run(m, T) {
+    const base = testModel(TINY, 6, 8);
+    const { model, counter } = countingModel(base);
+    const ids = [3, 8, 1, 14, 6];
+    const cache = m.newCache(model);
+    for (let t = 0; t < ids.length; t++) {
+      const before = counter.rows;
+      m.forwardStep(model, cache, ids[t]);
+      T.ok(counter.rows - before <= 1, `forwardStep for token ${t} embedded ${counter.rows - before} positions: a decode step embeds ONE token at position cache.length, it must not re-run the whole sequence through forward()`);
+    }
+    const ref = layer0KV(base, ids);
+    T.close(cache.k[0], ref.k, 1e-5, 'cache.k[0] must hold the layer-0 keys of every token so far, [H, T, dh] in arrival order (not placeholders)');
+    T.close(cache.v[0], ref.v, 1e-5, 'cache.v[0] must hold the layer-0 values of every token so far');
+
+    // Poison the stored values of a second, identical cache: a step that really reads the cache must change.
+    const clean = m.newCache(model), poisoned = m.newCache(model);
+    for (const id of ids) { m.forwardStep(model, clean, id); m.forwardStep(model, poisoned, id); }
+    for (let l = 0; l < TINY.nLayer; l++) poisoned.v[l] = ops.zeros(poisoned.v[l].shape);
+    const a = m.forwardStep(model, clean, 2), b = m.forwardStep(model, poisoned, 2);
+    let diff = 0;
+    for (let i = 0; i < a.length; i++) diff = Math.max(diff, Math.abs(a[i] - b[i]));
+    T.ok(diff > 1e-3, 'zeroing the stored values in cache.v did not change the next logits: forwardStep must attend over the k/v stored in the cache (what appendKV returns), not recompute them from the token ids');
+  } },
   { step: 'step', name: 'position and history matter: the same token at a new position gives new logits, and a full cache throws', run(m, T) {
     const model = testModel({ ...TINY, blockSize: 4 }, 4, 8);
     const cache = m.newCache(model);
@@ -174,6 +226,20 @@ export const tests = [
     T.eq(uncached, ref, 'uncached path: take the argmax of the LAST row of forward over prompt + everything generated so far');
     T.eq(cached, ref, 'cached path: prefill the prompt once, then one forwardStep per generated token, feeding back the argmax; it must match token for token');
     T.eq(prompt, [2, 9], 'the prompt array must not be mutated');
+  } },
+  { step: 'prefill', name: 'generateGreedy: the cached path pushes each position through the model once; the uncached path recomputes', run(m, T) {
+    const { model, counter } = countingModel(testModel(TINY, 2, 12));
+    const prompt = [2, 9, 4];
+    const n = 6;
+    counter.rows = 0;
+    m.generateGreedy(model, prompt, n, { cached: true });
+    const cachedRows = counter.rows;
+    T.ok(cachedRows <= prompt.length + n - 1, `the cached path embedded ${cachedRows} positions; prefill embeds the ${prompt.length} prompt tokens once and each forwardStep embeds one new token, so at most ${prompt.length} + ${n} − 1 = ${prompt.length + n - 1}. More means it re-runs forward() over the sequence instead of using the cache`);
+    counter.rows = 0;
+    m.generateGreedy(model, prompt, n, { cached: false });
+    let expected = 0;
+    for (let i = 0; i < n; i++) expected += prompt.length + i;
+    T.eq(counter.rows, expected, `the uncached path must call forward over prompt + generated-so-far once per new token: ${prompt.length} + ${prompt.length + 1} + … = ${expected} positions embedded in total`);
   } },
   { step: 'prefill', name: 'the cached path stops at the cache limit and never runs more than one decode step per token', run(m, T) {
     const model = testModel({ ...TINY, blockSize: 6 }, 10, 12);

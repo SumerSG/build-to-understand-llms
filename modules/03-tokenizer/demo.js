@@ -78,7 +78,9 @@ export default async function demo(m, lab) {
   const digits = '1234567';
   const digitTokens = tok.encode(digits).map((id) => tok.vocab[id]);
   const eosIds = tok.encode(`${sentence}<|endoftext|>`);
-  lab.md(`The number \`${digits}\` becomes ${digitTokens.length} token(s): \`${digitTokens.join('|')}\`. Digits are rare in the corpus, so almost no digit pairs were merged, and the model downstream will see each digit separately. `
+  const digitSymbols = tok.vocab.filter((v) => /\d/.test(v) && v.length > 1);
+  const digitCount = (CORPUS.match(/\d/g) ?? []).length;
+  lab.md(`The number \`${digits}\` becomes ${digitTokens.length} token(s): \`${digitTokens.join('|')}\`. The corpus has only ${digitCount} digit characters, so only ${digitSymbols.length} multi-character symbol(s) contain a digit (${digitSymbols.map((v) => '`' + show(v) + '`').join(', ') || 'none'}); a model on top of this tokenizer sees most numbers digit by digit. `
     + `Appending \`<|endoftext|>\` adds exactly ${eosIds.length - ids.length} id (${tok.eos}), matched before pre-tokenisation.`);
 
   const c128 = curve[1], c256 = curve[3], c512 = curve[5];

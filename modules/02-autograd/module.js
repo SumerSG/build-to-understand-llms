@@ -3,7 +3,7 @@ export default {
   title: 'Autograd from scratch',
   track: 'foundations',
   minutes: 120,
-  threshold: 'A computation graph records how each value was made; running the chain rule backwards over that record gives every gradient for about the cost of one extra forward pass.',
+  threshold: 'A computation graph records how each value was made; running the chain rule backwards over that record gives every gradient in one backward pass that costs a small constant multiple of the forward pass (about 2×), however many parameters there are.',
   goal: 'A reverse-mode automatic differentiation engine (a Tensor class whose ops record a graph and whose backward() fills every parameter\'s .grad) that passes numerical gradient checks and trains a linear model by gradient descent, recovering w ≈ 3 and b ≈ 2 from noisy data.',
   prereqs: ['01-tensors'],
   recall: [
@@ -20,26 +20,26 @@ export default {
   ],
   review: [
     { q: 'Reverse-mode autodiff computes the gradient of one scalar loss with respect to N parameters in about…', options: ['N extra forward passes', 'One extra pass over the recorded graph, whatever N is', 'log N passes'], answer: 1,
-      why: 'Each node\'s _backward runs once and does roughly the work of its forward op, so the whole gradient costs about one forward pass regardless of the parameter count. Forward mode or finite differences would cost one pass per parameter.' },
+      why: 'Each node\'s _backward runs once and does a small constant multiple of its forward op\'s work (a matmul\'s backward is two matmuls of the same size), so the backward pass costs about 2× the forward regardless of the parameter count. Forward mode or finite differences would cost one pass per parameter.' },
     { q: 'A tensor `x` is used twice in a graph. After `backward()`, `x.grad` holds…', options: ['The gradient from the last use only', 'The sum of the gradients from both uses', 'The larger of the two'], answer: 1,
       why: 'The chain rule sums over every path from the loss to x, which is why every backward closure accumulates with `+=` instead of assigning.' },
     { q: 'A bias of shape [3] was broadcast over a [64, 3] output. Its gradient is…', options: ['The [64, 3] output gradient', 'The output gradient summed over the 64 rows, shape [3]', 'The first row of the output gradient'], answer: 1,
       why: 'Broadcasting copies forward, so the backward pass sums the copies back: every row that used bias[j] contributes to bias.grad[j]. This is exactly what `unbroadcast` does.' },
     { q: 'The gradient of the mean cross-entropy over N rows with respect to the logits is…', options: ['`softmax − onehot`', '`(softmax − onehot) / N`', '`onehot − softmax`'], answer: 1,
-      why: 'Each row contributes softmax − onehot, and the mean divides by N. Without the 1/N the gradient is N times too large, and every learning rate tuned for the mean loss diverges.' },
+      why: 'Each row contributes softmax − onehot, and the mean divides by N. Without the 1/N the gradient is N times too large, so a learning rate tuned for the mean loss acts N times bigger, and changing the batch size silently changes the step size.' },
     { q: 'Why does the gradient check use eps ≈ 1e-3 and tol ≈ 1e-2 rather than eps 1e-8 and tol 1e-6?', options: ['To make the check faster', 'Data is float32, so smaller perturbations vanish in rounding and the difference quotient becomes noise', 'Because the chain rule is only approximate'], answer: 1,
       why: 'With about 7 significant digits, a perturbation of 1e-8 on a value near 1 is lost entirely, and even 1e-3 leaves the difference `f(x+eps) − f(x−eps)` with only three or four good digits. The tolerance has to allow for that.' },
   ],
   concept: `
 ## One loss, a million knobs
 
-Training adjusts every parameter to reduce one scalar loss, so you need \`dL/dθ\` for every parameter \`θ\`. GPT-2 small has about 124 million of them. Nudging each one and re-running the model would take 124 million forward passes per update. Automatic differentiation gets every derivative from a single extra pass.
+Training adjusts every parameter to reduce one scalar loss, so you need \`dL/dθ\` for every parameter \`θ\`. GPT-2 small has about 124 million of them. Nudging each one and re-running the model would take 124 million forward passes per update. Automatic differentiation gets every derivative from a single backward pass, which costs about twice the forward pass: a matmul's backward is two matmuls. (The usual training estimate of \`6·N·D\` FLOPs for \`N\` parameters and \`D\` tokens is \`2·N·D\` forward plus \`4·N·D\` backward.)
 
 ## Forward mode, reverse mode
 
 The chain rule for \`L = f(g(h(θ)))\` multiplies the local derivatives \`f'·g'·h'\`, and that product can be evaluated in two orders. **Forward mode** starts at one input and carries "how much does this value change when θ₁ changes" forward through every op: one pass per input. **Reverse mode** starts at one output and carries "how much does the loss change when this value changes" backward: one pass per output. Training has millions of inputs and exactly one output, so reverse mode wins by a factor of the parameter count. PyTorch's autograd and JAX's \`grad\` are both reverse mode.
 
-The price is memory: local derivatives such as \`d(a·b)/da = b\` need the forward values, so every intermediate is kept until backward. Activation memory, not weights, is what fills a GPU during training.
+The price is memory: local derivatives such as \`d(a·b)/da = b\` need the forward values, so every intermediate is kept until backward. That activation memory grows with batch size and sequence length; for long sequences it outgrows the weights.
 
 ## The record
 
@@ -64,7 +64,7 @@ A node's closure must not run until its own gradient is complete, which means af
 
 ## Why \`zeroGrad\` exists
 
-Accumulation is the right rule inside one pass and a trap across passes. If a training loop forgets to zero the parameter gradients, each step adds its gradient to all the previous ones, the effective learning rate grows every step, and the loss ends in NaN. Frameworks make the reset explicit (\`optimizer.zero_grad()\` in PyTorch) because sometimes you *want* accumulation: summing gradients over several micro-batches is how large models train when a full batch does not fit in memory.
+Accumulation is the right rule inside one pass and a trap across passes. If a training loop forgets to zero the parameter gradients, each step's update is the sum of *every* gradient so far. That is momentum with no friction: the parameters overshoot the minimum and swing back and forth without ever settling (the train step's predict card has the numbers). Frameworks make the reset explicit (\`optimizer.zero_grad()\` in PyTorch) because sometimes you *want* accumulation: summing gradients over several micro-batches is how large models train when a full batch does not fit in memory.
 
 ## Broadcasting, backwards
 
@@ -72,7 +72,7 @@ A bias of shape \`[3]\` added to a \`[64, 3]\` matrix is copied to 64 rows in th
 
 ## The fused cross-entropy
 
-Computing \`log(softmax(x))\` as two ops is a mistake in float32: \`exp(1000)\` overflows and \`log(0)\` for a confident wrong prediction is \`−Infinity\`. Fusing them into one op with the row maximum subtracted inside keeps every number finite, and the gradient collapses to \`(softmax − onehot) / N\`. PyTorch's \`F.cross_entropy\` fuses exactly this way; fused-loss kernels such as Liger Kernel's go further and never materialise the probabilities at all.
+Computing \`log(softmax(x))\` as two ops is a mistake in float32: \`exp(1000)\` overflows and \`log(0)\` for a confident wrong prediction is \`−Infinity\`. Fusing them into one op with the row maximum subtracted inside keeps every number finite, and the gradient collapses to \`(softmax − onehot) / N\`. PyTorch's \`F.cross_entropy\` is a stable \`log_softmax\` followed by \`nll_loss\` for exactly this reason; Liger Kernel's fused kernels go further and write the gradient over the logits in the same pass as the loss.
 
 :::predict
 You run your gradient check on a correct implementation with \`eps = 1e-8\` and \`tol = 1e-6\`, as you would in float64. Does it pass?
@@ -99,9 +99,9 @@ Why this order: a node's \`_backward\` reads \`this.grad\`, which is only comple
 `,
       predict: { question: 'With `x = Tensor.from([2], { requiresGrad: true })`, what does `x.grad` hold after `x.add(x).add(x).backward()`?', answer: '[3]. Three paths lead from the loss to x (two through the inner add, one direct), and each contributes 1. The contributions add because accumulate uses +=.' },
       hints: [
-        'Post-order depth-first search: visit every child of a node, then push the node. A `Set` stops the diamond case (a node reached along two paths) from being listed twice. Which end of that list holds the root, and which end do you need to start from?',
-        'topoSort: `const order = [], seen = new Set();` and an inner `visit(t)` that returns if `seen.has(t)`, adds `t`, visits each of `t._children`, then pushes `t`; call `visit(root)`. backward: compute the order, loop over it and set `t.grad = null` where `t._children.length > 0`, then `accumulate(this, Float32Array.of(1))`, then loop over the order from the last index down to 0 calling `_backward()` where it is not null.',
-        '```js\nconst order = topoSort(this);\nfor (const t of order) if (t._children.length > 0) t.grad = null;\naccumulate(this, Float32Array.of(1));\nfor (let i = /* … which end, and which direction? … */) {\n  if (order[i]._backward !== null) order[i]._backward();\n}\n```',
+        'Before a node can go into the list, what has to be in the list already? Now picture a diamond, where one node is reachable from the root along two paths: what stops it from being listed twice? For backward: the finished list has the root at one end, and the gradient of the loss starts at the root.',
+        'topoSort: keep an output list and a set of nodes already visited. Write a recursive helper that returns at once for a visited node; otherwise it marks the node, recurses into each of its children, and only then appends the node. Call it on the root. backward: after the two checks, get the order, clear the gradient of every node that has children, seed the root with a gradient of 1 through accumulate, then walk the order from the root end towards the leaves, calling each non-null _backward.',
+        '```js\n// topoSort\nconst order = [], seen = new Set();\nfunction visit(t) {\n  if (seen.has(t)) return;\n  seen.add(t);\n  /* … the children first, then t itself … */\n}\nvisit(root);\nreturn order;\n\n// backward, after the two checks\nconst order = topoSort(this);\nfor (const t of order) if (t._children.length > 0) t.grad = null;\naccumulate(this, Float32Array.of(1));\nfor (let i = /* … which end, and which direction? … */) {\n  if (order[i]._backward !== null) order[i]._backward();\n}\n```',
       ],
     },
     {
@@ -119,7 +119,7 @@ Fill in the three closures. Each receives \`g\`, a raw tensor \`{ shape, data }\
       predict: { question: 'x has shape [2, 3]. After `x.mean().backward()`, what is in `x.grad`?', answer: 'Six copies of 1/6. The mean is (1/6)·Σx, so each element has derivative 1/6. Forgetting the division gives six 1s, and a training loop on the mean loss would then take steps 6× too large.' },
       hints: [
         'A reduction throws information away in the forward pass, so its backward pass copies: one incoming number spreads to every element that was reduced. For mean, what constant multiplies each derivative? For matmul, write dC as [n, m] and ask which product of dC and B has the shape [n, k] of A.',
-        'sum: `accumulate(this, expandAlongAxis(g.data, this.shape, axis, 1))`. mean: `const count = axis === null ? this.data.length : this.shape[axis];` before the closure, then the same call with factor `1 / count`. matmul: `ops.matmul(g, ops.transpose(o))` is dA and `ops.matmul(ops.transpose(this), g)` is dB; each result is a raw tensor, so pass its `.data` to accumulate.',
+        'sum: every element of the input receives the output gradient of the sum it fed into, unchanged; expandAlongAxis does exactly that spreading when the factor is 1. mean: the same spreading, with every value multiplied by one over the number of elements averaged; count them from the input shape before building the closure (all elements when axis is null, the length of that axis otherwise). matmul: dA is the output gradient times the transpose of B, and dB is the transpose of A times the output gradient, each computed only when that operand requires a gradient. The raw kernels return raw tensors, and accumulate wants their data arrays.',
         '```js\nmatmul(o) {\n  return fromOp(ops.matmul(this, o), \'matmul\', tensorInputs(this, o), (g) => {\n    if (this.requiresGrad) accumulate(this, ops.matmul(g, ops.transpose(o)).data);\n    if (o.requiresGrad) accumulate(o, /* … the other product: A transposed, on the other side of g … */.data);\n  });\n}\n```',
       ],
     },
@@ -139,7 +139,7 @@ Then finish \`mul\`: the gradient for the second operand is \`g · this\` (becau
       predict: { question: 'A bias of shape [3] is added to a [4, 3] matrix and the result is summed. What shape is `bias.grad`, and what is in it?', answer: 'Shape [3], every entry 4. Each bias entry was copied to 4 rows; each copy receives gradient 1 from the sum; the copies are summed back, giving 4. Returning the [4, 3] gradient unchanged would make accumulate throw a length mismatch.' },
       hints: [
         'Broadcasting copies one value to many output positions in the forward pass. Every one of those positions sends a gradient back to the same value. Summing is the reverse of copying; the only question is which axes to sum over.',
-        'Work on a raw tensor `t = { shape: gradShape, data: grad }`. First: `while (t.shape.length > targetShape.length) t = ops.sum(t, 0)`. Then for each axis `i` of `targetShape`: if `targetShape[i] === 1` but `t.shape[i]` is not 1, `t = ops.sum(t, i, true)`. Return `t.data`. For mul, mirror the line that is already there, with `this` in place of `o` inside `ops.mul` and `o.shape` as the target.',
+        'Start from the output gradient as a raw tensor. First, while it has more dimensions than the target, sum over its leading axis: those are the dimensions the input never had. Then walk the target axes: wherever the target has size 1 but the gradient does not, that axis was stretched, so sum over it while keeping the dimension. Return the data. For mul, the missing line mirrors the one already written for the first operand: swap which operand multiplies g and which shape you unbroadcast to.',
         '```js\nlet t = { shape: gradShape, data: grad };\nwhile (t.shape.length > targetShape.length) t = ops.sum(t, 0);\nfor (let i = 0; i < targetShape.length; i++) {\n  if (/* … this axis was stretched from size 1 … */) t = ops.sum(t, i, true);\n}\nreturn t.data;\n```',
       ],
     },
@@ -159,7 +159,7 @@ Each row of the cross-entropy gradient sums to zero. That is worth checking by h
       predict: { question: 'What gradient does `relu` pass at an input of exactly 0, and does the choice matter in practice?', answer: '0 here (the test requires it), matching PyTorch. Mathematically the derivative is undefined at 0; any value in [0, 1] is a valid subgradient. In float32 training the input is exactly 0 so rarely that the choice is irrelevant, except for inputs that are 0 by construction, such as padded positions.' },
       hints: [
         'Every one of these is a single loop that fills a new Float32Array the size of the input. The only decisions are the local derivative (write it in the margin for each op) and, for cross-entropy, where the onehot subtraction lands.',
-        'exp: `dx[i] = g.data[i] * y.data[i]`. log: `dx[i] = g.data[i] / this.data[i]`. relu: `dx[i] = this.data[i] > 0 ? g.data[i] : 0`. crossEntropy: `const s = g.data[0] / N`; set every entry to `Math.exp(logProbs.data[i * V + j]) * s`, then subtract `s` at column `ids[i]` of row `i`; accumulate into `logits`.',
+        'exp: incoming gradient times the forward output. log: incoming gradient divided by the input. relu: incoming gradient where the input is strictly positive, zero everywhere else. crossEntropy: work out one scale factor, the incoming scalar gradient divided by the number of rows. Fill every entry with that row’s probability (the exponential of the stored log-probability) times the scale, then subtract the scale once per row, at the target column. Accumulate into the logits, not into the loss.',
         '```js\nconst s = g.data[0] / N;\nconst dLogits = new Float32Array(logProbs.data.length);\nfor (let i = 0; i < N; i++) {\n  for (let j = 0; j < V; j++) dLogits[i * V + j] = /* … the probability, scaled by s … */;\n  dLogits[i * V + ids[i]] -= s;\n}\naccumulate(logits, dLogits);\n```',
       ],
     },
@@ -176,14 +176,16 @@ relErr  = |analytic − numeric| / max(1, |analytic|, |numeric|)
 
 Return \`{ ok: maxRelErr <= tol, maxRelErr, details }\` where \`details\` has one \`{ input, index, analytic, numeric, relErr }\` per element of every input. Throw if an input lacks \`requiresGrad\` or \`fn\` returns a non-scalar.
 
+Clear every input's gradient (\`zeroGrad\`) before your one backward pass, or a gradient left over from an earlier step leaks into the analytic side. If any \`relErr\` is NaN (a closure that divides by zero, say), \`maxRelErr\` must end up NaN and \`ok\` false: \`NaN > x\` is false for every \`x\`, so a plain running maximum skips it silently.
+
 Two float32 details matter. Copy the analytic gradients (\`Float32Array.from(t.grad)\`) before you start perturbing, because each perturbed forward call builds a new graph. And perturb the float32 storage in place, then read the value back: \`x + eps\` rounds, so divide by the difference that actually landed (\`hi − lo\`) rather than by \`2·eps\`. Restore every value you touch.
 
-This function is the tool that finds bugs in every closure you have written so far and every one you will write later (layer norm and attention have subtle ones). Central differences are accurate to order \`eps²\`; a one-sided difference is only order \`eps\`, and the last test can tell them apart.
+This function is the tool that finds bugs in every closure you have written so far and every one you will write later (layer norm and attention have subtle ones). Central differences are accurate to order \`eps²\`; a one-sided difference is only order \`eps\`, and one of the tests can tell them apart.
 `,
       predict: { question: 'A backward closure claims the derivative of `sum` is 2 instead of 1. What `maxRelErr` does gradCheck report?', answer: '0.5: |2 − 1| / max(1, 2, 1). The error is relative to the larger magnitude once values exceed 1, and absolute below 1, where float32 rounding noise would make a pure relative error meaningless.' },
       hints: [
         'Two phases. Phase one: one forward pass and one backward pass give every analytic gradient at once. Phase two: for every single element of every input, two more forward passes (plus and minus) give one numeric derivative. Which values do you need to have saved before phase two starts modifying the inputs?',
-        'Phase one: `inputs.forEach((t, k) => { if (!t.requiresGrad) throw …; t.zeroGrad(); })`, `const out = fn(...inputs)`, check `out.size === 1`, `out.backward()`, `analytic = inputs.map((t) => Float32Array.from(t.grad))` (or zeros when grad is null). Phase two: for each input k and index: save the value, set `saved + eps`, read back `hi`, call `fn(...inputs).item()`, same with `saved − eps` and `lo`, restore, `numeric = (fPlus − fMinus) / (hi − lo)`. Track the max with `if (!(relErr <= maxRelErr)) maxRelErr = relErr` so a NaN cannot hide.',
+        'Phase one: check every input requires a gradient and clear its old gradient, run fn once, check the result is a scalar, run backward, and copy each input’s gradient (zeros if it is still null). Phase two, for every element of every input: save the value, write value plus eps and read back what the float32 array actually stored, evaluate fn; do the same with minus eps; restore the saved value. The numeric derivative is the change in fn divided by the change in the stored value. Compute the relative error, record a detail entry, and keep a running maximum that a NaN cannot slip past (a NaN compares false with everything).',
         '```js\nconst saved = t.data[index];\nt.data[index] = saved + eps; const hi = t.data[index];\nconst fPlus = fn(...inputs).item();\nt.data[index] = saved - eps; const lo = t.data[index];\nconst fMinus = fn(...inputs).item();\nt.data[index] = saved;\nconst numeric = /* … central difference over the perturbation that actually landed … */;\nconst a = analytic[k][index];\nconst relErr = Math.abs(a - numeric) / Math.max(1, Math.abs(a), Math.abs(numeric));\n```',
       ],
     },
@@ -197,23 +199,23 @@ This function is the tool that finds bugs in every closure you have written so f
 
 This is the entire training loop of every later module, with a GPT in place of \`w·x + b\` and AdamW in place of \`sgdStep\`.
 `,
-      predict: { question: 'You forget the two zeroGrad calls in the loop. What happens to the loss over 200 steps?', answer: 'It falls for a few steps, then oscillates and blows up to Infinity or NaN. Each step adds the new gradient to the running sum, so the update at step t is the sum of t gradients: the effective learning rate grows linearly, and once it passes the stability limit of the quadratic loss every step overshoots more than the last.' },
+      predict: { question: 'You forget the two zeroGrad calls in the loop. What happens to the loss over 200 steps?', answer: 'It never converges, but it does not blow up either. The update at step t is the sum of all t gradients so far, which is momentum with no friction: w and b accelerate toward the minimum, overshoot, and swing back and forth forever. With lr = 0.1 on 32 points in [−1, 1] the loss keeps oscillating between about 0.3 and 7 for all 200 steps (with zeroGrad it falls below 0.001). Only when lr × curvature exceeds 4 does each swing grow and end in Infinity.' },
       hints: [
         'sgdStep is two nested loops and a minus sign: the gradient points uphill, so subtract it. trainLinear is the five-line loop from the concept section: forward, record, zero, backward, step.',
-        '`const X = Tensor.from(xs.map((x) => [x]))`, same for `Y`; `const w = Tensor.zeros([1, 1], { requiresGrad: true }), b = Tensor.zeros([1], { requiresGrad: true })`. In the loop: `const pred = X.matmul(w).add(b); const diff = pred.sub(Y); const loss = diff.mul(diff).mean();` then `losses.push(loss.item()); w.zeroGrad(); b.zeroGrad(); loss.backward(); sgdStep([w, b], lr); ws.push(w.data[0]); bs.push(b.data[0]);`. Return `{ w: w.data[0], b: b.data[0], losses, ws, bs }`.',
+        'sgdStep: for each parameter whose grad is not null, subtract learning rate times gradient from every element of its data. trainLinear: wrap xs and ys as [N, 1] column tensors, create w as a [1, 1] zero parameter and b as a [1] zero parameter. Each step, build the prediction (X times w, plus b), the difference from Y, and the mean of its square; record the loss number; clear both gradients; run backward; take the SGD step; record w and b. Return the final numbers with the three histories.',
         '```js\nfor (let step = 0; step < steps; step++) {\n  const pred = X.matmul(w).add(b);      // [N, 1]; b is broadcast over the rows\n  const diff = pred.sub(Y);\n  const loss = /* … mean squared error, built from diff … */;\n  losses.push(loss.item());\n  w.zeroGrad(); b.zeroGrad();\n  loss.backward();\n  sgdStep([w, b], lr);\n  ws.push(w.data[0]); bs.push(b.data[0]);\n}\n```',
       ],
     },
   ],
   reflection: [
-    'Explain to a colleague, without code, why reverse-mode autodiff gets the gradient of a scalar loss with respect to 124 million parameters for about the cost of one extra forward pass, and what it has to store to do so.',
+    'Explain to a colleague, without code, why reverse-mode autodiff gets the gradient of a scalar loss with respect to 124 million parameters for about twice the cost of one forward pass, rather than 124 million passes, and what it has to store to do so.',
     'Your `_backward` closures accumulate with `+=`. Give one example inside a single backward pass where assignment would be wrong, and one example across training steps where accumulation is wrong unless you reset. What does each one look like when it goes wrong?',
     'The fused cross-entropy has the gradient `(softmax − onehot) / N`. Derive it in your own words from the log-softmax, and say why computing `log(softmax(x))` as two ops is both less stable and more expensive.',
   ],
   stretch: [
-    'Add `noGrad(fn)` and `detach()` as in `lib/tensor.js`: a flag that stops `fromOp` from recording. PyTorch\'s `torch.no_grad()` does the same, and module 06\'s `generate` and module 15\'s KV cache depend on not building a graph during inference.',
+    'Add `noGrad(fn)` and `detach()` as in `lib/tensor.js`: a flag that stops `fromOp` from recording. PyTorch\'s `torch.no_grad()` does the same, and module 04\'s sampling and module 07\'s `estimateLoss` wrap their forward passes in `noGrad` so evaluation builds no graph.',
     'Free the graph after `backward()` (set `_children = []` and `_backward = null` on every visited node), as PyTorch does unless `retain_graph=True`. Then measure the memory a 1000-step loop retains with and without freeing; in a browser, `performance.memory` in Chrome shows it.',
-    'Implement `softmax()` and `logSoftmax()` as separate ops with their own closures, then compare `crossEntropy` against `logits.logSoftmax()` picked and averaged by hand, on logits near 1000. This is the numerical reason PyTorch\'s `F.cross_entropy` and the Liger Kernel fused-loss kernels never materialise the probabilities.',
+    'Implement `softmax()` and `logSoftmax()` as separate ops with their own closures, then compare `crossEntropy` against `logits.logSoftmax()` picked and averaged by hand, on logits near 1000. This is the numerical reason PyTorch\'s `F.cross_entropy` and the Liger Kernel fused-loss kernels never compute `log(softmax(x))` as two separate steps.',
     'Implement activation checkpointing: an op that stores no intermediates and instead re-runs its forward inside `_backward`. Megatron-LM and DeepSpeed use this to trade about a third more compute for the activation memory of long sequences.',
   ],
   timeouts: { tests: 20000, demo: 60000 },

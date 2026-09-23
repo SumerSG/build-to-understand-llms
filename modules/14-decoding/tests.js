@@ -35,6 +35,10 @@ export const tests = [
     const cold = m.softmaxLogits(m.applyTemperature(logits, 0));
     T.ok(!Number.isNaN(cold[0]), 't = 0 must not divide by zero and produce NaN; take the limit (argmax) directly');
     T.close(cold, [1, 0, 0, 0], 1e-6, 'at t = 0 all the mass sits on the argmax');
+    const zero = m.applyTemperature([1, 3, 2], 0);
+    T.ok(zero[1] === 0 && zero[0] === -Infinity && zero[2] === -Infinity, `t = 0 returns the limit itself: 0 at the argmax, -Infinity elsewhere (got [${Array.from(zero)}])`);
+    const neg = m.applyTemperature([1, 3, 2], -1);
+    T.ok(neg[1] === 0 && neg[0] === -Infinity && neg[2] === -Infinity, `t < 0 is also greedy, not a division that flips the order (got [${Array.from(neg)}])`);
     const hot = m.softmaxLogits(m.applyTemperature(logits, 1e6));
     T.close(hot, [0.25, 0.25, 0.25, 0.25], 1e-3, 'at t → ∞ every token is equally likely');
   } },
@@ -87,6 +91,7 @@ export const tests = [
     const flat = Float32Array.from([0, 0, 0, 0, 0]);
     T.eq(finiteIdx(m.topPFilter(flat, 0.01)), [0], 'a tiny p must still keep the single most likely token, or there is nothing to sample');
     T.eq(finiteIdx(m.topPFilter(flat, 1)), [0, 1, 2, 3, 4], 'p = 1 is "off"');
+    T.eq(finiteIdx(m.topPFilter([0, 0, 0, 0], 0.5)), [0, 1], 'four tokens at exactly 0.25: after two the mass is exactly 0.5, which REACHES p = 0.5, so stop (mass >= p, not mass > p)');
     T.close(flat, [0, 0, 0, 0, 0], 1e-6, 'input must not be modified');
     T.ok(m.topPFilter(L4, 0.9) instanceof Float32Array, 'returns a Float32Array');
   } },
@@ -109,6 +114,7 @@ export const tests = [
     T.eq(finiteIdx(m.minPFilter(L4, 0)), [0, 1, 2, 3], 'p = 0 is "off"');
     const flat = [0, 0, 0, 0];
     T.eq(finiteIdx(m.minPFilter(flat, 0.9)), [0, 1, 2, 3], 'on a flat distribution every token is within p of the max, so all survive');
+    T.eq(finiteIdx(m.minPFilter(flat, 1)), [0, 1, 2, 3], 'p = 1 on a flat distribution: every probability EQUALS the floor, and only tokens strictly below it are dropped (with <= nothing would survive)');
     const out = m.minPFilter(L4, 0.2);
     T.close(out[1], L4[1], 1e-6, 'kept logits keep their values');
   } },
@@ -139,8 +145,16 @@ export const tests = [
     T.eq(finiteIdx(m.processLogits([2, 1, 0, -1], { temperature: 0.3, topP: 0.9 })), [0],
       'temperature before top-p: at t = 0.3 token 0 alone holds > 0.9 of the mass. Applying top-p on the raw logits would keep three tokens');
     T.eq(finiteIdx(m.processLogits([2, 1, 0, -1], { topK: 3, minP: 0.3 })), [0, 1],
-      'top-k then min-p: after top-3 the probabilities are 0.665, 0.245, 0.090; floor 0.3 × 0.665 = 0.2 drops token 2 and keeps token 1');
+      'top-k and min-p together: after top-3 the probabilities are 0.665, 0.245, 0.090; floor 0.3 × 0.665 = 0.2 drops token 2 and keeps token 1 (min-p compares with the max, a ratio a cut does not change, so its position among the truncations does not matter)');
     T.close(m.processLogits([2, 1, 0, -1], { temperature: 2, topK: 3 }), [1, 0.5, 0, -Infinity], 1e-6, 'the survivors carry the temperature-scaled logits');
+  } },
+  { step: 'sample', name: 'processLogits wires in every processor: additive penalties before temperature, top-k before top-p', run(m, T) {
+    T.close(m.processLogits([2, 1, 0, -1], { prevIds: [0, 0], frequencyPenalty: 0.5, presencePenalty: 0.5 }), [0.5, 1, 0, -1], 1e-6,
+      'the frequency/presence penalty is part of the pipeline: token 0 seen twice pays 0.5·2 + 0.5 = 1.5');
+    T.close(m.processLogits([2, 1, 0, -1], { prevIds: [0], frequencyPenalty: 1, temperature: 0.5 }), [2, 2, 0, -2], 1e-6,
+      'penalty THEN temperature: (2 − 1) / 0.5 = 2. Cooling first gives 2 / 0.5 − 1 = 3: an additive penalty does not commute with a scale');
+    T.eq(finiteIdx(m.processLogits([2, 1, 0, -1], { topK: 2, topP: 0.7 })), [0],
+      'top-k THEN top-p: after top-2 the probabilities are 0.731 and 0.269, so p = 0.7 keeps one token. Top-p on the full distribution (0.644 < 0.7) would keep two');
   } },
   { step: 'sample', name: 'sample draws exactly one uniform per call, is reproducible under a seed, and is greedy at t = 0', run(m, T) {
     const logits = randomLogits(16, T.rng(4));
@@ -211,6 +225,9 @@ export const tests = [
     const multi = m.generate(model, tok, 'ab', { maxNewTokens: 40, temperature: 1.5, next: T.rng(1), stop: ['zz', 'hh'] });
     T.eq(multi.finishReason, 'stop');
     T.ok(!multi.text.includes('hh') && tok.decode(multi.ids).includes('hh'), 'a two-character stop is found in the decoded text even though each character is its own token');
+    const both = m.generate(model, tok, 'ab', { maxNewTokens: 40, temperature: 1.5, next: T.rng(29), stop: ['bc', 'c'] });
+    T.eq(tok.decode(both.ids), 'bbc', 'seed 29 samples "b", "b", "c"');
+    T.eq(both.text, 'b', 'when two stop strings match at once ("bc" and "c"), cut at the EARLIEST occurrence, whatever their order in the list');
     const none = m.generate(model, tok, 'ab', { maxNewTokens: 15, temperature: 1.5, next: T.rng(1), stop: ['zzz'] });
     T.eq(none.finishReason, 'length', 'a stop sequence that never appears does not stop anything');
     T.eq(none.ids.length, 15);
@@ -232,5 +249,8 @@ export const tests = [
     const longPrompt = m.generate(charModel, tok, 'abcdefgh'.repeat(6), { maxNewTokens: 3, next: T.rng(2) });
     T.eq(longPrompt.ids.length, 1, 'a 48-token prompt is cut to its newest 32 tokens instead of throwing; that fills the window, so exactly one more token fits');
     T.eq(longPrompt.finishReason, 'length');
+    const oldNew = 'h'.repeat(16) + 'abcdefg'.repeat(5).slice(0, 32);
+    const kept = m.generate(charModel, tok, oldNew, { maxNewTokens: 3, presencePenalty: 100, next: T.rng(2) });
+    T.eq(kept.text, 'h', 'the NEWEST 32 tokens are kept: they contain no "h", so with a presence penalty of 100 on every seen id "h" is the only choice. Keeping the oldest 32 would penalise "h" instead');
   } },
 ];
