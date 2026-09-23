@@ -4,7 +4,7 @@ export default {
   track: 'posttraining',
   minutes: 105,
   threshold: 'A preference between two answers is a training signal: the Bradley–Terry model turns "A beats B" into a logistic loss on a score difference, and DPO shows the policy\'s own log-ratio against a frozen reference can play the role of that score, so no separate reward model is needed.',
-  goal: 'A Bradley–Terry reward model loss and a DPO loss that raise the implicit reward margin on preference pairs when trained: a reward head that ranks held-out pairs above chance, and a DPO run whose margin climbs from exactly zero.',
+  goal: 'A Bradley–Terry reward model loss and a DPO loss that raise the implicit reward margin on preference pairs when trained: a reward head that fits the training pairs and is scored on 10 held-out pairs (so each pair is 10 points and the held-out number is a rough estimate), and a DPO run whose margin climbs from exactly zero.',
   prereqs: ['10-sft', '07-pretraining', '02-autograd'],
   recall: [
     { q: 'In module 10, which positions did the SFT loss mask select?', options: ['Every token of the window', 'The assistant\'s response tokens, including the end marker', 'The prompt tokens'], answer: 1,
@@ -44,7 +44,7 @@ Its gradient with respect to the margin \`m = r_c − r_r\` is \`−(1 − σ(m)
 :::predict
 The reward model gives both responses of a pair the same score. What is the loss, and what is the gradient with respect to the chosen score?
 ---
-The loss is \`−log σ(0) = log 2 ≈ 0.693\` and the gradient is \`−(1 − 1/2) = −0.5\` (divided by the batch size). This is not a corner case: DPO starts with the policy equal to the reference, so on step 1 every margin is exactly 0 and the whole first update comes from this gradient. An implementation whose subgradient at 0 is 0 never leaves the starting point.
+The loss is \`−log σ(0) = log 2 ≈ 0.693\` and the gradient is \`−(1 − 1/2) = −0.5\` (divided by the batch size). This is not a corner case: DPO starts with the policy equal to the reference, so on the first update (step 0 in the training loop) every margin is exactly 0 and the whole first update comes from this gradient. An implementation whose subgradient at 0 is 0 never leaves the starting point.
 :::
 
 ## The reward model
@@ -112,7 +112,7 @@ The starter's \`asTensor\`, \`tokenizePair\`, \`shift\`, \`buildPair\`, \`padBat
       hints: [
         'The margin `m = rChosen − rRejected` is a Tensor [N]. You need `−log σ(m)` averaged over N, computed in a way that is stable for large |m| and differentiable at 0.',
         'Build an [N, 2] tensor whose rows are `[m, 0]` (reshape m to [N, 1] and multiply by `Tensor.from([[1, 0]])`; broadcasting does the rest). `logSoftmax()` of that row gives `[log σ(m), log σ(−m)]`; take column 0 with `slice(1, 0, 1)`, negate, mean.',
-        '`const margin = asTensor(rChosen).sub(asTensor(rRejected)); const N = margin.shape[0]; const pair = margin.reshape([N, 1]).mul(Tensor.from([[1, 0]])); const logSigmoid = /* … the stable log σ(m) from pair … */; return logSigmoid.neg().mean();` For accuracy: loop over `.data`, count `c[i] > r[i]`, divide by the length (guard against 0).',
+        '`const margin = asTensor(rChosen).sub(asTensor(rRejected)); const N = margin.shape[0]; const pair = margin.reshape([N, 1]).mul(Tensor.from([[1, 0]])); const logSigmoid = /* … the stable log σ(m) from pair … */; return logSigmoid.neg().mean();` For accuracy: `const c = asTensor(rChosen).data, r = asTensor(rRejected).data;` (plain arrays have no `.data`), then count `c[i] > r[i]`, divide by the length (guard against 0).',
       ],
     },
     {
@@ -147,7 +147,7 @@ Two small functions that make the derivation concrete.
 
 Check by hand: \`dpoLoss([-10], [-12], [-11], [-11], 0.1)\` has margin 0.2 and loss 0.5981.
 `,
-      predict: { question: 'Policy and reference agree on every pair. What is dpoLoss, and does its gradient with respect to the policy log-probs vanish?', answer: 'log 2 ≈ 0.693, and no: the gradient with respect to log π(chosen) is −β/(2N), so the first step already moves the policy. This is why step 1 tested the gradient at margin exactly 0.' },
+      predict: { question: 'Policy and reference agree on every pair. What is dpoLoss, and does its gradient with respect to the policy log-probs vanish?', answer: 'log 2 ≈ 0.693, and no: the gradient with respect to log π(chosen) is −β/(2N), so the first step already moves the policy. This is why the Bradley–Terry step tested the gradient at margin exactly 0.' },
       hints: [
         'The implicit reward of a response is β times how much more likely the policy finds it than the reference does. DPO is Bradley–Terry on those two rewards.',
         'Subtract as Tensors (asTensor handles the constants) and `scale(beta)`. Then `bradleyTerryLoss(rewardChosen, rewardRejected)` is the whole loss.',
@@ -164,7 +164,7 @@ Three functions. The class \`RewardHead\` (\`Linear(C, 1)\` reshaped to \`[B]\`)
 
 \`lastTokenHidden(h, lengths)\`: from \`[B, T, C]\` pick row \`lengths[b] − 1\` of each sequence (its last real token; the rest is padding), returning \`[B, C]\` with gradient flowing to exactly that row. There is no gather op; a one-hot selector of shape \`[B, T, 1]\` multiplied in and summed over \`T\` does it. Throw if a length is outside \`1..T\`.
 
-\`trainRewardHead(head, features, { steps, lr, weightDecay })\`: full-batch training. \`features\` is an array of \`{ chosen: Float32Array [C], rejected: Float32Array [C] }\`; stack each side into a \`[N, C]\` Tensor once, then each step: score both, \`bradleyTerryLoss\`, backward, AdamW step, zeroGrad, and record \`{ loss, accuracy }\`.
+\`trainRewardHead(head, features, { steps, lr, weightDecay })\`: full-batch training. \`features\` is an array of \`{ chosen: Float32Array [C], rejected: Float32Array [C] }\`; stack each side into a \`[N, C]\` Tensor once, then each step: score both, \`bradleyTerryLoss\`, backward, AdamW step, zeroGrad, and record \`{ loss, accuracy }\` (both measured on this step's forward pass, before the update). Return the array of \`steps\` records.
 `,
       hints: [
         'hiddenStates: which tensor does the LM head read, and which lines of `GPT.forward` in lib/gpt.js produce it? lastTokenHidden: in a right-padded sequence of n real tokens, which position has attended to all of them, and how could a sum over T keep only that one?',
@@ -176,13 +176,13 @@ Three functions. The class \`RewardHead\` (\`Linear(C, 1)\` reshaped to \`[B]\`)
       id: 'dpo-train',
       title: 'The DPO training loop',
       instructions: `
-\`dpoStep(policy, optimizer, batch, { beta, maxGradNorm })\`: \`batch\` holds \`chosen\` and \`rejected\` (two padded batches from \`padBatch\`) and \`refChosen\`, \`refRejected\` (plain arrays of reference log-probs). Run \`sequenceLogProbs\` on both, take \`dpoLoss\`, \`backward()\`, \`clipGradNorm\`, \`optimizer.step()\`, \`optimizer.zeroGrad()\`. Return \`{ loss, margin, accuracy, gradNorm }\`, where \`gradNorm\` is what \`clipGradNorm\` returns (the global norm *before* clipping), \`margin\` is the mean implicit reward margin and \`accuracy\` the reward accuracy, both measured on this step's forward pass (so step 1 reports margin 0 and accuracy 0 exactly). Computing those two numbers inside \`noGrad\` keeps them off the graph.
+\`dpoStep(policy, optimizer, batch, { beta, maxGradNorm })\`: \`batch\` holds \`chosen\` and \`rejected\` (two padded batches from \`padBatch\`) and \`refChosen\`, \`refRejected\` (plain arrays of reference log-probs). Run \`sequenceLogProbs\` on both, take \`dpoLoss\`, \`backward()\`, \`clipGradNorm\`, \`optimizer.step()\`, \`optimizer.zeroGrad()\`. Return \`{ loss, margin, accuracy, gradNorm }\`, where \`gradNorm\` is what \`clipGradNorm\` returns (the global norm *before* clipping), \`margin\` is the mean implicit reward margin and \`accuracy\` the reward accuracy, both measured on this step's forward pass (so the first step, step 0, reports margin 0 and accuracy 0 exactly). Computing those two numbers inside \`noGrad\` keeps them off the graph.
 
-\`trainDPO(policy, pairs, refLogps, opts)\`: \`new AdamW(policy.parameters(), { lr, betas: [0.9, 0.95], weightDecay })\`, then \`steps\` times: draw \`batchSize\` indices with \`randInt(next, pairs.length)\`, pad the chosen examples and the rejected examples separately, look up \`refLogps.chosen[i]\` and \`refLogps.rejected[i]\`, call \`dpoStep\` with \`{ beta, maxGradNorm }\`, push the record, \`await onStep(step, record)\` if given. Return the records.
+\`trainDPO(policy, pairs, refLogps, opts)\`: \`new AdamW(policy.parameters(), { lr, betas: [0.9, 0.95], weightDecay })\`, then for \`step = 0 … steps − 1\`: draw \`batchSize\` indices with \`randInt(next, pairs.length)\`, pad the chosen examples and the rejected examples separately, look up \`refLogps.chosen[i]\` and \`refLogps.rejected[i]\`, call \`dpoStep\` with \`{ beta, maxGradNorm }\`, push the record, \`await onStep(step, record)\` if given. Return the records.
 
 The reference never appears in the loop: \`referenceLogProbs\` (worked example) computed its numbers once under \`noGrad\`, which is what "frozen" means in practice.
 `,
-      predict: { question: 'You run trainDPO with beta = 0. What happens to the loss and to the parameters?', answer: 'The loss is log 2 on every step and the parameters never move: β multiplies every implicit reward, so with β = 0 the margin, and its gradient, are identically zero. β is the volume knob on the preference signal.' },
+      predict: { question: 'You run trainDPO with beta = 0. What happens to the loss and to the parameters?', answer: 'The loss is log 2 on every step and, with the default weightDecay = 0, the parameters never move: β multiplies every implicit reward, so with β = 0 the margin, and its gradient, are identically zero. (With weightDecay > 0, AdamW\'s decoupled decay would still shrink them, although no preference signal arrives.) β is the volume knob on the preference signal.' },
       hints: [
         'dpoStep is module 10\'s sftStep with two forward passes and a different loss. The only new bookkeeping is the batch: two padded sides plus two arrays of constants.',
         'Order inside dpoStep: forward chosen, forward rejected, dpoLoss, backward, clipGradNorm(policy.parameters(), maxGradNorm), step, zeroGrad. Then `noGrad(() => implicitRewards(policyChosen, batch.refChosen, beta).data)` and the same for rejected give you the margin and accuracy as plain numbers.',
