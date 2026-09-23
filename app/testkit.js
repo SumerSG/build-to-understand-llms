@@ -163,51 +163,162 @@ function codeOnly(src) {
     (m) => (m[0] === '/' ? m.replace(/[^\n]/g, ' ') : m[0] + m.slice(1, -1).replace(/[^\n]/g, ' ') + m[m.length - 1]));
 }
 
-const FOR_IN = /\bfor\s*\(\s*(?:const|let|var)?\s*([A-Za-z_$][\w$]*)\s+in\s+([A-Za-z_$][\w$.]*)/;
+const FOR_IN = /\bfor\s*\(\s*(?:const|let|var)?\s*([A-Za-z_$][\w$]*)\s+in\s+([A-Za-z_$][\w$.]*)/g;
 const ARRAY_IDENTITY = [
   // a.shape == b.shape, a.shape !== [2, 3]: arrays compare by identity, so two different arrays are never ==
-  /([A-Za-z_$][\w$]*(?:\.[\w$]+)*\.shape)\s*(===?|!==?)\s*((?:[A-Za-z_$][\w$]*(?:\.[\w$]+)*\.shape|\[[^\]\n]*\]))(?![\w$.[(])/,
-  /(?<![\w$.])([A-Za-z_$][\w$]*(?:\.[\w$]+)*)\s*(===?|!==?)\s*(\[[^\]\n]*\])/,
+  /([A-Za-z_$][\w$]*(?:\.[\w$]+)*\.shape)\s*(===?|!==?)\s*((?:[A-Za-z_$][\w$]*(?:\.[\w$]+)*\.shape|\[[^\]\n]*\]))(?![\w$.[(])/g,
+  /(?<![\w$.])([A-Za-z_$][\w$]*(?:\.[\w$]+)*)\s*(===?|!==?)\s*(\[[^\]\n]*\])/g,
 ];
 
-/** "line 12 compares arrays with ==" when the learner's source does that. */
-function arrayIdentityNote(source) {
-  const code = codeOnly(source);
+// ---- which part of the learner's file a failing test ran ----------------------------------------------
+// Line-level notes ("line 115 compares arrays with ==") are only true for a test that ran that line, so
+// they are scoped: a note is shown only when its line sits in a top-level declaration the test used.
+
+const TOP_DECL = /^(?:export\s+(?:default\s+)?)?(?:async\s+)?(?:function\s*\*?\s*([A-Za-z_$][\w$]*)|class\s+([A-Za-z_$][\w$]*)|(?:const|let|var)\s+([A-Za-z_$][\w$]*))/gm;
+let parsedFor = null, parsed = null;
+/** The source with comments and strings blanked, and its top-level declarations [{ name, start, end }]
+ *  (a declaration runs to the next one; only declarations starting in column 0 count). Cached per source. */
+function parse(source) {
+  if (parsedFor !== source) {
+    const code = codeOnly(source);
+    const heads = [...code.matchAll(TOP_DECL)].filter((m) => m[1] || m[2] || m[3]);
+    const chunks = heads.map((m, i) => ({ name: m[1] || m[2] || m[3], isClass: !!m[2], start: m.index, end: i + 1 < heads.length ? heads[i + 1].index : code.length }));
+    parsedFor = source;
+    parsed = { code, chunks };
+  }
+  return parsed;
+}
+const nameRe = (name) => new RegExp(`(?<![\\w$.])${name.replace(/\$/g, '\\$')}(?![\\w$])`);
+
+/** Lines of the learner's file that appear in an error's stack (the code that was running when it threw). */
+function learnerLines(err, watch) {
+  if (!watch || !watch.file || !err || typeof err.stack !== 'string') return [];
+  const esc = watch.file.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return [...err.stack.matchAll(new RegExp(`${esc}:(\\d+):\\d+`, 'g'))].map((m) => +m[1]);
+}
+
+/**
+ * The top-level declarations of the learner's file that a failing test ran: the exports it called (the
+ * recorder saw them), the classes it used, the declarations on the error's stack, and everything those
+ * mention by name (a helper that add calls), transitively. null when there is no source to look at.
+ * @returns {{code: string, chunks: {name: string, start: number, end: number}[], has: (index: number) => boolean} | null}
+ */
+function scopeOf(watch, err = null) {
+  if (!watch || !watch.source) return null;
+  const { code, chunks } = parse(watch.source);
+  const reach = new Set(typeof watch.used === 'function' ? watch.used() : recentOf(watch).map(([n]) => n));
+  const lineStarts = learnerLines(err, watch).map((ln) => (ln > 1 ? code.split('\n').slice(0, ln - 1).join('\n').length + 1 : 0));
+  for (const at of lineStarts) { const c = chunks.find((x) => at >= x.start && at < x.end); if (c) reach.add(c.name); }
+  const todo = chunks.filter((c) => reach.has(c.name));
+  while (todo.length) {
+    const c = todo.pop();
+    const text = code.slice(c.start, c.end);
+    for (const o of chunks) if (!reach.has(o.name) && nameRe(o.name).test(text)) { reach.add(o.name); todo.push(o); }
+  }
+  return scopeFrom(code, chunks.filter((c) => reach.has(c.name)));
+}
+const scopeFrom = (code, chunks) => ({ code, chunks, has: (i) => chunks.some((c) => i >= c.start && i < c.end) });
+
+/** The first match of a global regex whose position is in scope. */
+function firstInScope(re, scope) {
+  if (!scope) return null;
+  re.lastIndex = 0;
+  for (const m of scope.code.matchAll(re)) if (scope.has(m.index)) return m;
+  return null;
+}
+
+/** "line 12 compares arrays with ==" when code the test ran does that. */
+function arrayIdentityNote(source, scope) {
   for (const re of ARRAY_IDENTITY) {
-    const m = re.exec(code);
+    const m = firstInScope(re, scope);
     if (m) {
       const text = String(source).slice(m.index, m.index + m[0].length);
-      return `line ${lineAt(code, m.index)} compares arrays with ${m[2]} (\`${text}\`). In JavaScript, == and === on two arrays ask "is this the very same array?", not "do they hold the same numbers?", so [2, 3] == [2, 3] is false. Compare the lengths, then each entry.`;
+      return `line ${lineAt(scope.code, m.index)} compares arrays with ${m[2]} (\`${text}\`). In JavaScript, == and === on two arrays ask "is this the very same array?", not "do they hold the same numbers?", so [2, 3] == [2, 3] is false. Compare the lengths, then each entry.`;
     }
   }
   return '';
 }
 
-/** Identifiers that one top-level function uses both as `x.data` / `x.shape` (so x is a tensor object) and as
- *  `x[...]` (as if x were its numbers), unless that function also makes x an array. */
-function tensorIndexingNote(source) {
-  const code = codeOnly(source);
-  const starts = [0, ...[...code.matchAll(/^(?:export\s+)?(?:async\s+)?(?:function|class|const|let|var)\b/gm)].map((m) => m.index), code.length];
-  for (let c = 0; c + 1 < starts.length; c++) {
-    const chunk = code.slice(starts[c], starts[c + 1]);
+/** Identifiers that one top-level function the test ran uses both as `x.data` / `x.shape` (so x is a tensor
+ *  object) and as `x[...]` (as if x were its numbers), unless that function also makes x an array. */
+function tensorIndexingNote(scope) {
+  if (!scope) return '';
+  const { code } = scope;
+  for (const c of scope.chunks) {
+    const chunk = code.slice(c.start, c.end);
     const tensors = new Set([...chunk.matchAll(/(?<![\w$.])([A-Za-z_$][\w$]*)\.(?:data|shape)\b/g)].map((m) => m[1]));
     for (const m of chunk.matchAll(/(?<![\w$.])([A-Za-z_$][\w$]*)\[/g)) {
       if (!tensors.has(m[1]) || new RegExp(`(?<![\\w$.])${m[1].replace(/\$/g, '\\$')}\\s*=\\s*(?:new\\s|\\[|Array)`).test(chunk)) continue;
-      const at = starts[c] + m.index;
+      const at = c.start + m.index;
       return `line ${lineAt(code, at)} reads \`${m[1]}[…]\`, but ${m[1]} looks like a tensor object (your code also uses ${m[1]}.data or ${m[1]}.shape). Its numbers live in ${m[1]}.data, so write ${m[1]}.data[…]: indexing the object itself gives undefined, and arithmetic on undefined gives NaN.`;
     }
   }
   return '';
 }
 
-const NAN_NOTE = 'NaN means "not a number". For a beginner it usually comes from reading an element that does not exist (undefined turns into NaN as soon as you do arithmetic with it), e.g. indexing the tensor object instead of its .data, or from a placeholder that is not implemented yet. It can also come from 0 / 0, the log of a negative number, or an overflow such as Infinity − Infinity.';
+/** When the code the test ran reads its numbers through .data (and never indexes a tensor object), a NaN
+ *  most likely comes from an index that runs past the end of a .data array. */
+function pastEndNote(scope) {
+  if (!scope || !scope.chunks.some((c) => /\.data\s*\[/.test(scope.code.slice(c.start, c.end)))) return '';
+  const mm = scope.chunks.some((c) => /matmul/i.test(c.name)) ? ' In a matmul of [n, k] by [k, m], a row of B holds m numbers, so B[p, j] is b.data[p * m + j].' : '';
+  return `your code reads the numbers through .data, so look for an index that runs past the end of a .data array (reading past the end gives undefined, and arithmetic on undefined gives NaN): an index formula error. Check each formula against the shape: a row of an [n, m] tensor holds m numbers, so element [i, j] is at i * m + j.${mm}`;
+}
+
+// ^ written as "to the power of": (x - mu)^2, x ^ 2, x ^ 0.5. In JavaScript ^ is bitwise XOR.
+const XOR_POWER = /(?:\)|[\w$\]])\s*\^(?![=^])\s*(?:[234]|0?\.5)(?![\w$.])/g;
+/** The operand in front of the ^ at `at` (a bracketed group or a name), for quoting the learner's code. */
+function operandBefore(code, at) {
+  let i = at - 1;
+  while (i >= 0 && /\s/.test(code[i])) i--;
+  if (code[i] === ')') {
+    let d = 0;
+    for (; i >= 0; i--) { if (code[i] === ')') d++; else if (code[i] === '(' && --d === 0) break; }
+    while (i > 0 && /[\w$.]/.test(code[i - 1])) i--;          // Math.sqrt(…)^2 keeps its function name
+  } else {
+    while (i > 0 && /[\w$.[\]]/.test(code[i - 1])) i--;
+  }
+  return Math.max(0, i);
+}
+function xorPowerNote(source, scope, message = '') {
+  const m = /\^/.test(message) ? null : firstInScope(XOR_POWER, scope);   // the test's own message already says it
+  if (!m) return '';
+  const caret = m.index + m[0].indexOf('^');
+  const from = operandBefore(scope.code, caret);
+  const text = String(source).slice(from, m.index + m[0].length).replace(/\s+/g, ' ');
+  return `line ${lineAt(scope.code, m.index)} uses ^ as "to the power of" (\`${text}\`), but in JavaScript ^ is bitwise XOR: it works on the bits of whole numbers, so it silently gives wrong numbers (it can even make a variance negative, and the square root of a negative number is NaN). To square, write x * x or x ** 2; for a square root, Math.sqrt(x) or x ** 0.5.`;
+}
+
+/** A Map the test got back that has ordinary properties but few or no entries, and the line of the
+ *  learner's code that wrote one with counts[w] = … (the Python dict habit). */
+function mapAsDictNote(watch, scope, message = '') {
+  if (!scope || /\.set\(/.test(message)) return '';
+  const hit = recentOf(watch).find(([, v]) => v instanceof Map && Object.keys(v).length > v.size);
+  if (!hit) return '';
+  const props = Object.keys(hit[1]);
+  for (const c of scope.chunks) {
+    const chunk = scope.code.slice(c.start, c.end);
+    const maps = new Set([...chunk.matchAll(/(?<![\w$.])([A-Za-z_$][\w$]*)\s*=\s*new\s+Map\b/g)].map((x) => x[1]));
+    for (const m of chunk.matchAll(/(?<![\w$.])([A-Za-z_$][\w$]*)\s*\[([^\]\n]+)\]\s*(?:[-+*/%]?=(?![=>])|\+\+|--)/g)) {
+      if (!maps.has(m[1])) continue;
+      const name = m[1], at = c.start + m.index;
+      const key = String(watch.source).slice(at + m[0].indexOf('[') + 1, at + m[0].indexOf(']')).trim() || 'key';
+      const text = String(watch.source).slice(at, at + m[0].length).trim() + (/=$/.test(m[0].trim()) ? ' …' : '');
+      const shown = props.slice(0, 5).map((p) => JSON.stringify(p)).join(', ') + (props.length > 5 ? ', …' : '');
+      return `${hit[0]} returned a Map with ${hit[1].size === 0 ? 'no entries' : `only ${hit[1].size} ${hit[1].size === 1 ? 'entry' : 'entries'}`} but ${props.length} ordinary ${props.length === 1 ? 'property' : 'properties'} (${shown}). Line ${lineAt(scope.code, at)} writes \`${text}\`: on a Map, ${name}[${key}] = … sets a property on the Map object (the Python dict habit), not an entry of the Map. Use ${name}.set(${key}, …) to store a value and ${name}.get(${key}) to read one, e.g. \`${name}.set(${key}, (${name}.get(${key}) || 0) + 1)\`.`;
+    }
+  }
+  return '';
+}
+
+const NAN_NOTE = 'NaN means "not a number". For a beginner it usually comes from reading an element that does not exist (undefined turns into NaN as soon as you do arithmetic with it): an index past the end of an array or of a tensor\'s .data (an index formula error), or indexing a tensor object itself instead of its .data. It can also be a placeholder that is not implemented yet, or come from 0 / 0, the log or square root of a negative number, or an overflow such as Infinity − Infinity.';
 const INF_NOTE = 'Infinity usually comes from dividing by zero, log(0) (which is −Infinity) or an overflow such as Math.exp(1000). It can also be a placeholder that is not implemented yet.';
 
 /**
  * Wrap a learner module so the tests' calls into it are recorded (which exported function ran, and what it
  * returned). The wrapper is a Proxy over the module namespace: every value, live binding and key is the real
  * one, and exported plain functions are forwarded through an `apply` trap that only records. Classes pass
- * through untouched. Calls the learner's code makes internally are not seen (they use the real bindings).
+ * through untouched (the wrapper only notes that a test used them). Calls the learner's code makes internally
+ * are not seen (they use the real bindings).
  * @param {object} mod        the imported learner module
  * @param {object} [o]
  * @param {string} [o.source]  the learner's file (for line-level notes)
@@ -216,6 +327,7 @@ const INF_NOTE = 'Infinity usually comes from dividing by zero, log(0) (which is
  */
 export function watchLearner(mod, { source = '', starter = '', file = '' } = {}) {
   const calls = new Map();            // name -> last return value, most recent call last
+  const used = new Set();             // exports a test called (even if the call threw) or classes it used
   const view = new Map();             // real export -> what the tests see (recording Proxy, or itself for a class)
   const record = (name, value) => { calls.delete(name); calls.set(name, value); };
   const viewOf = (name, fn) => {
@@ -224,6 +336,7 @@ export function watchLearner(mod, { source = '', starter = '', file = '' } = {})
       const isClass = safe(() => /^class[\s{]/.test(Function.prototype.toString.call(fn)), true);
       v = isClass ? fn : new Proxy(fn, {
         apply(target, thisArg, args) {
+          used.add(name);
           const out = Reflect.apply(target, thisArg, args);
           record(name, out);
           if (out instanceof Promise) out.then((r) => record(name, r), () => {});
@@ -237,7 +350,10 @@ export function watchLearner(mod, { source = '', starter = '', file = '' } = {})
   const module = new Proxy(mod, {
     get(target, key, receiver) {
       const v = Reflect.get(target, key, receiver);
-      return typeof key === 'string' && typeof v === 'function' ? viewOf(key, v) : v;
+      if (typeof key !== 'string' || typeof v !== 'function') return v;
+      const w = viewOf(key, v);
+      if (w === v) used.add(key);     // a class: seen being used, since its methods are not recorded
+      return w;
     },
   });
   const starterNorm = String(starter || '').replace(/\s+/g, ' ');
@@ -255,10 +371,11 @@ export function watchLearner(mod, { source = '', starter = '', file = '' } = {})
     return cache.get(name);
   };
   const names = safe(() => Object.keys(mod), []);
-  const starterCode = codeOnly(starter);
+  let starterCode = null;             // built on the first failure that needs it
   /** Does the starter's version of `name` hand back a value (a `return <something>`)? null when unknown.
    *  A function that only changes its inputs (sgdStep, zeroGrad…) returns undefined by design. */
   const expectsReturn = (name) => safe(() => {
+    if (starterCode === null) starterCode = codeOnly(starter);
     if (!starterCode) return null;
     const esc = name.replace(/\$/g, '\\$');
     const head = new RegExp(`(?:function\\s+${esc}\\s*\\(|(?<![\\w$.])${esc}\\s*=\\s*(?:async\\s*)?(?:function\\b|\\([^)]*\\)\\s*=>|[\\w$]+\\s*=>))`).exec(starterCode);
@@ -280,9 +397,11 @@ export function watchLearner(mod, { source = '', starter = '', file = '' } = {})
   }, null);
   return {
     module, source: String(source || ''), file: String(file || ''), exports: new Set(names), expectsReturn,
-    reset() { calls.clear(); },
+    reset() { calls.clear(); used.clear(); },
     /** [name, value] of the recorded calls, most recent first. */
     recent() { return [...calls].reverse(); },
+    /** Names of the exports this test called (including calls that threw) and the classes it used. */
+    used() { return new Set([...used, ...calls.keys()]); },
     stillStarter,
     /** Unwritten starter functions behind a call to `name`: itself, and exports its source calls by name. */
     unwrittenBehind(name) {
@@ -328,16 +447,23 @@ function contextNotes(watch, { returns = true } = {}) {
 }
 
 /** Source-level notes that are worth showing on any failure. */
-function sourceNotes(watch) {
-  return watch && watch.source ? safe(() => [arrayIdentityNote(watch.source)]) : [];
+/** Notes read from the learner's source, limited to the code this test ran (see scopeOf). `first` are notes
+ *  that explain the failure better than anything else (shown before the others), `last` the rest. */
+function sourceNotes(watch, err = null, message = '') {
+  const none = { first: [], last: [] };
+  if (!watch || !watch.source) return none;
+  return safe(() => {
+    const scope = scopeOf(watch, err);
+    return { first: [xorPowerNote(watch.source, scope, message)], last: [arrayIdentityNote(watch.source, scope), mapAsDictNote(watch, scope, message)] };
+  }, none);
 }
 
 /** A note about a for...in loop, when positions ('0', '1', …) show up where words were expected. */
 function forInNote(watch, keys) {
   if (!looksLikeIndexKeys(keys)) return '';
-  const code = watch && watch.source ? codeOnly(watch.source) : '';
-  const m = code ? FOR_IN.exec(code) : null;
-  const where = m ? ` Line ${lineAt(code, m.index)} has \`for (… ${m[1]} in ${m[2]})\`.` : '';
+  const scope = scopeOf(watch);
+  const m = firstInScope(FOR_IN, scope);
+  const where = m ? ` Line ${lineAt(scope.code, m.index)} has \`for (… ${m[1]} in ${m[2]})\`.` : '';
   return `the result holds the positions '0', '1', '2', … where words (the values) were expected. A \`for (const w in words)\` loop walks over the positions of an array; \`for (const w of words)\` walks over the values.${where}`;
 }
 
@@ -377,11 +503,18 @@ function valueNotes(actual, expected, watch) {
 
 /** Notes for a number that is NaN or ±Infinity where a finite number was expected. The general causes are
  *  skipped when an unwritten starter function already explains it. */
-function nonFiniteNotes(x, watch) {
+function nonFiniteNotes(x, watch, message = '') {
   return safe(() => {
-    const general = !contextNotes(watch).length;
-    if (Number.isNaN(x)) return [watch && watch.source ? tensorIndexingNote(watch.source) : '', general ? NAN_NOTE : ''];
-    return Number.isFinite(x) || !general ? [] : [INF_NOTE];
+    if (Number.isFinite(x)) return [];
+    const scope = scopeOf(watch);
+    // an unwritten starter function, or a ^ used as a power, already explains it
+    const general = !contextNotes(watch).length && !(scope && xorPowerNote(watch.source, scope));
+    if (!Number.isNaN(x)) return general ? [INF_NOTE] : [];
+    const indexing = tensorIndexingNote(scope);
+    if (indexing) return [indexing];
+    if (/past the end|does not exist/.test(message)) return [];      // the test's own message already explains it
+    const pastEnd = general ? pastEndNote(scope) : '';
+    return [pastEnd || (general ? NAN_NOTE : '')];
   });
 }
 
@@ -404,12 +537,18 @@ function fail(message, notes) {
  *                          value. Optional; without it the messages are less specific but still correct.
  */
 export function makeT(watch = null) {
-  const late = (notes) => [...notes, ...sourceNotes(watch)];
+  // Every failure goes through here; its notes are built only now, after the check has failed.
+  const failWith = (message, notes) => {
+    const src = sourceNotes(watch, null, message);
+    fail(message, [...src.first, ...notes, ...src.last]);
+  };
+  // a test's own message that reports a NaN gets the same explanation a NaN value would
+  const nanIn = (msg) => (/\bNaN\b/.test(msg) ? nonFiniteNotes(NaN, watch, msg) : []);
   const T = {
-    ok(cond, msg = 'expected condition to hold') { if (!cond) fail(msg, late(contextNotes(watch))); },
-    fail(msg = 'test failed') { fail(msg, late(contextNotes(watch))); },
+    ok(cond, msg = 'expected condition to hold') { if (!cond) failWith(msg, [...contextNotes(watch), ...nanIn(msg)]); },
+    fail(msg = 'test failed') { failWith(msg, [...contextNotes(watch), ...nanIn(msg)]); },
     eq(actual, expected, msg = '') {
-      if (actual === undefined && expected !== undefined) fail(`${pre(msg)}expected ${fmt(expected)} but got undefined`, late(valueNotes(actual, expected, watch)));
+      if (actual === undefined && expected !== undefined) failWith(`${pre(msg)}expected ${fmt(expected)} but got undefined`, valueNotes(actual, expected, watch));
       if (isTensor(actual) && isTensor(expected)) T.shape(actual, expected.shape, msg);
       if (!deepEq(toPlain(actual), toPlain(expected))) {
         const notes = valueNotes(actual, expected, watch);
@@ -419,19 +558,19 @@ export function makeT(watch = null) {
           const bad = got.find((x) => !Number.isFinite(x));
           if (bad !== undefined && want.length && want.every(Number.isFinite)) notes.push(...nonFiniteNotes(bad, watch));
         });
-        fail(differs(msg, actual, expected), late(notes));
+        failWith(differs(msg, actual, expected), notes);
       }
     },
     close(actual, expected, tol = 1e-4, msg = '') {
       if (typeof tol === 'string') { msg = tol; tol = 1e-4; }
-      if (actual === undefined) fail(`${pre(msg)}expected ${fmt(expected)} but got undefined`, late(valueNotes(actual, expected, watch)));
+      if (actual === undefined) failWith(`${pre(msg)}expected ${fmt(expected)} but got undefined`, valueNotes(actual, expected, watch));
       const sa = shapeOf(actual), sb = shapeOf(expected);
       if (sa.length && sb.length && (sa.length !== sb.length || sa.some((d, i) => d !== sb[i]))) {
-        fail(`${pre(msg)}shape mismatch: expected [${sb}] but got [${sa}]`,
-          late(['a shape lists the size along each dimension; for a plain list it is just [its length].', ...valueNotes(actual, expected, watch)]));
+        failWith(`${pre(msg)}shape mismatch: expected [${sb}] but got [${sa}]`,
+          ['a shape lists the size along each dimension; for a plain list it is just [its length].', ...valueNotes(actual, expected, watch)]);
       }
       const a = flatten(toPlain(actual)), b = flatten(toPlain(expected));
-      if (a.length !== b.length) fail(`${pre(msg)}length mismatch: expected ${b.length} values but got ${a.length}`, late(valueNotes(actual, expected, watch)));
+      if (a.length !== b.length) failWith(`${pre(msg)}length mismatch: expected ${b.length} values but got ${a.length}`, valueNotes(actual, expected, watch));
       // message parts are built only on failure: this loop runs once per element of large tensors
       const at = (i) => (a.length > 1 ? `element ${position(i, sa)}` : 'value');
       const all = () => (a.length > 1 ? ` Expected ${fmt(expected)}, got ${fmt(actual)}` : '');
@@ -439,34 +578,34 @@ export function makeT(watch = null) {
         const x = a[i], y = b[i];
         if (typeof x !== 'number' || typeof y !== 'number') {
           const why = x === undefined ? 'that position holds no value (undefined): the result is missing an entry there.' : '';
-          fail(`${pre(msg)}${at(i)} is not a number: expected ${fmt(y)} but got ${fmt(x)} (${x === null ? 'null' : typeof x})`, late([why, ...valueNotes(actual, expected, watch)]));
+          failWith(`${pre(msg)}${at(i)} is not a number: expected ${fmt(y)} but got ${fmt(x)} (${x === null ? 'null' : typeof x})`, [why, ...valueNotes(actual, expected, watch)]);
         }
         if (!Number.isFinite(x) || !Number.isFinite(y)) {
           // NaN only matches NaN and ±Infinity only the same-signed Infinity; never "within tolerance" of a finite value.
           if (!numEq(x, y)) {
-            fail(`${pre(msg)}${at(i)} differs: expected ${fmtNumber(y)}, got ${fmtNumber(x)}.${all()}`,
-              late([...valueNotes(actual, expected, watch), ...(Number.isFinite(y) ? nonFiniteNotes(x, watch) : [])]));
+            failWith(`${pre(msg)}${at(i)} differs: expected ${fmtNumber(y)}, got ${fmtNumber(x)}.${all()}`,
+              [...valueNotes(actual, expected, watch), ...(Number.isFinite(y) ? nonFiniteNotes(x, watch) : [])]);
           }
           continue;
         }
         const diff = Math.abs(x - y);
         const lim = tol * Math.max(1, Math.abs(x), Math.abs(y));
         if (!(diff <= lim)) {
-          fail(`${pre(msg)}${at(i)} differs: expected ${y}, got ${x} (allowed error ${fmtNumber(lim, lim < 1e-5)}).${all()}`, late(valueNotes(actual, expected, watch)));
+          failWith(`${pre(msg)}${at(i)} differs: expected ${y}, got ${x} (allowed error ${fmtNumber(lim, lim < 1e-5)}).${all()}`, valueNotes(actual, expected, watch));
         }
       }
     },
     shape(t, expected, msg = '') {
-      if (t === undefined) fail(`${pre(msg)}expected shape [${expected}] but got undefined`, late(valueNotes(t, expected, watch)));
+      if (t === undefined) failWith(`${pre(msg)}expected shape [${expected}] but got undefined`, valueNotes(t, expected, watch));
       const s = shapeOf(t);
       if (s.length !== expected.length || s.some((d, i) => d !== expected[i])) {
-        fail(`${pre(msg)}expected shape [${expected}] but got [${s}]`, late(contextNotes(watch)));
+        failWith(`${pre(msg)}expected shape [${expected}] but got [${s}]`, contextNotes(watch));
       }
     },
     throws(fn, msg = 'expected an error to be thrown') {
       let threw = false;
       try { fn(); } catch { threw = true; }
-      if (!threw) fail(msg, late(contextNotes(watch)));
+      if (!threw) failWith(msg, contextNotes(watch));
     },
     rng(seed = 1) { return rng(seed); },
     arr: toPlain,
@@ -569,6 +708,94 @@ function indexingOn(lineText) {
   return [...new Set([...code.matchAll(/(?<![\w$.])[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*(?:\[[^\[\]\n]*\])+/g)].map((m) => lineText.slice(m.index, m.index + m[0].length)))];
 }
 
+/** Where a function the code calls is declared inside another function (so no other function can see it):
+ *  { line, outer, head } (head is how the outer declaration starts, e.g. "export function add"), or null. */
+function nestedDeclaration(source, name) {
+  const { code, chunks } = parse(source);
+  const esc = name.replace(/\$/g, '\\$');
+  const re = new RegExp(`\\bfunction\\s+${esc}\\s*\\(|(?<![\\w$.])(?:const|let|var)\\s+${esc}\\s*=\\s*(?:async\\s*)?(?:function\\b|\\([^)]*\\)\\s*=>|[A-Za-z_$][\\w$]*\\s*=>)`, 'g');
+  for (const m of code.matchAll(re)) {
+    let depth = 0;
+    for (let i = 0; i < m.index; i++) { if (code[i] === '{') depth++; else if (code[i] === '}') depth--; }
+    if (depth <= 0) continue;
+    const outer = chunks.filter((c) => c.start <= m.index && c.name !== name).pop();
+    const head = outer ? (/^[^(={\n]*/.exec(code.slice(outer.start)) || [''])[0].trim() : '';
+    return { line: lineAt(code, m.index), outer: outer ? outer.name : '', head };
+  }
+  return null;
+}
+
+/** A Python f-string (f"…" or f'…') near the line of a syntax error: its line, and the same text written
+ *  as a JavaScript template literal. */
+function fStringHit(source, lineNo) {
+  const code = codeOnly(source);
+  for (const m of code.matchAll(/(?<![\w$.])f(["'])/g)) {
+    const line = lineAt(code, m.index);
+    if (lineNo && Math.abs(line - lineNo) > 1) continue;
+    const close = code.indexOf(m[1], m.index + 2);
+    const inner = close > 0 ? source.slice(m.index + 2, close) : '';
+    const fixed = inner && !inner.includes('\n') ? '`' + inner.replace(/\{([^{}]*)\}/g, '${$1}') + '`' : '';
+    return { line, text: close > 0 ? source.slice(m.index, close + 1) : `f${m[1]}…${m[1]}`, fixed };
+  }
+  return null;
+}
+
+/** The two things a matmul( … ) call on a line multiplies, as written, and whether it is ops.matmul. */
+function matmulArgs(lineText) {
+  const code = codeOnly(lineText);
+  const call = /(?:(\bops)\s*\.\s*)?\bmatmul\s*\(/.exec(code);
+  if (call) {
+    const args = [];
+    let depth = 0, from = call.index + call[0].length, i = from;
+    for (; i < code.length; i++) {
+      const ch = code[i];
+      if ('([{'.includes(ch)) depth++;
+      else if (')]}'.includes(ch)) { if (depth === 0) break; depth--; }
+      else if (ch === ',' && depth === 0) { args.push(lineText.slice(from, i).trim()); from = i + 1; }
+    }
+    args.push(lineText.slice(from, i).trim());
+    if (args.length === 2 && args.every((x) => x && x.length <= 30)) return { left: args[0], right: args[1], ops: !!call[1] };
+  }
+  return null;
+}
+
+const shapeList = (s) => s.split(',').map((x) => x.trim()).filter(Boolean).map(Number);
+const swapLast = (s) => (s.length < 2 ? s : [...s.slice(0, -2), s[s.length - 1], s[s.length - 2]]);
+const showShape = (s) => `[${s.join(', ')}]`;
+
+/** Plain shape advice for "matmul: inner dims differ (k vs k2) for [A] x [B]" from lib/ops.js. */
+function matmulInnerNotes(A, B, lineText) {
+  const notes = [`matmul multiplies an [n, k] tensor by a [k, m] one and gives [n, m]: the last size of the left one must equal the first size of the right one (the two "inner" sizes). Here the left is ${showShape(A)} (last size ${A[A.length - 1]}) and the right is ${showShape(B)} (first size ${B[B.length - 2]}), so they do not fit.`];
+  const args = matmulArgs(lineText || '');
+  const tr = (x) => (args && args.ops ? `ops.transpose(${x})` : `transpose(${x})`);
+  const mm = (x, y) => (args ? `${args.ops ? 'ops.' : ''}matmul(${x}, ${y})` : '');
+  const L = args ? args.left : 'the left one', R = args ? args.right : 'the right one';
+  const fits = [
+    { x: A, y: swapLast(B), say: args ? mm(L, tr(R)) : 'the left one times the transpose of the right one' },
+    { x: swapLast(A), y: B, say: args ? mm(tr(L), R) : 'the transpose of the left one times the right one' },
+    { x: swapLast(A), y: swapLast(B), say: args ? mm(tr(L), tr(R)) : 'the transpose of both' },
+  ].filter((c) => c.x[c.x.length - 1] === c.y[c.y.length - 2])
+    .map((c) => `${c.say} (${showShape(c.x)} x ${showShape(c.y)} gives ${showShape([...c.x.slice(0, -1), c.y[c.y.length - 1]])})`);
+  if (fits.length === 1) notes.push(`Transposing (swapping rows and columns) would fit, but only one way round: ${fits[0]}.`);
+  else if (fits.length > 1) notes.push(`Transposing (swapping rows and columns) would fit: ${fits.join(', or ')}. Pick the one whose result has the shape you need.`);
+  else notes.push('No transpose of either side fits either: check that these are the two tensors you meant to multiply.');
+  if (/\baccumulate\s*\(|\bgrad\b|(?<![\w$])d[A-Z][\w$]*/.test(lineText || '')) {
+    notes.push("In a backward pass every gradient has the shape of the value it belongs to: for C = A · B with A [n, k], B [k, m] and the incoming gradient dC [n, m], dA must be A's shape [n, k], and only dC · transpose(B) ([n, m] x [m, k]) gives that; dB must be B's shape [k, m], and only transpose(A) · dC ([k, n] x [n, m]) gives that.");
+  }
+  return notes;
+}
+
+/** Plain advice for "matmul: need at least 2D tensors" from lib/ops.js, with the learner's line that built a
+ *  tensor straight from a list when the code the test ran has one. */
+function matmul2dNotes(source, scope) {
+  const notes = ['matmul works on tables of numbers (2D tensors, shape [rows, columns]), and one of its two inputs is a flat list (1D, shape [N]). A flat list of N numbers must become a column of shape [N, 1] first: wrap each number in its own array, e.g. `Tensor.from(xs.map((x) => [x]))` instead of `Tensor.from(xs)`.'];
+  // the learner's own functions, not the class that implements Tensor.from
+  const own = scope ? scopeFrom(scope.code, scope.chunks.filter((c) => !c.isClass)) : null;
+  const m = firstInScope(/(?<![\w$.])(?:Tensor\s*\.\s*from|ops\s*\.\s*fromArray)\s*\(\s*([A-Za-z_$][\w$]*)\s*\)/g, own);
+  if (m) notes.push(`line ${lineAt(scope.code, m.index)} builds a tensor straight from ${m[1]} (\`${String(source).slice(m.index, m.index + m[0].length)}\`): if ${m[1]} is a flat list of numbers, that tensor is 1D. Write \`${m[1]}.map((x) => [x])\` to make it a column.`);
+  return notes;
+}
+
 /**
  * Plain-words notes for an error thrown by learner code (or by a test while reading the learner's result).
  * Returns sentences; the caller appends them to the original message, never replacing it.
@@ -588,15 +815,22 @@ export function explainError(err, watch = null, where = {}) {
     const lineText = lineNo ? lines[lineNo - 1] || '' : '';
     const recent = recentOf(watch);
     const notes = [];
-    let m;
+    let m, nested;
 
-    if ((m = /^([A-Za-z_$][\w$]*) is not defined$/.exec(message) || /^Can't find variable: ([A-Za-z_$][\w$]*)$/.exec(message))) {
+    if ((m = /matmul: inner dims differ \((\d+) vs (\d+)\) for \[([\d,\s]*)\] x \[([\d,\s]*)\]/.exec(message))) {
+      notes.push(...matmulInnerNotes(shapeList(m[3]), shapeList(m[4]), lineText));
+    } else if (/matmul: need at least 2D tensors/.test(message)) {
+      notes.push(...matmul2dNotes(source, source ? scopeOf(watch, err) : null));
+    } else if ((m = /^([A-Za-z_$][\w$]*) is not defined$/.exec(message) || /^Can't find variable: ([A-Za-z_$][\w$]*)$/.exec(message))) {
       const name = m[1];
       const loop = new RegExp(`\\bfor\\s*\\(\\s*${name.replace(/\$/g, '\\$')}\\s+(in|of)\\b`).exec(code);
       const similar = [...declaredNames(code)].find((n) => n !== name && n.toLowerCase() === name.toLowerCase());
       if (loop) {
         const over = (/\bfor\s*\(\s*[\w$]+\s+(?:in|of)\s+([A-Za-z_$][\w$.]*)/.exec(code.slice(loop.index)) || [])[1] || '…';
         notes.push(`the loop on line ${lineAt(code, loop.index)} has to create its variable: write \`for (const ${name} of ${over})\` to walk over the values${loop[1] === 'in' ? `. (\`in\` would give the positions '0', '1', … instead of the values.)` : '.'}`);
+      }
+      else if ((nested = source ? nestedDeclaration(source, name) : null)) {
+        notes.push(`${name} exists, but it is defined inside ${nested.outer || 'another function'} (line ${nested.line}), between that function's { and }, so only code inside ${nested.outer || 'that function'} can use it. Move the whole ${name} function out to the top level of the file, on its own${nested.head ? ` (for example just above \`${nested.head}\`)` : ''}, not inside another function.`);
       }
       else if (PYTHONISMS[name]) notes.push(PYTHONISMS[name]);
       else if (similar) notes.push(`you used the name ${name}, but your code creates ${similar}: names are case-sensitive, so ${name} and ${similar} are different names.`);
@@ -660,7 +894,11 @@ export function explainError(err, watch = null, where = {}) {
       const hit = source ? reservedAsName(source, lineNo ? lineNo - 1 : 0, lineNo || 0) : null;
       m = /Unexpected token '([^']+)'|unexpected token: keyword '([^']+)'|Cannot use the keyword '([^']+)'|Unexpected keyword '([^']+)'/.exec(message);
       const word = m && (m[1] || m[2] || m[3] || m[4]);
+      const fs = source && !hit ? fStringHit(source, lineNo) : null;
       if (hit) notes.push(reservedNote(hit));
+      else if (fs) {
+        notes.push(`line ${fs.line} has a Python f-string (\`${fs.text}\`), and JavaScript has no f-strings. Write the text between backticks and put each value in a \${…} slot${fs.fixed ? `: ${fs.fixed}` : ', e.g. `${letter}: ${count}`'}.`);
+      }
       else if (/reserved word|let is disallowed as a lexically bound name|Cannot use the keyword/.test(message)) {
         notes.push('a reserved word (one of the words JavaScript keeps for itself, such as var, class, function, return, new, delete, in, default, let, static) is used as a name. Pick another name.');
       } else if (/Unexpected end of input|end of script|expected expression, got end/.test(message)) {
@@ -684,7 +922,8 @@ export function explainError(err, watch = null, where = {}) {
 
     if (!isSyntax) {
       notes.push(...contextNotes(watch));
-      if (source) notes.push(arrayIdentityNote(source));
+      const src = sourceNotes(watch, err, message);
+      notes.push(...src.first, ...src.last);
     }
     return notes.filter(Boolean);
   });

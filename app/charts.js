@@ -4,8 +4,9 @@
 //
 // Legibility rules: the SVG is drawn at the width it is shown at (so an 11px tick label is 11px on a phone,
 // and it is redrawn when that width changes), numbers print without trailing zeros, log axes are labelled
-// with plain values (1, 10, 100), crowded axis labels are thinned so they never overlap, and every heatmap
-// carries a min-to-max colour legend.
+// with plain values (1, 10, 100), crowded axis labels are thinned so they never overlap, bar labels are never
+// cut off (they wrap onto two lines, or become letters keyed to the full labels below the chart), and every
+// heatmap carries a min-to-max colour legend (in the demo's own units when it passes `format`).
 
 const SVG = 'http://www.w3.org/2000/svg';
 const MAX_W = 640, MIN_W = 300;
@@ -43,6 +44,69 @@ function fmtTick(v) {
   const p = +v.toPrecision(10);
   return a >= 1e4 ? p.toLocaleString('en-US', { maximumFractionDigits: 6 }) : String(p);
 }
+
+/** A byte count in binary units: 65536 -> '64 KiB', 1.5e9 -> '1.4 GiB'. */
+function fmtBytes(b) {
+  if (!Number.isFinite(b)) return fmtNum(b);
+  const units = ['B', 'KiB', 'MiB', 'GiB', 'TiB', 'PiB'];
+  let u = 0, v = Math.abs(b);
+  while (v >= 1024 && u < units.length - 1) { v /= 1024; u++; }
+  return `${b < 0 ? '-' : ''}${+v.toPrecision(v >= 100 ? 3 : 2)} ${units[u]}`;
+}
+
+/** How a heatmap prints its values (legend, tooltip, table). `format` is a function (value -> text), one of
+ *  the names 'bytes', 'log10-bytes' (values are log10 of a byte count), 'log10' (values are log10 of the real
+ *  ones), 'percent' (0.25 -> 25%), or { prefix, suffix, scale } (value * scale between prefix and suffix).
+ *  Anything else, or a formatter that throws, prints the plain number. */
+function valueFormat(format) {
+  const presets = {
+    bytes: fmtBytes,
+    'log10-bytes': (v) => fmtBytes(Math.pow(10, v)),
+    log10: (v) => fmtTick(+Math.pow(10, v).toPrecision(3)),
+    percent: (v) => `${clean(v * 100, 1)}%`,
+  };
+  let f = null;
+  if (typeof format === 'function') f = format;
+  else if (typeof format === 'string') f = presets[format] || null;
+  else if (format && typeof format === 'object') {
+    const { prefix = '', suffix = '', scale = 1 } = format;
+    f = (v) => `${prefix}${fmtNum(v * scale)}${suffix}`;
+  }
+  if (!f) return fmtNum;
+  return (v) => {
+    if (typeof v !== 'number' || !Number.isFinite(v)) return fmtNum(v);
+    try { const t = f(v); return t === undefined || t === null || t === '' ? fmtNum(v) : String(t); } catch { return fmtNum(v); }
+  };
+}
+
+/** The value range a heatmap's colours span: spec.min / spec.max, else the finite values' own range. */
+function heatRange(spec) {
+  let vmin = spec.min ?? Infinity, vmax = spec.max ?? -Infinity;
+  if (spec.min === undefined || spec.max === undefined) {
+    for (const r of spec.rows || []) for (const v of r) if (Number.isFinite(v)) { vmin = Math.min(vmin, v); vmax = Math.max(vmax, v); }
+  }
+  if (!Number.isFinite(vmin) || !Number.isFinite(vmax)) { vmin = 0; vmax = 1; }
+  if (vmin === vmax) vmax = vmin + 1;
+  return [vmin, vmax];
+}
+
+/** Break a label into at most `maxLines` lines of at most `perLine` characters, at spaces, hyphens, slashes,
+ *  commas or before a bracket; null when it does not fit that way (no label is ever cut). */
+function wrapLabel(text, perLine, maxLines = 2) {
+  if (perLine < 1) return null;
+  if (text.length <= perLine) return [text];
+  const lines = [];
+  let cur = '';
+  for (const part of text.split(/(?<=[\s\-/,_])|(?=\()/)) {
+    if ((cur + part).trimEnd().length <= perLine) cur += part;
+    else { if (cur.trim()) lines.push(cur.trimEnd()); cur = part.trimStart(); }
+  }
+  if (cur.trim()) lines.push(cur.trimEnd());
+  return lines.length <= maxLines && lines.every((l) => l.length <= perLine) ? lines : null;
+}
+
+/** Short keys for bars whose labels do not fit under them: A, B, … Z, then A1, B1, … */
+const barKey = (i) => String.fromCharCode(65 + (i % 26)) + (i >= 26 ? Math.floor(i / 26) : '');
 
 function niceTicks(min, max, n = 5) {
   if (!(max > min)) { max = min + 1; }
@@ -299,61 +363,95 @@ export function renderBar(container, spec) {
   const vmin = Math.min(0, ...finite), vmax = Math.max(0, ...finite);
   const yt = niceTicks(vmin, vmax, 5);
   const yLabels = yt.map(fmtTick);
-  const texts = values.map((_, i) => String(labels[i] ?? i).slice(0, 12));
+  const full = values.map((_, i) => String(labels[i] ?? i));
   responsive(f, (W, canvas, shown) => {
     const H = Math.round(Math.min(300, Math.max(230, W * 0.6)));
+    const px = shown && shown < W ? W / shown : 1;          // SVG units per screen pixel (text keeps its pixel size)
+    const charW = CHAR_PX * px, lineH = (TICK_PX + 3) * px;
     const PAD = { l: Math.max(36, Math.round(14 + CHAR_PX * Math.max(1, ...yLabels.map((s) => s.length)))), r: 16, t: 28, b: 40 };
-    const svg = el('svg', { viewBox: `0 0 ${W} ${H}`, class: 'chart-svg', role: 'img' }, canvas);
+    const bw = (W - PAD.l - PAD.r) / values.length;
+    // Labels are never cut: the full label on one or two lines under its bar when every label fits; else, for
+    // up to 26 bars, a letter under each bar and a key with the full labels below the chart; else (many bars,
+    // usually numbers) every k-th full label, so neighbours never overlap.
+    const perLine = Math.floor((bw - 4) / charW);
+    let wrapped = full.map((t) => wrapLabel(t, perLine));
+    let mode = wrapped.every(Boolean) ? 'full' : values.length <= 26 ? 'key' : 'thin';
+    if (mode === 'key') wrapped = full.map((_, i) => [barKey(i)]);
+    if (mode === 'thin') wrapped = full.map((t) => [t]);
+    const lines = Math.max(...wrapped.map((l) => l.length));
+    PAD.b += Math.round((lines - 1) * lineH);
+    const svg = el('svg', { viewBox: `0 0 ${W} ${H + PAD.b - 40}`, class: 'chart-svg', role: 'img' }, canvas);
+    const Hb = H + PAD.b - 40;
     const tick = { class: 'tick', ...tickStyle(W, shown) };
-    const sy = (v) => PAD.t + (1 - (v - vmin) / Math.max(1e-12, vmax - vmin)) * (H - PAD.t - PAD.b);
+    const sy = (v) => PAD.t + (1 - (v - vmin) / Math.max(1e-12, vmax - vmin)) * (Hb - PAD.t - PAD.b);
     yt.forEach((t, k) => {
       const y = sy(t);
       el('line', { x1: PAD.l, x2: W - PAD.r, y1: y, y2: y, class: 'grid' }, svg);
       el('text', { x: PAD.l - 8, y: y + 4, 'text-anchor': 'end', ...tick }, svg).textContent = yLabels[k];
     });
-    const bw = (W - PAD.l - PAD.r) / values.length;
-    // label every bar when the labels fit side by side, otherwise every k-th one, so they never overlap
-    const widest = Math.max(1, ...texts.map((t) => t.length)) * CHAR_PX + 6;
-    const every = Math.max(1, Math.ceil(widest / bw));
+    const widest = Math.max(1, ...wrapped.map((l) => Math.max(...l.map((x) => x.length)))) * charW + 6;
+    const every = mode === 'thin' ? Math.max(1, Math.ceil(widest / bw)) : 1;
     values.forEach((v, i) => {
       const x = PAD.l + i * bw + bw * 0.15, w = bw * 0.7;
-      if (i % every === 0) el('text', { x: x + w / 2, y: H - PAD.b + 16, 'text-anchor': 'middle', ...tick }, svg).textContent = texts[i];
+      if (i % every === 0) {
+        // a thinned label may be wider than its bar: keep it inside the chart
+        const half = (Math.max(...wrapped[i].map((l) => l.length)) * charW) / 2;
+        const cx = Math.max(half, Math.min(W - half, x + w / 2));
+        const t = el('text', { x: cx, y: Hb - PAD.b + 16 * px, 'text-anchor': 'middle', ...tick }, svg);
+        wrapped[i].forEach((line, k) => { el('tspan', { x: cx, dy: k ? lineH : 0 }, t).textContent = line; });
+        if (mode !== 'full') el('title', {}, t).textContent = full[i];
+      }
       if (!Number.isFinite(v)) {   // mark the slot instead of emitting height="NaN"
         el('text', { x: x + w / 2, y: sy(0) - 6, 'text-anchor': 'middle', ...tick }, svg).textContent = String(v);
         return;
       }
       const y0 = sy(0), y1 = sy(v);
       const rect = el('rect', { x, y: Math.min(y0, y1), width: w, height: Math.max(1, Math.abs(y0 - y1)), rx: 3, class: 'bar s1' }, svg);
-      rect.addEventListener('mousemove', (e) => showTip(f, e.clientX, e.clientY, `<div>${esc(labels[i] ?? i)}: <b>${fmtNum(v)}</b></div>`));
+      rect.addEventListener('mousemove', (e) => showTip(f, e.clientX, e.clientY, `<div>${esc(full[i])}: <b>${fmtNum(v)}</b></div>`));
       rect.addEventListener('mouseleave', () => f.tip.classList.add('hidden'));
     });
     el('line', { x1: PAD.l, x2: W - PAD.r, y1: sy(0), y2: sy(0), class: 'axis' }, svg);
     if (spec.ylabel) el('text', { x: 12, y: PAD.t - 10, class: 'label' }, svg).textContent = spec.ylabel;
+    if (mode === 'key') {
+      const leg = document.createElement('div');
+      leg.className = 'legend bar-key';
+      full.forEach((t, i) => {
+        const item = document.createElement('span');
+        item.className = 'legend-item';
+        const k = document.createElement('b');
+        k.textContent = barKey(i);
+        item.append(k, ` ${t}`);
+        leg.appendChild(item);
+      });
+      canvas.appendChild(leg);
+    }
     noteSkipped(canvas, values.length - finite.length);
   });
-  f.table.innerHTML = tableHtml(['label', 'value'], values.map((v, i) => [labels[i] ?? i, v]));
+  f.table.innerHTML = tableHtml(['label', 'value'], values.map((v, i) => [full[i], v]));
 }
 
-/** Heatmap. spec: { title, rows: number[][], rowLabels?, colLabels?, min?, max? } */
+/** Heatmap. spec: { title, rows: number[][], rowLabels?, colLabels?, min?, max?, format? }
+ *  format: how values print in the legend, tooltip and table (see valueFormat); the default is the plain number.
+ *  From a demo in the sandbox worker a function cannot travel, so the worker sends its output instead:
+ *  legendText [min, max] and cellText (one string per cell). */
 export function renderHeatmap(container, spec) {
   const f = frame(container, spec.title);
   const rows = spec.rows || [];
   if (!rows.length) { f.body.textContent = 'No data.'; return; }
   const nr = rows.length, nc = Math.max(...rows.map((r) => r.length));
-  let vmin = spec.min ?? Infinity, vmax = spec.max ?? -Infinity;
-  if (spec.min === undefined || spec.max === undefined) {
-    for (const r of rows) for (const v of r) if (Number.isFinite(v)) { vmin = Math.min(vmin, v); vmax = Math.max(vmax, v); }
-  }
-  if (!Number.isFinite(vmin) || !Number.isFinite(vmax)) { vmin = 0; vmax = 1; }
-  if (vmin === vmax) vmax = vmin + 1;
+  const [vmin, vmax] = heatRange(spec);
+  const fmtV = valueFormat(spec.format);
+  const cellText = (i, j) => (spec.cellText && spec.cellText[i] && typeof spec.cellText[i][j] === 'string' ? spec.cellText[i][j] : fmtV(rows[i][j]));
+  const legendText = (k, v) => (Array.isArray(spec.legendText) && typeof spec.legendText[k] === 'string' ? spec.legendText[k] : fmtV(v));
+  const formatted = !!(spec.format || spec.cellText);
   // Sequential ramp from the theme tokens (--heat-lo → --heat-hi): one ramp, light to strong, in either mode.
-  const lo = cssRgb('--heat-lo', [233, 230, 221]);
-  const hi = cssRgb('--heat-hi', [16, 16, 16]);
+  const loRgb = cssRgb('--heat-lo', [233, 230, 221]);
+  const hiRgb = cssRgb('--heat-hi', [16, 16, 16]);
   const rgb = (c) => `rgb(${c[0]},${c[1]},${c[2]})`;
   const color = (v) => {
     if (!Number.isFinite(v)) return 'var(--grid)';
     const t = Math.max(0, Math.min(1, (v - vmin) / (vmax - vmin)));
-    return rgb(lo.map((a, i) => Math.round(a + (hi[i] - a) * t)));
+    return rgb(loRgb.map((a, i) => Math.round(a + (hiRgb[i] - a) * t)));
   };
   let skipped = 0;
   for (const r of rows) for (const v of r) if (!Number.isFinite(v)) skipped++;
@@ -375,7 +473,7 @@ export function renderHeatmap(container, spec) {
       if (rowText && i % rowEvery === 0) el('text', { x: labelW - 6, y: labelH + i * cell + cell / 2 + 4, 'text-anchor': 'end', ...tick }, svg).textContent = rowText[i];
       r.forEach((v, j) => {
         const rect = el('rect', { x: labelW + j * cell, y: labelH + i * cell, width: cell - 1, height: cell - 1, fill: color(v), rx: 1 }, svg);
-        rect.addEventListener('mousemove', (e) => showTip(f, e.clientX, e.clientY, `<div>row ${esc(spec.rowLabels ? spec.rowLabels[i] : i)}, col ${esc(spec.colLabels ? spec.colLabels[j] : j)}: <b>${fmtNum(v)}</b></div>`));
+        rect.addEventListener('mousemove', (e) => showTip(f, e.clientX, e.clientY, `<div>row ${esc(spec.rowLabels ? spec.rowLabels[i] : i)}, col ${esc(spec.colLabels ? spec.colLabels[j] : j)}: <b>${esc(cellText(i, j))}</b></div>`));
         rect.addEventListener('mouseleave', () => f.tip.classList.add('hidden'));
       });
     });
@@ -385,21 +483,23 @@ export function renderHeatmap(container, spec) {
     // colour legend: what the lightest and the strongest cells mean
     const leg = document.createElement('div');
     leg.className = 'legend heat-legend';
-    leg.setAttribute('aria-label', `colour scale from ${fmtNum(vmin)} (lightest) to ${fmtNum(vmax)} (strongest)`);
+    const lo = legendText(0, vmin), hiText = legendText(1, vmax);
+    leg.setAttribute('aria-label', `colour scale from ${lo} (lightest) to ${hiText} (strongest)`);
     const item = document.createElement('span');
     item.className = 'legend-item';
     const minT = document.createElement('span'), maxT = document.createElement('span');
-    minT.textContent = fmtNum(vmin);
-    maxT.textContent = fmtNum(vmax);
+    minT.textContent = lo;
+    maxT.textContent = hiText;
     const bar = document.createElement('i');
     bar.setAttribute('aria-hidden', 'true');
-    bar.style.cssText = `display:inline-block;width:120px;height:10px;border:1px solid var(--border);background:linear-gradient(to right, ${rgb(lo)}, ${rgb(hi)})`;
+    bar.style.cssText = `display:inline-block;width:120px;height:10px;border:1px solid var(--border);background:linear-gradient(to right, ${rgb(loRgb)}, ${rgb(hiRgb)})`;
     item.append(minT, bar, maxT);
     leg.appendChild(item);
     canvas.appendChild(leg);
     noteSkipped(canvas, skipped);
   });
-  f.table.innerHTML = tableHtml(['', ...(spec.colLabels || Array.from({ length: nc }, (_, j) => j))], rows.map((r, i) => [spec.rowLabels ? spec.rowLabels[i] : i, ...r]));
+  f.table.innerHTML = tableHtml(['', ...(spec.colLabels || Array.from({ length: nc }, (_, j) => j))],
+    rows.map((r, i) => [spec.rowLabels ? spec.rowLabels[i] : i, ...(formatted ? r.map((_, j) => cellText(i, j)) : r)]));
 }
 
 /** Table. spec: { title, columns, rows } */
@@ -424,4 +524,4 @@ export function renderChart(container, type, spec) {
 }
 
 /** Number formatting and tick choice, exported for unit tests (no DOM needed). */
-export const format = { fmtNum, fmtTick, niceTicks, logTicks, preLogged };
+export const format = { fmtNum, fmtTick, niceTicks, logTicks, preLogged, fmtBytes, valueFormat, heatRange, wrapLabel, barKey };

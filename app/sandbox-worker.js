@@ -1,6 +1,7 @@
 // app/sandbox-worker.js — runs learner code, tests, and goal demos off the main thread.
 import { rewriteImports } from './rewrite.js';
 import { makeT, watchLearner, explainError, explainMessage, failureMessage } from './testkit.js';
+import { format as chartFormat } from './charts.js';
 
 let currentRun = null;
 
@@ -108,7 +109,7 @@ function makeLab() {
     md: (markdown) => post({ type: 'md', markdown }),
     plot: (spec) => post({ type: 'plot', spec: plain(spec) }),
     bar: (spec) => post({ type: 'bar', spec: plain(spec) }),
-    heatmap: (spec) => post({ type: 'heatmap', spec: plain(spec) }),
+    heatmap: (spec) => post({ type: 'heatmap', spec: plain(heatmapTexts(spec)) }),
     table: (spec) => post({ type: 'table', spec: plain(spec) }),
     progress: (fraction, label = '') => post({ type: 'progress', fraction, label }),
     tick: () => new Promise((r) => setTimeout(r, 0)),
@@ -118,12 +119,25 @@ function makeLab() {
   };
 }
 
-// Deep-convert typed arrays so specs survive structured clone in a predictable shape.
+// Deep-convert typed arrays so specs survive structured clone in a predictable shape. Functions cannot be
+// cloned (postMessage would throw), so they are left out.
 function plain(x) {
   if (ArrayBuffer.isView(x)) return Array.from(x);
   if (Array.isArray(x)) return x.map(plain);
-  if (x && typeof x === 'object') { const o = {}; for (const k in x) o[k] = plain(x[k]); return o; }
+  if (typeof x === 'function') return undefined;
+  if (x && typeof x === 'object') { const o = {}; for (const k in x) if (typeof x[k] !== 'function') o[k] = plain(x[k]); return o; }
   return x;
+}
+
+// A heatmap `format` given as a function runs here, in the demo's worker: its output travels as text
+// (legendText for the two ends of the colour scale, cellText for the tooltip and table). A named format
+// ('log10-bytes', …) or a { prefix, suffix, scale } object is cloneable and is applied by app/charts.js.
+function heatmapTexts(spec) {
+  if (!spec || typeof spec.format !== 'function') return spec;
+  const fmt = chartFormat.valueFormat(spec.format);
+  const rows = (spec.rows || []).map((r) => Array.from(r));
+  const [lo, hi] = chartFormat.heatRange({ ...spec, rows });
+  return { ...spec, format: undefined, legendText: [fmt(lo), fmt(hi)], cellText: rows.map((r) => r.map(fmt)) };
 }
 
 const errMsg = (err) => (err && err.message ? err.message : String(err));
