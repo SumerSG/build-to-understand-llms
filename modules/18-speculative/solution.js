@@ -10,7 +10,7 @@
 // A "model" is a function model(ids, n) that returns n probability vectors: the next-token
 // distributions after the last n positions of ids (row j is the distribution over the token that
 // follows ids[ids.length - n + j]). The draft is called with n = 1; the target with n = K + 1, which is
-// the single teacher-forced verify pass.
+// the single teacher-forced verify pass. Distributions are plain arrays of numbers that sum to 1.
 
 import { sampleIndex } from 'lib/util.js';
 

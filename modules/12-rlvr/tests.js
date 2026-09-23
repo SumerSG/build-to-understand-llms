@@ -85,6 +85,10 @@ export const tests = [
     const zeros = T.arr(m.groupAdvantages([0, 0, 0, 0], 4));
     const ones = T.arr(m.groupAdvantages([1, 1, 1, 1], 4));
     for (const v of [...zeros, ...ones]) T.ok(Number.isFinite(v) && Math.abs(v) < 1e-9, `all-wrong and all-right groups carry no signal: their advantages must be exactly 0, got ${v} (add eps to the std before dividing)`);
+    const mixed = T.arr(m.groupAdvantages([0, 0, 0, 0, 1, 1, 1, 1, 1, 0, 0, 0], 4));
+    T.close(mixed.slice(0, 8), [0, 0, 0, 0, 0, 0, 0, 0], 1e-6, 'the two all-equal groups are zero');
+    T.ok(mixed[8] > 1.5 && mixed[9] < -0.5, `the mixed group in the same call must still get non-zero advantages (got ${mixed.slice(8)}): zero is the answer for equal rewards, not the answer for everything`);
+    T.throws(() => m.groupAdvantages([1, 0, 1], 2), '3 rewards do not split into groups of 2: throw rather than silently mis-grouping');
   } },
   { step: 'advantages', name: 'groups are normalised independently, not over the whole batch', run(m, T) {
     const adv = T.arr(m.groupAdvantages([1, 0, 0, 0, 1, 1, 1, 1, 0, 1, 0, 1], 4));
@@ -219,6 +223,9 @@ export const tests = [
     const stats = m.grpoStep(policy, ref, tasks, { G: 8, beta: 0.04, clip: 0.2, mu: 2, optimizer, next: T.rng(3) });
     T.eq(stats.reward, 0, 'no completion can be right when the answer is outside the vocabulary');
     T.eq(stats.signalFrac, 0, 'every group is all-wrong: zero advantage everywhere');
+    T.eq(stats.samples.length, 32, 'the rollout of 4 tasks × G = 8 must still happen (32 samples) even though it yields no gradient');
+    T.eq(T.arr(stats.adv), new Array(32).fill(0), 'stats.adv must hold the 32 group advantages, all zero here');
+    T.ok(stats.entropy > 4.6 && stats.entropy <= Math.log(m.ANSWER_VOCAB) + 1e-6, `a uniform policy has entropy ln 100 = 4.605 nats before the update, got ${stats.entropy}`);
     T.ok(policy.W.data.every((v, i) => v === before[i]), 'zero advantages and zero KL gradient at the reference mean zero update: GRPO wastes prompts whose group is all-wrong or all-right');
   } },
   { step: 'train', name: 'trainGRPO raises accuracy on a handful of tasks from a uniform start, deterministically', async run(m, T) {
