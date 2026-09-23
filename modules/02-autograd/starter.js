@@ -1,10 +1,14 @@
-// Module 02 — Autograd from scratch.
-// A Tensor wraps a raw tensor ({ shape, data: Float32Array }, module 01) and, when any input requires a
+// Autograd from scratch.
+// A Tensor wraps a raw tensor ({ shape, data: Float32Array }, as built in the Tensors module) and, when any input requires a
 // gradient, remembers how it was made: the input Tensors (_children), the op name (_op) and a closure
 // (_backward) that reads the gradient sitting in this.grad and ADDS each input's share into input.grad.
 // backward() on a scalar loss walks that record from the output back to the leaves: the chain rule, run
 // in reverse. Every forward op below is already written with lib/ops.js; you write the backward side.
+// The comments marked "JS:" explain JavaScript that earlier modules did not need.
 
+// JS: `import * as ops from 'lib/ops.js'` loads every exported function of the lab's reference tensor library
+// into one object named ops, so ops.matmul is its matmul and ops.transpose its transpose (the same kernels you
+// wrote in the Tensors module, in a more general form).
 import * as ops from 'lib/ops.js';
 
 // ---------- worked examples (done for you; read them, they set the conventions) ----------
@@ -34,6 +38,9 @@ function fromOp(raw, op, inputs, backwardFn) {
     out.requiresGrad = true;
     out._op = op;
     out._children = inputs;
+    // JS: `() => backwardFn(...)` is a closure: a small function made here and stored for later. It still
+    // "remembers" out and backwardFn after fromOp has returned, so backward() can call it much later.
+    // Every op below passes its own closure, (g) => { ... }, as backwardFn in the same way.
     out._backward = () => backwardFn({ shape: out.shape, data: out.grad });
   }
   return out;
@@ -54,7 +61,7 @@ function resolveAxis(axis, ndim) {
 
 /**
  * The reverse of a reduction: spread the reduced gradient g back over every element of `shape` that was
- * reduced along `axis` (null = all elements), multiplied by `factor`. Index arithmetic from module 01.
+ * reduced along `axis` (null = all elements), multiplied by `factor`. Index arithmetic as in the Tensors module.
  */
 function expandAlongAxis(g, shape, axis, factor) {
   const out = new Float32Array(ops.size(shape));
@@ -91,8 +98,14 @@ export function unbroadcast(grad, gradShape, targetShape) {
 }
 
 /** A raw tensor plus gradient bookkeeping. Every op returns a new Tensor; nothing is modified in place. */
+// JS: a class is a recipe for objects that share the same methods. `new Tensor(raw)` makes one object (an
+// "instance") and runs its constructor; every method below, such as add or backward, is then called on an
+// instance with a dot, x.add(y), and inside it `this` is that instance (x).
 export class Tensor {
   /** Wraps raw ({ shape, data }) without copying. requiresGrad marks a leaf whose gradient you want. */
+  // JS: the constructor runs once, inside `new Tensor(...)`, and fills in this object's fields (this.shape, ...).
+  // `{ requiresGrad = false } = {}` unpacks an options object with a default: new Tensor(raw) and
+  // new Tensor(raw, { requiresGrad: true }) both work.
   constructor(raw, { requiresGrad = false } = {}) {
     if (!raw || !raw.shape || !raw.data) throw new Error('Tensor: expected a raw tensor { shape, data }');
     this.shape = raw.shape;
@@ -107,6 +120,8 @@ export class Tensor {
   // ---------- creation (done) ----------
 
   /** Tensor from nested JS arrays (or a single number): Tensor.from([[1, 2], [3, 4]]) has shape [2, 2]. */
+  // JS: `static` means the method belongs to the class itself, not to one tensor: you call Tensor.from(...),
+  // not x.from(...). It is a way of making new tensors.
   static from(nested, opts) {
     return new Tensor(ops.fromArray(nested), opts);
   }
@@ -131,6 +146,7 @@ export class Tensor {
 
   // ---------- inspection (done) ----------
 
+  // JS: `get` makes a getter: t.size reads like a field (no brackets) but runs this function each time.
   get size() {
     return this.data.length;
   }

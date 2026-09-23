@@ -80,6 +80,26 @@ function gflopsOf(fn, a, b, rounds = 3) {
   return (2 * n * n * n) / Math.max(best, 1e-9) / 1e9;
 }
 
+/** A small number in words and plain decimals ("0.0000000056") instead of scientific notation (5.6e-9). */
+function plainSmall(x) {
+  const a = Math.abs(x);
+  if (a === 0) return '0 (exactly)';
+  if (a >= 1e-3) return x.toFixed(4);
+  if (a < 1e-12) return 'about 0 (less than a trillionth)';
+  return `about 0 (${x.toFixed(Math.min(20, Math.ceil(-Math.log10(a)) + 1))})`;
+}
+
+/** Plain decimals without the "about 0" wording: 5.6e-9 → "0.0000000056". */
+function plainDecimal(x) {
+  const a = Math.abs(x);
+  if (a === 0) return '0';
+  if (a >= 1e-3) return x.toFixed(4);
+  return x.toFixed(Math.min(20, Math.ceil(-Math.log10(a)) + 1));
+}
+
+/** A large ratio with two significant figures and thousands separators: 1100000 → "1,100,000". */
+const bigNumber = (x) => Number(x.toPrecision(2)).toLocaleString('en-US');
+
 export default async function demo(m, lab) {
   const next = rng(7);
   const rand = (shape) => { const t = m.raw(shape); for (let i = 0; i < t.data.length; i++) t.data[i] = next() * 2 - 1; return t; };
@@ -102,8 +122,8 @@ export default async function demo(m, lab) {
   ];
   const tol = 1e-4;
   const passed = checks.filter(([, e]) => e <= tol).length;
-  lab.table({ title: `Your kernels vs lib/ops.js (tolerance ${tol})`, columns: ['op', 'max |yours − reference|', 'match'],
-    rows: checks.map(([name, e]) => [name, Number.isFinite(e) ? +e.toExponential(2) : String(e), e <= tol ? 'yes' : 'NO']) });
+  lab.table({ title: `Your functions vs the lab's reference code, lib/ops.js (they match when the biggest difference is under ${tol})`, columns: ['function', 'biggest |yours − reference|', 'match'],
+    rows: checks.map(([name, e]) => [name, Number.isFinite(e) ? plainSmall(e) : String(e), e <= tol ? 'yes' : 'NO']) });
   await lab.tick();
 
   // 2. matmul throughput: your loop vs the textbook i-j-p order. At n = 512 each matrix is 1 MB, far
@@ -145,7 +165,7 @@ export default async function demo(m, lab) {
   const y = m.layerNorm(x);
   const stats = (t) => m.toArray(t).map((r) => { const mu = r.reduce((s, v) => s + v, 0) / r.length; const v = r.reduce((s, q) => s + (q - mu) ** 2, 0) / r.length; return [mu, Math.sqrt(v)]; });
   const sx = stats(x), sy = stats(y);
-  lab.table({ title: 'LayerNorm: per-row mean and std before / after', columns: ['row', 'mean before', 'std before', 'mean after', 'std after'], rows: sx.map((s, i) => [i, +s[0].toFixed(3), +s[1].toFixed(3), +sy[i][0].toFixed(4), +sy[i][1].toFixed(4)]) });
+  lab.table({ title: 'LayerNorm: each row\'s mean and std (standard deviation: how spread out the row is) before and after', columns: ['row', 'mean before', 'std before', 'mean after', 'std after'], rows: sx.map((s, i) => [i, +s[0].toFixed(3), +s[1].toFixed(3), +sy[i][0].toFixed(4), +sy[i][1].toFixed(4)]) });
   const worstMean = Math.max(...sy.map((s) => Math.abs(s[0])));
   const worstStd = Math.max(...sy.map((s) => Math.abs(s[1] - 1)));
 
@@ -154,8 +174,15 @@ export default async function demo(m, lab) {
   const L = sizes.length - 1, nLast = sizes[L];
   const ratio = (x) => `${x.toFixed(2)}×`;
   const orderLine = order.short
-    ? `Your matmul reads B ${order.pattern === 'row' ? 'along rows' : 'down columns'}, so it is an **${order.short}** loop.`
+    ? `Your matmul reads B ${order.pattern === 'row' ? 'along rows' : 'down columns'}, so it is an **${order.short}** loop${order.short === 'i-p-j' ? ' (the order step 2 recommends)' : ''}.`
     : `The demo could not tell which order your loop uses (${order.pattern === 'other' ? 'it reads B in neither pattern' : 'it could not watch its reads'}).`;
   const fasterNamed = ipj[L] >= naive[L] ? 'i-p-j' : 'i-j-p';
-  lab.done(`**${passed} of ${checks.length}** kernels match \`lib/ops.js\` within ${tol}. ${orderLine} It peaks at **${peak.toFixed(2)} GFLOP/s** at n=${nPeak}, and at n=${nLast} it runs at ${ratio(yours[L] / ipj[L])} the speed of the i-p-j loop and ${ratio(yours[L] / naive[L])} the speed of the i-j-p loop. Between the two named orders, **${fasterNamed}** is faster at n=${nLast} (i-p-j / i-j-p = **${ratio(ipj[L] / naive[L])}**; at n=${sizes[0]} it is ${ratio(ipj[0] / naive[0])}). An H100 (approximately 989 TFLOP/s dense bf16, NVIDIA datasheet) is about **${(989e3 / peak).toExponential(1)}×** faster. Softmax at T=0.25 puts ${(100 * rows[0][0]).toFixed(0)}% of the mass on the top logit versus ${(100 * rows[4][0]).toFixed(0)}% at T=4. After LayerNorm the worst row mean is ${worstMean.toExponential(1)} and the worst |std − 1| is ${worstStd.toExponential(1)} (eps = 1e-5 makes the std slightly below 1).`);
+  const allMatch = passed === checks.length;
+  lab.done([
+    `**In one sentence:** ${allMatch ? 'every function you wrote gives the same numbers as the lab\'s reference code' : `${passed} of your ${checks.length} functions give the same numbers as the lab's reference code`}, and your matrix multiply manages about **${peak.toFixed(2)} billion** arithmetic operations per second in this browser.`,
+    `**Correct?** ${passed} of ${checks.length} functions match the reference (\`lib/ops.js\`) to within 0.0001.`,
+    `**How fast?** ${orderLine} It peaks at **${peak.toFixed(2)} GFLOP/s** (billions of arithmetic operations per second) at n=${nPeak}. At n=${nLast} it runs at ${ratio(yours[L] / ipj[L])} the speed of the i-p-j loop and ${ratio(yours[L] / naive[L])} the speed of the i-j-p loop; between those two, **${fasterNamed}** is faster there (i-p-j / i-j-p = **${ratio(ipj[L] / naive[L])}**; at n=${sizes[0]} it is ${ratio(ipj[0] / naive[0])}). NVIDIA's H100, a GPU built for this work, is rated at about 989,000 GFLOP/s, roughly **${bigNumber(989e3 / peak)} times** faster.`,
+    `**Softmax temperature:** at T=0.25 the top score gets ${(100 * rows[0][0]).toFixed(0)}% of the probability; at T=4 it gets ${(100 * rows[4][0]).toFixed(0)}%.`,
+    `**LayerNorm:** afterwards every row has a mean of about 0 (the worst is ${plainDecimal(worstMean)}) and a std (standard deviation, the spread) of about 1 (the worst is off by ${plainDecimal(worstStd)}; eps = 0.00001 makes it slightly below 1).`,
+  ].join('\n\n'));
 }

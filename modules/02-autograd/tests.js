@@ -44,6 +44,14 @@ function numericNotYet(T, v) {
   if (Number.isNaN(v)) T.fail('numericDerivative returned NaN: if you have not written it yet, it is not implemented yet (the starter placeholder returns NaN). Otherwise check that you call fn(...inputs).item() on both sides and divide by hi − lo, which must not be 0');
 }
 
+/** trainLinear's usual crash: X built as a flat list or a single row instead of a column of shape [N, 1]. */
+function shapeOfX(T, e) {
+  const msg = String(e && e.message);
+  if (/need at least 2D|inner dims differ/.test(msg)) {
+    T.fail(`trainLinear stopped with "${msg}": X must be a column of shape [N, 1] (one row per point, one number per row), so that X.matmul(w) is [N, 1] x [1, 1]. Tensor.from(xs) is a flat [N] list and Tensor.from([xs]) is a single row [1, N]; wrap each number in its own array instead: Tensor.from(xs.map((x) => [x])), and the same for Y`);
+  }
+}
+
 export const tests = [
   // ---------- step 1: graph ----------
   { step: 'graph', name: 'topoSort lists every node once, children before parents, root last', run(m, T) {
@@ -120,7 +128,12 @@ export const tests = [
     const A = randomTensor(m, [2, 3], 2, { requiresGrad: true });
     const B = randomTensor(m, [3, 4], 3, { requiresGrad: true });
     const W = randomTensor(m, [2, 4], 4);       // fixed weights make dC non-uniform
-    A.matmul(B).mul(W).sum().backward();
+    try { A.matmul(B).mul(W).sum().backward(); } catch (e) {
+      if (/inner dims differ|need at least 2D/.test(String(e && e.message))) {
+        T.fail(`backward() through matmul stopped with "${e.message}": one of the two gradient products has the wrong shapes. Here A is [2,3], B is [3,4] and dC (g) is [2,4]. dA must have A's shape [2,3], and only g times B transposed fits: [2,4] x [4,3]. dB must have B's shape [3,4], and only A transposed times g fits: [3,2] x [2,4]. Wrap the operand in ops.transpose(...) and keep g on the side the formula puts it`);
+      }
+      throw e;
+    }
     const dA = ops.matmul(W, ops.transpose(B)), dB = ops.matmul(ops.transpose(A), W);
     T.close(A.grad, dA.data, 1e-4, 'dA must be dC·Bᵀ, shape [2,3]; the two products are easy to swap');
     T.close(B.grad, dB.data, 1e-4, 'dB must be Aᵀ·dC, shape [3,4]');
@@ -361,11 +374,12 @@ export const tests = [
   { step: 'train', name: 'trainLinear recovers w = 3, b = 2 from noiseless data', run(m, T) {
     const xs = Array.from({ length: 32 }, (_, i) => -1 + (2 * i) / 31);
     const ys = xs.map((x) => 3 * x + 2);
-    const r = m.trainLinear(xs, ys, { steps: 200, lr: 0.1 });
+    let r;
+    try { r = m.trainLinear(xs, ys, { steps: 200, lr: 0.1 }); } catch (e) { shapeOfX(T, e); throw e; }
     T.ok(r.losses.length > 0 || r.w !== 0, 'trainLinear is not implemented yet: it returned the starter placeholder (w = 0, b = 0, no losses)');
     T.eq(r.losses.length, 200, 'one loss per step');
     T.eq(r.ws.length, 200); T.eq(r.bs.length, 200);
-    T.ok(Math.abs(r.w - 3) < 0.02, `w should approach 3 (got ${r.w}); check the sign of the update and that zeroGrad runs every step`);
+    T.ok(Math.abs(r.w - 3) < 0.02, `w should approach 3 (got ${r.w}); check the sign of the update, that zeroGrad runs every step, and that Y is a column of shape [N, 1] like X (a flat Y broadcasts pred − Y into an [N, N] table)`);
     T.ok(Math.abs(r.b - 2) < 0.02, `b should approach 2 (got ${r.b})`);
     T.ok(r.losses[r.losses.length - 1] < 1e-3, `final MSE should be near 0 on noiseless data, got ${r.losses[r.losses.length - 1]}`);
     T.ok(r.losses[0] > r.losses[10] && r.losses[10] > r.losses[199], 'loss must fall over training');
@@ -375,7 +389,8 @@ export const tests = [
     const next = T.rng(3);
     const xs = Array.from({ length: 64 }, () => next() * 4 - 2);
     const ys = xs.map((x) => 3 * x + 2 + (next() - 0.5) * 0.5);
-    const r = m.trainLinear(xs, ys, { steps: 100, lr: 0.05 });
+    let r;
+    try { r = m.trainLinear(xs, ys, { steps: 100, lr: 0.05 }); } catch (e) { shapeOfX(T, e); throw e; }
     T.ok(Math.abs(r.w - 3) < 0.15 && Math.abs(r.b - 2) < 0.15, `expected w ≈ 3, b ≈ 2, got w=${r.w.toFixed(3)} b=${r.b.toFixed(3)}`);
     T.ok(r.losses[99] < r.losses[0] / 10, `loss went ${r.losses[0].toFixed(3)} → ${r.losses[99].toFixed(4)}; gradient descent should cut it by more than 10×`);
     T.ok(r.losses.every(Number.isFinite), 'no NaN or Infinity: check the sign of the update and the learning rate');

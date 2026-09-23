@@ -172,11 +172,13 @@ Any other shape must throw an \`Error\` (for example, a \`[3, 2]\` tensor onto a
 **Comparing shapes.** In JavaScript, \`[2, 3] === [2, 3]\` and \`[2, 3] == [2, 3]\` are both \`false\`: arrays compare by *identity* (are these the very same array object?), not by contents. So compare shapes entry by entry, as your \`sameShape\` did in module 35: the lengths must match and every entry must match, for example \`s.length === t.length && s.every((v, i) => v === t[i])\`.
 
 **One helper for both.** \`add\` and \`mul\` differ only in the arithmetic, so write one private helper \`binary(a, b, fn)\` that takes the arithmetic as a function argument: \`fn\` is any function of two numbers, such as \`(x, y) => x + y\`, and the helper calls \`fn(a.data[i], …)\` for each element. Then the body of \`add\` is \`return binary(a, b, (x, y) => x + y);\` and \`mul\` is the same with \`*\`. (Full NumPy-style broadcasting is in \`lib/ops.js\` if you are curious.)
+
+**Where the helper goes.** The starter already has an empty \`function binary(a, b, fn) { … }\` just above \`export function add\`. Write its body there. It lives at the **top level** of the file, on its own, not inside \`add\` or any other function: a function written inside \`add\` exists only while \`add\` runs, so \`mul\` could not see it and would stop with \`binary is not defined\`.
 `,
       hints: [
         'For each flat position i of the output, ask: which element of b belongs there? The answer differs for a number, a same-shape tensor and a row vector.',
         'Decide the case once, before the loop: b is a number; b has the same shape as a (same length and every entry equal); or b is 1-D with length d, the last dimension of a. In the row-vector case, element i of a is in column i % d, so that is the index into b.data. Anything else: throw.',
-        '```js\nfunction binary(a, b, fn) {\n  const out = new Float32Array(a.data.length);\n  const d = a.shape[a.shape.length - 1];\n  if (typeof b === \'number\') {\n    for (let i = 0; i < out.length; i++) out[i] = fn(a.data[i], b);\n  } else if (/* same shape: same length and every entry equal */) {\n    for (let i = 0; i < out.length; i++) out[i] = fn(a.data[i], b.data[i]);\n  } else if (/* b is 1-D and its length is d */) {\n    for (let i = 0; i < out.length; i++) out[i] = fn(a.data[i], b.data[/* the column of i */]);\n  } else {\n    throw new Error(`cannot broadcast [${b.shape}] onto [${a.shape}]`);\n  }\n  return { shape: a.shape.slice(), data: out };\n}\n// inside the existing add:  return binary(a, b, (x, y) => x + y);\n```',
+        '```js\n// the binary stub above add, filled in (it stays at the top level, outside add and mul):\nfunction binary(a, b, fn) {\n  const out = new Float32Array(a.data.length);\n  const d = a.shape[a.shape.length - 1];\n  if (typeof b === \'number\') {\n    for (let i = 0; i < out.length; i++) out[i] = fn(a.data[i], b);\n  } else if (/* same shape: same length and every entry equal */) {\n    for (let i = 0; i < out.length; i++) out[i] = fn(a.data[i], b.data[i]);\n  } else if (/* b is 1-D and its length is d */) {\n    for (let i = 0; i < out.length; i++) out[i] = fn(a.data[i], b.data[/* the column of i */]);\n  } else {\n    throw new Error(`cannot broadcast [${b.shape}] onto [${a.shape}]`);\n  }\n  return { shape: a.shape.slice(), data: out };\n}\n// then, as the whole body of add (and the same with * in mul):\n//   return binary(a, b, (x, y) => x + y);\n```',
       ],
     },
     {
@@ -206,18 +208,18 @@ Implement \`layerNorm(a, gamma = null, beta = null, eps = 1e-5)\` along the last
 
 \`\`\`
 mu       = mean(row)                        // add the row up, divide by d
-variance = mean((row - mu)^2)               // biased: divide by d, not d - 1
+variance = mean((row - mu) * (row - mu))    // biased: divide by d, not d - 1
 y        = (row - mu) / sqrt(variance + eps) * gamma + beta
 \`\`\`
 
-(Do not name a JavaScript variable \`var\`: it is a reserved word, and the whole file stops loading. \`variance\` is fine.)
+Two JavaScript traps here. **Squaring:** write \`c * c\` or \`c ** 2\`. JavaScript has no \`^\` for powers: \`^\` means something else and silently gives wrong numbers (\`3 ^ 2\` is 1), which here can make the "variance" negative and the output \`NaN\`. **Names:** do not name a variable \`var\`: it is a reserved word, and the whole file stops loading. \`variance\` is fine.
 
 \`gamma\` and \`beta\` are 1-D tensors of length \`d\` or \`null\` (meaning 1 and 0); feature \`j\` of every row uses \`gamma.data[j]\` and \`beta.data[j]\`. Honour the \`eps\` argument and add it inside the square root (\`Math.sqrt\`). A constant row has zero variance; \`eps\` keeps the division finite. Return a new tensor with \`a\`'s shape.
 `,
       hints: [
         'What two numbers do you need about a row before you can write any of its outputs? Each needs its own pass over the row.',
         'Pass 1 computes the mean mu; pass 2 the mean of squared differences from mu (divide by d); pass 3 writes each output. Work out `inv = 1 / Math.sqrt(variance + eps)` once per row and multiply by it, rather than dividing d times.',
-        '```js\n// inside a loop over rows r, with base = r * d:\nlet mu = 0;\nfor (let j = 0; j < d; j++) mu += a.data[base + j];\nmu /= d;\nlet variance = 0;\n/* … pass 2: add up (a.data[base + j] - mu) squared over the row, then divide by d … */\nconst inv = 1 / Math.sqrt(variance + eps);\nfor (let j = 0; j < d; j++) {\n  const g = gamma ? gamma.data[j] : 1, sh = beta ? beta.data[j] : 0;\n  out[base + j] = (a.data[base + j] - mu) * inv * g + sh;\n}\n```',
+        '```js\n// inside a loop over rows r, with base = r * d:\nlet mu = 0;\nfor (let j = 0; j < d; j++) mu += a.data[base + j];\nmu /= d;\nlet variance = 0;\n/* … pass 2: add up c * c over the row, where c = a.data[base + j] - mu, then divide by d … */\nconst inv = 1 / Math.sqrt(variance + eps);\nfor (let j = 0; j < d; j++) {\n  const g = gamma ? gamma.data[j] : 1, sh = beta ? beta.data[j] : 0;\n  out[base + j] = (a.data[base + j] - mu) * inv * g + sh;\n}\n```',
       ],
     },
   ],

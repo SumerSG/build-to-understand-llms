@@ -1,4 +1,4 @@
-// Module 02 goal demo: your autograd engine fits y = 3x + 2 by gradient descent, then trains a small
+// Goal demo for "Autograd from scratch": your autograd engine fits y = 3x + 2 by gradient descent, then trains a small
 // MLP with the fused cross-entropy after gradCheck has vouched for every closure it uses.
 import { rng, randn } from 'lib/util.js';
 

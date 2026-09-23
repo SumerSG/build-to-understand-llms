@@ -1,4 +1,4 @@
-// Module 00 — Zipf's law. Your job: fill in the five functions marked TODO, one per build step.
+// Zipf's law. Your job: fill in the five functions marked TODO, one per build step.
 // Press "Check this step" (Ctrl+Enter) to run the tests for the current step.
 
 /**

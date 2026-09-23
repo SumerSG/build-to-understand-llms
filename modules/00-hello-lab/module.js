@@ -121,7 +121,7 @@ Implement \`countFrequencies(words)\`: return a \`Map\` whose keys are words and
 countFrequencies(['a', 'b', 'a'])   // → Map { 'a' => 2, 'b' => 1 }
 \`\`\`
 
-You need three pieces from module 35: create the empty table with \`const counts = new Map();\`, loop over the words with \`for (const w of words)\` (\`of\` gives the words themselves; \`in\` would give their positions "0", "1", …), and read and write entries with \`counts.get(w)\` and \`counts.set(w, value)\`. Remember that \`get\` returns \`undefined\` for a word you have not seen yet.
+You need three pieces from module 35: create the empty table with \`const counts = new Map();\`, loop over the words with \`for (const w of words)\` (\`of\` gives the words themselves; \`in\` would give their positions "0", "1", …), and read and write entries with \`counts.get(w)\` and \`counts.set(w, value)\`. Remember that \`get\` returns \`undefined\` for a word you have not seen yet. If you know Python, resist \`counts[w] = ...\`: on a Map that sets a property on the object and leaves the Map itself empty.
 
 Why a \`Map\` and not a plain object? Word keys like \`"constructor"\` or \`"__proto__"\` collide with the built-in properties every object has; a \`Map\` has no such surprises. You will meet exactly this kind of counting table again when you train the BPE tokenizer in module 03 (counting adjacent pairs) and the bigram model in module 04.
 `,

@@ -1,4 +1,4 @@
-// Module 02 — reference solution. The same engine, with more ops, lives in lib/tensor.js.
+// Autograd from scratch — reference solution. The same engine, with more ops, lives in lib/tensor.js.
 //
 // A Tensor wraps a raw tensor ({ shape, data: Float32Array }) and, when any input requires a gradient,
 // remembers how it was made: the input Tensors (_children), the op name (_op) and a closure

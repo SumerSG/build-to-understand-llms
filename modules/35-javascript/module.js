@@ -22,11 +22,12 @@ export default {
     { q: 'What is `[2, 3] === [2, 3]` in JavaScript?', options: ['true', 'false', 'undefined'], answer: 1, why: 'Two array literals make two separate arrays, and === on arrays asks whether they are the very same array. Compare lengths and entries (sameShape) to compare contents.' },
     { q: 'What does `new Map().get(\'q\')` give, and so what does `(new Map().get(\'q\') || 0) + 1` give?', options: ['0, then 1', 'undefined, then 1', 'null, then NaN'], answer: 1, why: 'A missing key reads as undefined. `undefined || 0` is 0, so the count starts at 1. Without the `|| 0` you would get undefined + 1 = NaN.' },
     { q: 'Which comparator sorts `[letter, count]` pairs with the largest count first?', options: ['`(a, b) => b - a`', '`(a, b) => b[1] - a[1]`', '`(a, b) => a[1] - b[1]`'], answer: 1, why: 'a and b are whole pairs, so the counts are a[1] and b[1]. A positive result puts b first, so b[1] - a[1] puts larger counts first. b - a on two arrays is NaN.' },
+    { q: 'What is `3 ^ 2` in JavaScript?', options: ['9', '1, because ^ is not a power in JavaScript', 'An error'], answer: 1, why: '^ is a bit operation on whole numbers, not "to the power of", and it gives no error, just a wrong number. Square with `x * x` or `x ** 2`.' },
     { q: 'What is `Math.exp(1000)` in JavaScript?', options: ['A very large but ordinary number', '`Infinity`', 'An error is thrown'], answer: 1, why: 'JavaScript numbers top out near 1.8 × 10^308 (about e^709.8); beyond that you get Infinity rather than an error. Module 01 meets this when it computes softmax.' },
   ],
   concept: `
 :::plain
-Every other module in this lab asks you to write small pieces of JavaScript, the programming language built into web browsers. This module teaches exactly the parts they use, and nothing more, by having you write ten short functions: little named recipes that take some values in and give one value back. Together they count the letters in a famous sentence, put them in order and draw a chart. You do not need to have programmed before. If you know a little Python or spreadsheet formulas, a translation table below maps what you know onto JavaScript.
+Every other module in this lab asks you to write small pieces of JavaScript, the programming language built into web browsers. This module teaches exactly the parts they use, and nothing more, by having you write eleven short functions: little named recipes that take some values in and give one value back. Together they count the letters in a famous sentence, put them in order and draw a chart. You do not need to have programmed before. If you know a little Python or spreadsheet formulas, a translation table below maps what you know onto JavaScript.
 :::
 
 ## What you will build
@@ -34,7 +35,7 @@ Every other module in this lab asks you to write small pieces of JavaScript, the
 Six steps, each with one idea:
 
 1. **Values and functions.** \`label(letter, count)\` makes the text \`'e: 3'\`; \`surprise(count, total)\` turns a count into a "how surprising" number.
-2. **Arrays and loops.** \`range(n)\`, \`sum(numbers)\` and \`firstK(items, k)\`.
+2. **Arrays, loops and arithmetic.** \`range(n)\`, \`sum(numbers)\`, \`sumOfSquares(numbers)\` and \`firstK(items, k)\`.
 3. **Decisions and equality.** \`sameShape(a, b)\`, which answers a question that \`===\` gets wrong.
 4. **Counting with a Map.** \`countLetters(text)\`, a tally sheet from letter to count.
 5. **Sorting.** \`rankCounts(counts)\`, largest count first.
@@ -85,10 +86,11 @@ No error. \`Math.exp(1000)\` (e to the power 1000) is too big to store, so it is
 | equal? | \`a === b\` | \`a == b\` | \`=A1=B1\` |
 | tally table | \`new Map()\`, \`get\`, \`set\` | \`dict\`, \`d.get(k, 0)\` | \`COUNTIF\` |
 | sort by count, largest first | \`pairs.sort((a, b) => b[1] - a[1])\` | \`sorted(pairs, key=lambda p: -p[1])\` | Sort Z to A |
+| x squared | \`x * x\` or \`x ** 2\` (never \`x ^ 2\`) | \`x ** 2\` | \`=A1^2\` |
 | natural log, e to the x | \`Math.log(x)\`, \`Math.exp(x)\` | \`math.log\`, \`math.exp\` | \`LN\`, \`EXP\` |
 | stop with an error | \`throw new Error('msg')\` | \`raise ValueError('msg')\` | \`#VALUE!\` |
 
-Two warnings for Python users: \`==\` exists in JavaScript but has odd conversion rules, so this lab always uses \`===\` and \`!==\`; and arrays are never \`===\` to another array, however equal they look (step 3).
+Three warnings. \`==\` exists in JavaScript but has odd conversion rules, so this lab always uses \`===\` and \`!==\`. Arrays are never \`===\` to another array, however equal they look (step 3). And \`^\` is not "to the power of" as it is in a spreadsheet: \`3 ^ 2\` is 1, with no error, so write \`x * x\` or \`x ** 2\` (step 2).
 
 ## Toy versus production
 
@@ -110,7 +112,7 @@ export function share(count, total) {   // name, then the inputs in brackets
 
 \`share(3, 12)\` **calls** it with \`count = 3\` and \`total = 12\` and gives back \`0.25\`. Your functions can call it too.
 
-**1. \`label(letter, count)\`** returns a piece of text such as \`'e: 3'\`. Text in quotes is called a **string**. To put values *inside* a string, use a **template string**: write it between backticks (the key left of 1 on most keyboards) instead of quotes, and put each value in a \`\${ }\` slot. Ordinary quotes do not fill slots:
+**1. \`label(letter, count)\`** returns a piece of text such as \`'e: 3'\`. Text in quotes is called a **string**. To put values *inside* a string, use a **template string**: write it between backticks (the key left of 1 on most keyboards) instead of quotes, and put each value in a \`\${ }\` slot. Ordinary quotes do not fill slots, and Python's \`f"..."\` does not exist in JavaScript (the file stops loading with "Unexpected string"):
 
 \`\`\`js
 const letter = 'e';
@@ -144,7 +146,7 @@ Names to avoid: \`var\`, \`function\`, \`return\`, \`new\`, \`const\`, \`let\` a
     },
     {
       id: 'loops',
-      title: 'Arrays and loops',
+      title: 'Arrays, loops and arithmetic',
       instructions: `
 An **array** is a list of values in square brackets: \`const xs = [5, 6, 7];\`. Positions start at 0, so \`xs[0]\` is 5 and \`xs[2]\` is 7. \`xs.length\` is 3, and the last item is always \`xs[xs.length - 1]\`. \`xs.push(8)\` adds 8 to the end.
 
@@ -158,24 +160,34 @@ for (let i = 0; i < n; i++) {
 
 Read it as three parts: start with \`let i = 0\`; keep going while \`i < n\`; after each round do \`i++\` (add 1 to i). A **for...of loop** hands you each value in turn: \`for (const x of xs) { ... }\`. Avoid \`for...in\` on arrays: it hands you the positions as text (\`'0'\`, \`'1'\`), which is almost never what you want. \`total += x\` is short for \`total = total + x\`. Always put \`const\` or \`let\` before a loop's name, as in \`for (const x of xs)\`: without it, \`for (x of xs)\` stops with \`x is not defined\`.
 
-Write three functions:
+**Arithmetic.** \`+\`, \`-\`, \`*\` and \`/\` work as on a calculator. To square a number write \`x * x\`, or \`x ** 2\` (two stars mean "to the power of"). **JavaScript has no \`^\` for powers.** \`^\` means something else (a bit operation on whole numbers), so \`3 ^ 2\` is 1, not 9, and JavaScript gives no error: it silently gives wrong numbers. Spreadsheets and maths books write powers with \`^\`, so this slip is easy to make when you copy a formula.
 
 \`\`\`js
-range(4)                  // → [0, 1, 2, 3]   (like Python's range; range(0) is [])
-sum([2, 3, 5])            // → 10             (sum([]) is 0)
-firstK([5, 6, 7, 8], 2)   // → [5, 6]
+3 * 3      // → 9
+3 ** 2     // → 9
+3 ^ 2      // → 1   (not a power!)
+\`\`\`
+
+Write four functions:
+
+\`\`\`js
+range(4)                    // → [0, 1, 2, 3]   (like Python's range; range(0) is [])
+sum([2, 3, 5])              // → 10             (sum([]) is 0)
+sumOfSquares([1, 2, 3])     // → 14             (1 + 4 + 9)
+firstK([5, 6, 7, 8], 2)     // → [5, 6]
 \`\`\`
 
 - \`range(n)\`: the starter creates an empty array \`out\`. Use a counting loop to \`push\` each \`i\` onto it.
 - \`sum(numbers)\`: the starter creates \`let total = 0\`. Use a for...of loop to add each value to it. It must also work on a \`Float32Array\` (a list that holds only numbers, step 6), which for...of walks the same way.
+- \`sumOfSquares(numbers)\`: the same loop as \`sum\`, adding \`x * x\` instead of \`x\`.
 - \`firstK(items, k)\`: \`items.slice(0, k)\` makes a **new** array from positions 0 up to, but not including, k, and leaves \`items\` unchanged. Asking for more than there are simply gives them all.
 
-Why these exist: counting loops run over every position of every table in the lab, sums turn into averages and losses, and \`slice(0, k)\` is how module 00 keeps the top k words.
+Why these exist: counting loops run over every position of every table in the lab, sums turn into averages and losses, a sum of squares is the heart of the "spread" (variance) that module 01 computes, and \`slice(0, k)\` is how module 00 keeps the top k words.
 `,
       hints: [
-        'range needs the counting loop (you want the positions 0 to n - 1 themselves). sum needs for...of (you want the values). firstK needs no loop at all.',
-        'range: loop i from 0 while i < n and push i onto out. sum: for each value x of numbers, add x to total. Both then return the variable the starter already created. firstK: return a slice from 0 to k.',
-        'range: `for (let i = 0; i < n; i++) out.push(/* ? */);` then `return out;`. sum: `for (const x of numbers) total += /* ? */;` then `return total;`. firstK: `return items.slice(/* start */, /* end */);`.',
+        'range needs the counting loop (you want the positions 0 to n - 1 themselves). sum and sumOfSquares need for...of (you want the values). firstK needs no loop at all.',
+        'range: loop i from 0 while i < n and push i onto out. sum: for each value x of numbers, add x to total. sumOfSquares: the same, adding x times x (not x ^ 2). All three then return the variable the starter already created. firstK: return a slice from 0 to k.',
+        'range: `for (let i = 0; i < n; i++) out.push(/* ? */);` then `return out;`. sum: `for (const x of numbers) total += /* ? */;` then `return total;`. sumOfSquares: the same loop with `total += /* x squared, written with * */;`. firstK: `return items.slice(/* start */, /* end */);`.',
       ],
     },
     {
@@ -202,7 +214,7 @@ sameShape([2, 3], [3, 2])      // → false
 sameShape([2, 3], [2, 3, 1])   // → false
 \`\`\`
 
-The starter's first try is \`return a === b;\`. Press **Check** before changing it and read the red message. Then write the real comparison: if the lengths differ, the answer is \`false\`; otherwise walk the positions with a counting loop and return \`false\` at the first position where \`a[i] !== b[i]\`; if the loop finishes, return \`true\`.
+The starter's first try is \`return a === b;\`. Press **Check** before changing it and read the red message. Then write the real comparison: if the lengths differ, the answer is \`false\`; otherwise walk the positions with a counting loop and return \`false\` at the first position where \`a[i] !== b[i]\`; if the loop finishes, return \`true\`. The \`return true\` goes **after** the loop's closing \`}\`, not inside it: inside, it would end the function after checking only position 0, so \`[2, 3]\` and \`[2, 4]\` would count as the same.
 
 Why this exists: module 01 stores tables of numbers with a **shape** such as \`[2, 3]\` (2 rows, 3 columns), and before adding two tables it must check their shapes match. \`a.shape === b.shape\` is always \`false\` there, for the reason you are about to see.
 `,
@@ -224,7 +236,7 @@ countLetters('banana')   // → Map { 'b' => 1, 'a' => 3, 'n' => 2 }
 countLetters('2024!')    // → an empty Map
 \`\`\`
 
-**A Map** is a tally sheet: it stores values under keys. \`const counts = new Map();\` makes an empty one. \`counts.set('a', 3)\` writes 3 under \`'a'\`; \`counts.get('a')\` reads it back. Reading a key that was never set gives \`undefined\` ("nothing written down"). \`x || 0\` means "x, or 0 if x is empty", where empty includes \`undefined\`. So the count so far is \`counts.get(letter) || 0\`, and the new count is that plus 1:
+**A Map** is a tally sheet: it stores values under keys. \`const counts = new Map();\` makes an empty one. \`counts.set('a', 3)\` writes 3 under \`'a'\`; \`counts.get('a')\` reads it back. Reading a key that was never set gives \`undefined\` ("nothing written down"). \`x || 0\` means "x, or 0 if x is empty", where empty includes \`undefined\`. (Python users: \`counts[letter] = ...\` does not write into a Map; it quietly sticks a property on the Map object and the Map stays empty. Always use \`set\` and \`get\`.) So the count so far is \`counts.get(letter) || 0\`, and the new count is that plus 1:
 
 \`\`\`js
 counts.set(letter, (counts.get(letter) || 0) + 1);

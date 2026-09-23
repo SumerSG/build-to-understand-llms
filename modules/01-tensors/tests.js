@@ -14,6 +14,63 @@ function rowSums(t) {
   return out;
 }
 
+const sameNumbers = (x, y) => x.length === y.length && x.every((v, i) => (Number.isNaN(v) && Number.isNaN(y[i])) || Math.abs(v - y[i]) < 1e-3);
+
+// LayerNorm as a learner writes it when the formula's (row - mu)^2 is typed literally: in JavaScript ^ is a bit
+// operation on whole numbers, not a power, so the "variance" is not a real square (it can even be negative).
+function layerNormCaret(rows, gamma, beta, eps) {
+  return rows.flatMap((r) => {
+    const d = r.length, mu = r.reduce((s, v) => s + v, 0) / d;
+    const v = r.reduce((s, x) => s + ((x - mu) ^ 2), 0) / d;
+    return r.map((x, j) => (x - mu) / Math.sqrt(v + eps) * (gamma ? gamma[j] : 1) + (beta ? beta[j] : 0));
+  });
+}
+
+/** Name the ^ slip, or a negative variance in general, before the numeric comparison reports a bare NaN. */
+function layerNormSlip(T, y, rows, gamma = null, beta = null, eps = 1e-5) {
+  const got = y && y.data ? Array.from(y.data) : null;
+  if (!got) return;
+  const caret = layerNormCaret(rows, gamma, beta, eps);
+  if (sameNumbers(got, caret)) {
+    T.fail(`layerNorm gave [${got.map((v) => (Number.isNaN(v) ? 'NaN' : +v.toFixed(4))).join(', ')}], which is exactly what (x - mu) ^ 2 gives. In JavaScript ^ is not "to the power of" (3 ^ 2 is 1), so the variance is not a real square${got.some(Number.isNaN) ? ' (here it even came out negative, and Math.sqrt of a negative number is NaN)' : ''}. Square with c * c or c ** 2, where c = a.data[base + j] - mu`);
+  }
+  if (got.some(Number.isNaN)) {
+    T.fail('the result contains NaN although the input has none. Two usual causes: the variance came out negative (a real sum of squares never is: square with c * c or c ** 2, never ^), so Math.sqrt gave NaN; or the code read an element that does not exist (undefined), for example a.data at an offset past the end of the row or gamma[j] instead of gamma.data[j]');
+  }
+}
+
+/** NaN in a matmul result means a number that does not exist was read: say which reads usually do it. */
+function matmulNaN(T, c) {
+  if (c && c.data && Array.from(c.data).some(Number.isNaN)) {
+    T.fail(`the result contains NaN ([${Array.from(c.data).slice(0, 8).join(', ')}${c.data.length > 8 ? ', …' : ''}]): NaN appears when a number that does not exist is read (it comes back as undefined). Two usual causes. (1) Reading the tensor object instead of its numbers: a[3] is undefined; the numbers are in a.data and b.data. (2) An offset past the end of the data: a row of A has k numbers, so A[i, p] is a.data[i * k + p]; a row of B has m numbers, so B[p, j] is b.data[p * m + j] (b.data[p * k + j] runs past the end when k and m differ)`);
+  }
+}
+
+/** transpose must move every number exactly once: zeros and repeats mean wrong new positions. */
+function lostNumbers(T, t, nested) {
+  const n = nested.length, mm = nested[0].length, input = nested.flat();
+  const vals = t && t.data ? Array.from(t.data) : [];
+  const sorted = (xs) => [...xs].sort((x, y) => x - y).join();
+  if (vals.length === input.length && sorted(vals) !== sorted(input)) {
+    T.fail(`transpose of ${JSON.stringify(nested)} (shape [${n}, ${mm}]) gave the numbers [${vals.join(', ')}]: ${vals.includes(0) ? 'some positions of out were never written (they are still 0) and ' : ''}some of the ${input.length} numbers are missing or appear twice, so the new positions are wrong. The result has shape [m, n] = [${mm}, ${n}]: it has n = ${n} columns, not m, so element [j, i] sits at j * n + i. (A Float32Array silently ignores a write past its end, which is where the lost numbers went.)`);
+  }
+}
+
+/** add or mul gave back nothing: usually the top-level binary stub is still empty, or a return is missing. */
+function noResult(T, got, call) {
+  if (got === undefined) {
+    T.fail(`${call} returned undefined (nothing). Either the binary stub above export function add still has an empty body (a function without return gives back undefined; write the body there, in that stub, not in a second binary inside add), or add / mul forgot to return: their body is return binary(a, b, (x, y) => ...);`);
+  }
+}
+
+/** A function that is "not defined" in step 3 is almost always the binary helper written in the wrong place. */
+function notDefined(T, e, call) {
+  const msg = String(e && e.message);
+  const name = (msg.match(/^(\w+) is not defined/) || [])[1];
+  if (!name) return;
+  T.fail(`${call} stopped with "${msg}". ${name === 'binary' ? 'The helper binary exists only where it is written: if it sits inside add (or inside any other function), mul and the rest of the file cannot see it. Write its body in the empty function binary(a, b, fn) stub above export function add, on its own at the top level of the file' : `You used the name ${name} before creating it, or you created it inside another function, where the rest of the file cannot see it: move it out to the top level`}`);
+}
+
 export const tests = [
   { step: 'indexing', name: 'offset follows row-major order', run(m, T) {
     T.eq(m.offset([2, 3], [0, 0]), 0);
@@ -34,6 +91,7 @@ export const tests = [
   { step: 'indexing', name: 'transpose swaps rows and columns', run(m, T) {
     const t = m.transpose(m.fromArray([[1, 2, 3], [4, 5, 6]]));
     T.shape(t, [3, 2]);
+    lostNumbers(T, t, [[1, 2, 3], [4, 5, 6]]);
     T.eq(m.toArray(t), [[1, 4], [2, 5], [3, 6]]);
     const r = randomTensor(m, [3, 5], 4);
     // Expected values come from a fresh copy of the input, so a transpose that overwrites its argument
@@ -52,14 +110,13 @@ export const tests = [
     T.ok(a.data === dataBefore && once.data !== a.data, 'transpose must write into a freshly allocated Float32Array, not replace or reuse a.data');
     T.eq(Array.from(a.data), before, 'transpose changed the values in a.data: read from the input, write only into the new array');
     T.shape(once, [2, 3], 'a single transpose of [3,2] must have shape [2,3]');
+    lostNumbers(T, once, [[1, 2], [3, 4], [5, 6]]);
     const tt = m.transpose(once);
     T.eq(m.toArray(tt), [[1, 2], [3, 4], [5, 6]]);
   } },
   { step: 'matmul', name: 'multiplies a 2x3 by a 3x2', run(m, T) {
     const c = m.matmul(m.fromArray([[1, 2, 3], [4, 5, 6]]), m.fromArray([[1, 0], [0, 1], [1, 1]]));
-    if (c && c.data && Array.from(c.data).some(Number.isNaN)) {
-      T.fail(`the result contains NaN ([${Array.from(c.data).join(', ')}]): NaN appears when a number that does not exist is read. The tensor objects a and b have no numbered entries (a[3] is undefined); their numbers are in a.data and b.data, so A[i, p] is a.data[i * k + p]`);
-    }
+    matmulNaN(T, c);
     T.shape(c, [2, 2]);
     T.eq(m.toArray(c), [[4, 5], [10, 11]]);
   } },
@@ -74,6 +131,7 @@ export const tests = [
     for (let i = 0; i < 7; i++) for (let j = 0; j < 4; j++) for (let p = 0; p < 5; p++) expect[i * 4 + j] += a.data[i * 5 + p] * b.data[p * 4 + j];
     const c = m.matmul(a, b);
     T.shape(c, [7, 4], '[7,5] x [5,4] must have shape [7,4]');
+    matmulNaN(T, c);
     T.close(Array.from(c.data), expect, 1e-4);
     T.eq(Array.from(a.data), Array.from(randomTensor(m, [7, 5], 1).data), 'matmul must not modify its inputs');
     // A 32x32 multiply first (a typed-array loop takes well under a millisecond), so a very slow loop fails
@@ -93,14 +151,25 @@ export const tests = [
     const a = m.fromArray([[1, 2], [3, 4]]);
     let same;
     try { same = m.add(a, m.fromArray([[10, 20], [30, 40]])); } catch (e) {
+      notDefined(T, e, 'add(a, b) with two [2,2] tensors');
       T.fail(`add threw "${e.message}" for two tensors that both have shape [2,2]. If your code compares the shapes with == or ===, that is the cause: in JavaScript [2, 2] === [2, 2] is false, because arrays compare by identity (the same array object), not by contents. Compare the lengths, then each entry`);
     }
+    noResult(T, same, 'add(a, b) with two [2,2] tensors');
     T.eq(m.toArray(same), [[11, 22], [33, 44]]);
-    T.eq(m.toArray(m.add(a, 1)), [[2, 3], [4, 5]]);
-    T.eq(m.toArray(m.mul(a, 2)), [[2, 4], [6, 8]]);
+    const plusOne = m.add(a, 1);
+    noResult(T, plusOne, 'add(a, 1)');
+    T.eq(m.toArray(plusOne), [[2, 3], [4, 5]]);
+    let doubled;
+    try { doubled = m.mul(a, 2); } catch (e) { notDefined(T, e, 'mul(a, 2)'); throw e; }
+    noResult(T, doubled, 'mul(a, 2)');
+    T.eq(m.toArray(doubled), [[2, 4], [6, 8]]);
   } },
   { step: 'broadcast', name: 'broadcasts a row vector across every row (a bias add)', run(m, T) {
     const a = m.fromArray([[1, 2, 3], [4, 5, 6]]);
+    try {
+      noResult(T, m.add(a, m.fromArray([10, 20, 30])), 'add(a, bias)');
+      noResult(T, m.mul(a, m.fromArray([1, 0, -1])), 'mul(a, row)');
+    } catch (e) { notDefined(T, e, 'add or mul'); throw e; }
     T.eq(m.toArray(m.add(a, m.fromArray([10, 20, 30]))), [[11, 22, 33], [14, 25, 36]]);
     T.eq(m.toArray(m.mul(a, m.fromArray([1, 0, -1]))), [[1, 0, -3], [4, 0, -6]]);
     const x3 = m.fromArray([[[1, 2, 3], [4, 5, 6]], [[7, 8, 9], [10, 11, 12]]]);
@@ -110,6 +179,7 @@ export const tests = [
   } },
   { step: 'broadcast', name: 'rejects incompatible shapes and does not mutate inputs', run(m, T) {
     const a = m.fromArray([[1, 2, 3], [4, 5, 6]]);
+    try { noResult(T, m.mul(a, 2), 'mul(a, 2)'); } catch (e) { notDefined(T, e, 'mul(a, 2)'); throw e; }
     T.throws(() => m.add(a, m.fromArray([1, 2])), 'a length-2 vector cannot broadcast onto rows of length 3');
     T.throws(() => m.add(a, m.fromArray([[1, 2], [3, 4], [5, 6]])), 'a [3,2] tensor has the same number of elements as [2,3] but not the same shape; compare shapes, not lengths');
     T.throws(() => m.mul(a, m.fromArray([1, 2, 3, 4, 5, 6])), 'a length-6 vector matches neither the shape [2,3] nor the row length 3 and must throw');
@@ -125,7 +195,18 @@ export const tests = [
     T.eq(m.toArray(m.sum(m.fromArray([[[1, 1], [2, 2]], [[3, 3], [4, 4]]]))), [[2, 4], [6, 8]], 'a [2,2,2] tensor sums to shape [2,2]: every leading axis is kept, only the last is reduced');
   } },
   { step: 'rowops', name: 'argmax picks the largest entry per row (first on ties)', run(m, T) {
-    T.eq(m.argmax(m.fromArray([[1, 5, 2], [7, 7, 0], [-1, -2, -3]])), [1, 0, 0]);
+    const got = m.argmax(m.fromArray([[1, 5, 2], [7, 7, 0], [-1, -2, -3]]));
+    const list = got && typeof got.length === 'number' ? Array.from(got) : null;
+    if (list && list.join() === '5,7,-1') {
+      T.fail('argmax gave [5, 7, -1]: these are the largest values themselves. argmax wants their position j in the row (5 is at position 1 of [1, 5, 2]), so keep track of the best j, not the best value');
+    }
+    if (list && list.join() === '1,3,6') {
+      T.fail('argmax gave [1, 3, 6]: these are flat offsets in the whole data array (r * d + j). argmax wants the position j inside each row, a number from 0 to d - 1');
+    }
+    if (list && list.join() === '1,1,0') {
+      T.fail('argmax gave [1, 1, 0]: on the tie in row [7, 7, 0] it picked the later 7. Keep the first position on ties: replace the best only when a value is strictly larger (>), not larger or equal (>=)');
+    }
+    T.eq(list || got, [1, 0, 0], 'for each row, the position of its largest value: 5 is at position 1 of [1, 5, 2]; 7 first appears at position 0 of [7, 7, 0]; -1 is at position 0 of [-1, -2, -3]');
   } },
   { step: 'rowops', name: 'softmax rows sum to one and match exp(x)/sum', run(m, T) {
     const p = m.softmax(m.fromArray([[1, 2, 3]]));
@@ -149,6 +230,7 @@ export const tests = [
   } },
   { step: 'layernorm', name: 'normalises each row to mean 0 and variance 1', run(m, T) {
     const y = m.layerNorm(m.fromArray([[1, 2, 3], [10, 20, 60]]));
+    layerNormSlip(T, y, [[1, 2, 3], [10, 20, 60]]);
     const rows = m.toArray(y);
     for (const r of rows) {
       const mu = r.reduce((s, v) => s + v, 0) / r.length;
@@ -161,12 +243,18 @@ export const tests = [
     const y = m.layerNorm(m.fromArray([[1, 2, 3]]), m.fromArray([2, 2, 2]), m.fromArray([1, 1, 1]));
     T.close(m.toArray(y), [[-1.44949, 1, 3.44949]], 1e-3);
     const w = m.layerNorm(m.fromArray([[1, 2, 3], [10, 20, 60]]), m.fromArray([1, 2, -1]), m.fromArray([0, 0.5, 1]));
+    layerNormSlip(T, w, [[1, 2, 3], [10, 20, 60]], [1, 2, -1], [0, 0.5, 1]);
     T.close(m.toArray(w), [[-1.22474, 0.5, -0.22474], [-0.92582, -0.42582, -0.38873]], 1e-3, 'feature j of every row is scaled by gamma[j] and shifted by beta[j] (index gamma by column j, not by flat offset)');
   } },
   { step: 'layernorm', name: 'eps goes inside the square root and the eps argument is honoured', run(m, T) {
     const z = m.layerNorm(m.fromArray([[5, 5, 5]]), null, null, 1e-5);
     T.ok(!Number.isNaN(z.data[0]) && Math.abs(z.data[0]) < 1e-3, 'a constant row has zero variance: eps must prevent division by zero');
-    T.close(m.toArray(m.layerNorm(m.fromArray([[0, 0.001, 0.002]]))), [[-0.30619, 0, 0.30619]], 1e-3, 'for a row with variance 6.7e-7 the result is (x - mu) / sqrt(var + eps); sqrt(var) + eps gives about ±1.21 instead');
+    const small = m.layerNorm(m.fromArray([[0, 0.001, 0.002]]));
+    const smallRow = Array.from(new Float32Array([0, 0.001, 0.002]));
+    if (small && small.data && sameNumbers(Array.from(small.data), layerNormCaret([smallRow], null, null, 1e-5))) {
+      T.fail(`layerNorm([[0, 0.001, 0.002]]) gave [${Array.from(small.data).map((v) => +v.toFixed(5)).join(', ')}], which is what (x - mu) ^ 2 gives: ^ is not a power in JavaScript (it works on whole numbers, so 0.001 ^ 2 is 2), and the "variance" comes out as 2 instead of 0.00000067. Square with c * c or c ** 2`);
+    }
+    T.close(m.toArray(small), [[-0.30619, 0, 0.30619]], 1e-3, 'for a row with variance 6.7e-7 the result is (x - mu) / sqrt(var + eps); sqrt(var) + eps gives about ±1.21 instead');
     const y1 = Array.from(m.layerNorm(m.fromArray([[1, 2, 3]]), null, null, 1).data);
     const near = (ys, v) => ys.length === 3 && Math.abs(ys[0] + v) < 1e-3 && Math.abs(ys[2] - v) < 1e-3;
     const why = near(y1, 1 / (Math.sqrt(2 / 3) + 1)) ? 'eps must be added to the variance inside the square root: sqrt(var + eps), not sqrt(var) + eps'

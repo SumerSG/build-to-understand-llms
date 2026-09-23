@@ -9,6 +9,12 @@ function need(m, name) {
 }
 
 const show = (x) => (typeof x === 'string' ? `'${x}'` : Array.isArray(x) ? JSON.stringify(x) : String(x));
+// counts[letter] = ... on a Map (the Python dict habit) leaves the Map empty and puts ordinary properties on it.
+function dictHabit(T, c, call) {
+  if (c instanceof Map && c.size === 0 && Object.keys(c).length > 0) {
+    T.fail(`${call} returned a Map with no entries, but with ${Object.keys(c).length === 1 ? 'an ordinary property' : `${Object.keys(c).length} ordinary properties`} on it (${Object.keys(c).slice(0, 6).map(show).join(', ')}). counts[letter] = ... is the Python dict habit: on a Map it writes a property on the object, not an entry. Use counts.set(letter, ...) to write and counts.get(letter) to read.`);
+  }
+}
 const plainPairs = (map) => (map instanceof Map ? [...map] : map);
 
 export const tests = [
@@ -70,6 +76,25 @@ export const tests = [
     if (typeof got === 'string') T.fail(`sum(Float32Array.of(1, 2, 3, 4)) gave the text ${show(got)}: for...in walks positions as text. Use for (const x of numbers).`);
     T.eq(got, 10, 'for...of walks a Float32Array exactly like an ordinary array');
   } },
+  { step: 'loops', name: 'sumOfSquares adds up x * x for every value (JavaScript has no ^ for powers)', run(m, T) {
+    const sumOfSquares = need(m, 'sumOfSquares');
+    // What the same loop gives with the common slips, so the message can name the slip.
+    const caret = (xs) => xs.reduce((s, x) => s + (x ^ 2), 0);
+    const got = sumOfSquares([1, 2, 3]);
+    if (got === caret([1, 2, 3])) {
+      T.fail(`sumOfSquares([1, 2, 3]) gave ${got}, which is what x ^ 2 gives: in JavaScript ^ is not "to the power of" (it is a bit operation, and 3 ^ 2 is 1), so it silently gives wrong numbers. Square with x * x or x ** 2.`);
+    }
+    if (got === 0) T.fail('sumOfSquares([1, 2, 3]) gave 0, the starting total: it looks like this function is not written yet, or its loop never adds anything to total.');
+    if (got === 6) T.fail('sumOfSquares([1, 2, 3]) gave 6, the plain sum: add x * x for each value, not x.');
+    if (got === 12) T.fail('sumOfSquares([1, 2, 3]) gave 12, which is 2 + 4 + 6: x * 2 doubles a number. Squaring is x * x (or x ** 2).');
+    if (typeof got === 'string') T.fail(`sumOfSquares([1, 2, 3]) gave the text ${show(got)}: for...in walks the positions as text. Use for (const x of numbers).`);
+    T.eq(got, 14, 'sumOfSquares([1, 2, 3]) should be 1 * 1 + 2 * 2 + 3 * 3 = 1 + 4 + 9 = 14');
+    const frac = sumOfSquares([0.5, -1.5, 2]);
+    if (frac === caret([0.5, -1.5, 2])) T.fail(`sumOfSquares([0.5, -1.5, 2]) gave ${frac}, which is what ^ gives (it even drops the fractions). Square with x * x or x ** 2.`);
+    T.close(frac, 6.5, 1e-12, 'sumOfSquares([0.5, -1.5, 2]) is 0.25 + 2.25 + 4 = 6.5: a negative number squared is positive');
+    T.eq(sumOfSquares([]), 0, 'the sum of no squares is 0');
+    T.eq(sumOfSquares(Float32Array.of(3, 4)), 25, 'it works on a Float32Array too: 9 + 16 = 25');
+  } },
   { step: 'loops', name: 'firstK copies the first k items and leaves the original alone', run(m, T) {
     const firstK = need(m, 'firstK');
     const items = [5, 6, 7, 8];
@@ -100,12 +125,23 @@ export const tests = [
     T.eq(sameShape([2, 3, 1], [2, 3]), false, '[2, 3, 1] and [2, 3] have different lengths');
     T.eq(sameShape([6], [2, 3]), false, '[6] and [2, 3] both have 6 cells, but they are different shapes');
   } },
+  { step: 'compare', name: 'sameShape checks every position, not just the first', run(m, T) {
+    const sameShape = need(m, 'sameShape');
+    const later = sameShape([2, 3], [2, 4]);
+    if (later === true) {
+      T.fail('sameShape([2, 3], [2, 4]) said true, but the second numbers differ (3 and 4). The first positions match, so a function that returns true inside the loop stops after checking only position 0. Inside the loop only return false (at a difference); put return true after the loop has finished, so it is reached only when every position matched.');
+    }
+    T.eq(later, false, '[2, 3] and [2, 4] differ at position 1');
+    T.eq(sameShape([4, 1, 7], [4, 1, 8]), false, '[4, 1, 7] and [4, 1, 8] differ only at the last position');
+    T.eq(sameShape([4, 1, 7], [4, 1, 7]), true, 'and equal shapes still give true');
+  } },
 
   // ---------- step 4: count ----------
   { step: 'count', name: 'counts each letter of a word', run(m, T) {
     const countLetters = need(m, 'countLetters');
     const c = countLetters('banana');
     T.ok(c instanceof Map, `countLetters should return a Map, but it returned ${show(c)}`);
+    dictHabit(T, c, "countLetters('banana')");
     if (c.size === 0) T.fail("countLetters('banana') returned an empty Map: did you loop over the letters and call counts.set(letter, ...) for each one?");
     if (c.has('0') || c.has(0)) T.fail(`the Map's keys are positions (${[...c.keys()].map(show).join(', ')}), not letters: for...in walks positions. Loop with for (const letter of letters).`);
     for (const [k, v] of c) {
@@ -117,11 +153,13 @@ export const tests = [
     const countLetters = need(m, 'countLetters');
     const c = countLetters("A a, B! It's 2024.");
     T.ok(c instanceof Map, 'countLetters should return a Map');
+    dictHabit(T, c, `countLetters("A a, B! It's 2024.")`);
     if (c.has('A') || c.has('B')) T.fail('the Map has upper-case keys: lower-case the text first with text.toLowerCase()');
     T.eq(plainPairs(c), [['a', 2], ['b', 1], ['i', 1], ['t', 1], ['s', 1]], `"A a, B! It's 2024." has a twice, then b, i, t, s once each; spaces, digits and punctuation are not letters`);
   } },
   { step: 'count', name: 'text with no letters gives an empty Map instead of an error', run(m, T) {
     const countLetters = need(m, 'countLetters');
+    dictHabit(T, countLetters('Zz'), "countLetters('Zz')");
     T.eq(plainPairs(countLetters('Zz')), [['z', 2]], "'Zz' is two z's (this line also makes sure the step is not still the starter)");
     let c;
     try { c = countLetters('2024 ...!!!'); }

@@ -25,6 +25,12 @@ export function sum(numbers) {
   return total;
 }
 
+export function sumOfSquares(numbers) {
+  let total = 0;
+  for (const x of numbers) total += x * x;
+  return total;
+}
+
 export function firstK(items, k) {
   return items.slice(0, k);
 }

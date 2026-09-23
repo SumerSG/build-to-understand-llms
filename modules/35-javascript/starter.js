@@ -51,6 +51,13 @@ export function sum(numbers) {
   return total;
 }
 
+/** Add up the squares of the numbers: sumOfSquares([1, 2, 3]) gives 1 + 4 + 9 = 14. */
+export function sumOfSquares(numbers) {
+  let total = 0;
+  // TODO: step 2. Like sum, but add x * x (or x ** 2) for each value. Not x ^ 2: ^ is not a power in JavaScript.
+  return total;
+}
+
 /** The first k items of an array, as a new array: firstK([5, 6, 7], 2) gives [5, 6]. */
 export function firstK(items, k) {
   // TODO: step 2. One line with slice.

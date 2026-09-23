@@ -9,6 +9,40 @@ function ignoredCounts(T, got, original, alphabetical) {
   }
 }
 
+// Tied counts (all 1 here) must fall back to the word order. Name the two usual slips instead of only
+// printing expected and got: no tie-break at all (the Map's order survives) or the words compared backwards.
+function tieBreak(T, got, mapOrder, alphabetical) {
+  const words = Array.isArray(got) ? got.map((p) => (Array.isArray(p) ? p[0] : p)) : null;
+  const same = (want) => words && words.length === want.length && words.every((w, i) => w === want[i]);
+  if (same(mapOrder)) {
+    T.fail(`topK returned ${JSON.stringify(got)}: every count is 1, so the counts tie and your comparator returns 0, which leaves the words in the Map's order. Fall back to the word order when the counts tie: (count difference) || x[0].localeCompare(y[0])`);
+  }
+  if (same([...alphabetical].reverse())) {
+    T.fail(`topK returned ${JSON.stringify(got)}: the tied words are in reverse alphabetical order. Compare x's word with y's, x[0].localeCompare(y[0]), not y[0].localeCompare(x[0])`);
+  }
+}
+
+// counts[w] = ... on a Map (the Python dict habit) leaves the Map empty and puts ordinary properties on it.
+function dictHabit(T, c) {
+  if (c instanceof Map && c.size === 0 && Object.keys(c).length > 0) {
+    T.fail(`countFrequencies returned a Map with no entries, but with ordinary properties on it (${Object.keys(c).slice(0, 4).map((k) => JSON.stringify(k)).join(', ')}). counts[w] = ... is the Python dict habit: on a Map it writes a property on the object, not an entry. Use counts.set(w, ...) to write and counts.get(w) to read`);
+  }
+}
+
+// zipfLogError with Math.log10 is the natural-log answer divided by ln 10; without Math.abs the differences
+// partly cancel. Recompute both and name the slip when the learner's number matches one of them.
+function logErrSlip(T, got, actual, predicted) {
+  if (typeof got !== 'number' || !Number.isFinite(got)) return;
+  const mean = (f) => actual.reduce((s, a, i) => s + f(a, predicted[i]), 0) / actual.length;
+  const right = mean((a, p) => Math.abs(Math.log(a) - Math.log(p)));
+  const near = (v) => Math.abs(got - v) < 1e-6 && Math.abs(v - right) > 1e-6;
+  const signed = mean((a, p) => Math.log(a) - Math.log(p));
+  const call = `zipfLogError(${JSON.stringify(actual.map((v) => +v.toFixed(3)))}, ${JSON.stringify(predicted.map((v) => +v.toFixed(3)))})`;
+  if (near(right / Math.LN10)) T.fail(`${call} gave ${got.toFixed(4)}, which is the right answer divided by 2.303: you used base-10 logs. Use Math.log (the natural log), not Math.log10`);
+  if (near(signed) || near(-signed)) T.fail(`${call} gave ${got.toFixed(4)}: that is what you get without Math.abs, where a point below the line (negative difference) cancels part of a point above it. Wrap each difference in Math.abs(...) before adding it`);
+  if (near(signed / Math.LN10) || near(-signed / Math.LN10)) T.fail(`${call} gave ${got.toFixed(4)}: two slips at once. It uses base-10 logs (use Math.log, not Math.log10) and has no Math.abs, so points below the line cancel points above it`);
+}
+
 export const tests = [
   { step: 'tokenize', name: 'splits a sentence into lowercase words', run(m, T) {
     T.eq(m.tokenizeWords('Alice was beginning to get very tired.'), ['alice', 'was', 'beginning', 'to', 'get', 'very', 'tired'], 'words should be lowercased and punctuation dropped');
@@ -23,6 +57,7 @@ export const tests = [
   { step: 'count', name: 'counts repeated words', run(m, T) {
     const c = m.countFrequencies(['a', 'b', 'a', 'c', 'a', 'b']);
     T.ok(c instanceof Map, 'should return a Map');
+    dictHabit(T, c);
     T.ok(!(c.has('0') || c.has(0)), `the Map's keys are positions ("0", "1", …) instead of words: for...in loops over an array's positions; use for (const w of words) to loop over the words themselves`);
     for (const [w, n] of [['a', 3], ['b', 2], ['c', 1]]) {
       T.ok(c.has(w), `the returned Map has no entry for "${w}" (it has ${c.size} entries): did you return the empty Map without adding each word to it?`);
@@ -33,6 +68,7 @@ export const tests = [
   { step: 'count', name: 'handles awkward keys like "constructor"', run(m, T) {
     const c = m.countFrequencies(['constructor', '__proto__', 'constructor']);
     T.ok(c instanceof Map, 'should return a Map');
+    dictHabit(T, c);
     T.ok(!(c.has('0') || c.has(0)), `the Map's keys are positions ("0", "1", …) instead of words: for...in loops over an array's positions; use for (const w of words) to loop over the words themselves`);
     for (const [w, n] of [['constructor', 2], ['__proto__', 1]]) {
       T.ok(c.has(w), `the returned Map has no entry for "${w}" (it has ${c.size} entries): did you return the empty Map without adding each word to it?`);
@@ -40,7 +76,11 @@ export const tests = [
     }
   } },
   { step: 'topk', name: 'returns the k most frequent, most frequent first', run(m, T) {
-    ignoredCounts(T, m.topK(new Map([['b', 2], ['a', 2], ['c', 5], ['d', 1]]), 2), ['b', 'a'], ['a', 'b']);
+    const got = m.topK(new Map([['b', 2], ['a', 2], ['c', 5], ['d', 1]]), 2);
+    ignoredCounts(T, got, ['b', 'a'], ['a', 'b']);
+    if (JSON.stringify(got) === JSON.stringify([['c', 5], ['b', 2]])) {
+      T.fail('topK returned [["c",5],["b",2]]: "c" is right, but "a" and "b" both have 2, so the counts tie and the Map\'s order (b first) survived. Fall back to the word order when the counts tie: (count difference) || x[0].localeCompare(y[0])');
+    }
     T.eq(m.topK(new Map([['b', 2], ['a', 2], ['c', 5], ['d', 1]]), 2), [['c', 5], ['a', 2]]);
   } },
   { step: 'topk', name: 'compares counts as numbers, so 10 ranks above 9', run(m, T) {
@@ -50,7 +90,9 @@ export const tests = [
     T.eq(m.topK(new Map([['a', 3]]), 0), [], 'k = 0 asks for no words');
   } },
   { step: 'topk', name: 'breaks ties alphabetically and copes with k larger than the vocabulary', run(m, T) {
-    T.eq(m.topK(new Map([['pear', 1], ['apple', 1], ['fig', 1]]), 10), [['apple', 1], ['fig', 1], ['pear', 1]]);
+    const tied = m.topK(new Map([['pear', 1], ['apple', 1], ['fig', 1]]), 10);
+    tieBreak(T, tied, ['pear', 'apple', 'fig'], ['apple', 'fig', 'pear']);
+    T.eq(tied, [['apple', 1], ['fig', 1], ['pear', 1]], 'the counts tie, so the words go in alphabetical order');
   } },
   { step: 'zipf', name: 'predicts topCount / rank', run(m, T) {
     const p = m.zipfPredicted(100, 4);
@@ -72,7 +114,9 @@ export const tests = [
       T.fail('zipfLogError returned NaN for two identical arrays: is it still the starter stub (return NaN)? Otherwise NaN usually means an element that does not exist was read (undefined): loop over positions with for (let i = 0; i < actual.length; i++) and read actual[i] and predicted[i], rather than looping over values with for...of');
     }
     T.close(m.zipfLogError(ideal, ideal), 0, 1e-9, 'identical arrays are 0 apart');
-    T.close(m.zipfLogError([64, 64, 64], [64, 32, 64 / 3]), (Math.log(2) + Math.log(3)) / 3, 1e-6, 'mean of |log a - log p|: (0 + log 2 + log 3) / 3');
+    const off = m.zipfLogError([64, 64, 64], [64, 32, 64 / 3]);
+    logErrSlip(T, off, [64, 64, 64], [64, 32, 64 / 3]);
+    T.close(off, (Math.log(2) + Math.log(3)) / 3, 1e-6, 'mean of |log a - log p|: (0 + log 2 + log 3) / 3');
   } },
   { step: 'logerr', name: 'log error takes the absolute value, so points above and below the line do not cancel', run(m, T) {
     // actual[1] is half the prediction (below the line), actual[2] is 3x the prediction (above it).
@@ -82,11 +126,14 @@ export const tests = [
     if (typeof got === 'number' && !Number.isFinite(got)) {
       T.fail(`zipfLogError([60, 15, 60], [60, 30, 20]) returned ${got}, expected ≈ ${want.toFixed(3)}: is it still the starter stub, or did Math.log see 0, a negative number or undefined (an element that does not exist, for example from looping over values instead of positions)?`);
     }
+    logErrSlip(T, got, [60, 15, 60], [60, 30, 20]);
     const signed = (Math.log(3) - Math.log(2)) / 3;
     const why = typeof got === 'number' && Math.abs(Math.abs(got) - signed) < 1e-6
       ? `; you got ≈ ${signed.toFixed(3)}, which is what happens without Math.abs: the −log 2 and +log 3 partly cancel`
       : '';
     T.close(got, want, 1e-6, `expected (log 2 + log 3) / 3 ≈ ${want.toFixed(3)}${why}`);
-    T.close(m.zipfLogError([10], [5]), Math.log(2), 1e-9, 'one pair off by a factor of 2 gives natural log 2 ≈ 0.693 (use Math.log, not Math.log10)');
+    const one = m.zipfLogError([10], [5]);
+    logErrSlip(T, one, [10], [5]);
+    T.close(one, Math.log(2), 1e-9, 'one pair off by a factor of 2 gives natural log 2 ≈ 0.693 (use Math.log, not Math.log10)');
   } },
 ];

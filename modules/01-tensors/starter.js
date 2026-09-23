@@ -1,9 +1,9 @@
-// Module 01 — Tensors from scratch.
+// Tensors from scratch.
 // A "raw tensor" is { shape: number[], data: Float32Array }, stored row-major: the last index varies fastest.
 // Everything below the "worked examples" line is yours to implement.
 
 // ---------- worked examples (done for you; read them, they set the conventions) ----------
-// The comments marked "JS:" explain JavaScript that module 35 may not have shown you.
+// The comments marked "JS:" explain JavaScript that the "JavaScript for this lab" module may not have shown you.
 
 /** Number of elements in a shape: size([2, 3]) === 6. */
 export function size(shape) {
@@ -85,6 +85,16 @@ export function matmul(a, b) {
 }
 
 // ---------- step 3: elementwise ops with broadcasting ----------
+
+/**
+ * The shared helper for add and mul: combine a and b element by element with fn, for example
+ * fn = (x, y) => x + y. It stays here, on its own at the top level, not inside add or any other function,
+ * so that both add and mul can call it.
+ */
+// JS: no `export` in front: the helper is private to this file (the tests do not call it directly).
+function binary(a, b, fn) {
+  // TODO: step 3
+}
 
 /**
  * Elementwise a + b. `b` may be: a tensor of the same shape, a plain number,

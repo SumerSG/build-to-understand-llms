@@ -1,4 +1,4 @@
-// Module 00 — reference solution.
+// Zipf's law — reference solution.
 
 export function normalize(text) {
   return String(text).toLowerCase().replace(/\s+/g, ' ').trim();

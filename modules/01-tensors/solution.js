@@ -1,4 +1,4 @@
-// Module 01 — reference solution (the same kernels live in lib/ops.js in a more general form).
+// Tensors from scratch — reference solution (the same kernels live in lib/ops.js in a more general form).
 
 export function size(shape) {
   let n = 1;

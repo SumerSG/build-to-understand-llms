@@ -133,6 +133,8 @@ Two functions. Everything else in the file (forward ops, \`accumulate\`, \`fromO
 \`backward()\`, a method of the \`Tensor\` class: the reverse-mode pass. Inside a method, \`this\` is the tensor it was called on, so in \`loss.backward()\` \`this\` is \`loss\`. The two error checks are written. Then: get the topological order; set \`.grad = null\` on every node that has children (intermediate gradients are scratch space for one pass, so two calls to \`backward()\` give exactly twice the leaf gradients); seed this tensor's gradient with 1 using \`accumulate(this, Float32Array.of(1))\`; walk the order from the end to the start and call each node's \`_backward()\` where it is not \`null\`.
 
 Why this order: a node's \`_backward\` reads \`this.grad\`, which is only complete once every node that used it has run. Reverse post-order guarantees that.
+
+Where the build is going: the trendline fit from the concept is the last step (step 7, \`trainLinear\`), because it needs the matmul, mean and broadcasting backward passes of steps 2 and 3 first; steps 4 to 6 add what the goal's classifier and the gradient check need.
 `,
       predict: { question: 'With `x = Tensor.from([2], { requiresGrad: true })`, what does `x.grad` hold after `x.add(x).add(x).backward()`?', answer: '[3]. Three paths lead from the loss to x (two through the inner add, one direct), and each contributes 1. The contributions add because accumulate uses +=.' },
       hints: [
@@ -151,7 +153,22 @@ Fill in the three closures. Each receives \`g\`, a raw tensor \`{ shape, data }\
 
 \`mean(axis)\`: the same, divided by the number of elements averaged (\`this.data.length\` when \`axis\` is \`null\`, otherwise \`this.shape[axis]\`). Compute that count before the closure, from the input shape.
 
-\`matmul(o)\`: for \`C = A·B\` with output gradient \`dC\`: \`dA = dC·Bᵀ\` and \`dB = Aᵀ·dC\`. Use \`ops.matmul\` and \`ops.transpose\` (raw kernels from module 01); \`this\` and \`o\` are valid raw tensors because they have \`shape\` and \`data\`. Skip the product for an operand whose \`requiresGrad\` is false: \`accumulate\` would ignore it anyway, and a matmul is the most expensive thing in the file. Write the shapes down before you write the code: \`dA\` must have the shape of \`A\`.
+\`matmul(o)\`: for \`C = A·B\` with output gradient \`dC\`: \`dA = dC·Bᵀ\` and \`dB = Aᵀ·dC\`. The small raised \`ᵀ\` means **transpose** (rows and columns swapped, the \`transpose\` you wrote in module 01), so \`Bᵀ\` is B turned on its side.
+
+**Why those formulas: the smallest case.** Take \`A = [2, 3]\` (shape \`[1, 2]\`) and \`B\` the column \`[4, 5]\` (shape \`[2, 1]\`). Then \`C = 2·4 + 3·5 = 23\`, a single number. Nudge A's first entry from 2 to 2.01 and C becomes 23.04: C moves 4 times as much as that entry, and 4 is B's first entry. By the chain rule, that entry's gradient is then 4 times \`dC\`, the gradient arriving at C. Entry by entry:
+
+\`\`\`
+C     = A[0]·B[0] + A[1]·B[1] = 2·4 + 3·5 = 23
+dA[0] = B[0]·dC = 4·dC
+dA[1] = B[1]·dC = 5·dC   so dA = dC · [4, 5] = dC · Bᵀ
+dB[0] = A[0]·dC = 2·dC
+dB[1] = A[1]·dC = 3·dC   so dB = [2, 3] stood up
+                         as a column, times dC = Aᵀ · dC
+\`\`\`
+
+Each entry of A was multiplied by an entry of B, so its gradient is that entry of B times \`dC\`, and the other way round. With more rows and columns every entry takes part in several products, and the matmuls \`dC·Bᵀ\` and \`Aᵀ·dC\` add those contributions up. The shapes confirm it: \`dA\` must have A's shape \`[n, k]\`; \`dC\` is \`[n, m]\` and \`B\` is \`[k, m]\`, so \`dC·Bᵀ\` (\`[n, m] × [m, k]\`) is the only product that fits.
+
+Use \`ops.matmul\` and \`ops.transpose\` (raw kernels from module 01); \`this\` and \`o\` are valid raw tensors because they have \`shape\` and \`data\`. Skip the product for an operand whose \`requiresGrad\` is false: \`accumulate\` would ignore it anyway, and a matmul is the most expensive thing in the file. Write the shapes down before you write the code: \`dA\` must have the shape of \`A\`.
 `,
       predict: { question: 'x has shape [2, 3]. After `x.mean().backward()`, what is in `x.grad`?', answer: 'Six copies of 1/6. The mean is (1/6)·Σx, so each element has derivative 1/6. Forgetting the division gives six 1s, and a training loop on the mean loss would then take steps 6× too large.' },
       hints: [
