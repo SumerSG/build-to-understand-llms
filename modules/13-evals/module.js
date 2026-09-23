@@ -87,17 +87,19 @@ Your graders run on strings, in one process, on 40 procedurally generated word p
       instructions: `
 A **grader** is \`(answer, reference, question) → score in [0, 1]\`. Pure: no state, no randomness, no I/O. Four functions.
 
-\`normalizeAnswer(s)\`: the canonical form of an answer string. Lowercase, trim and collapse whitespace runs (done for you), then drop **one** trailing period, remove thousands separators (a comma followed by exactly three digits, and only then), and drop trailing zeros after a decimal point so \`42.0 → 42\` and \`3.50 → 3.5\` — but \`10.05\` must stay \`10.05\`.
+\`normalizeAnswer(s)\`: the canonical form of an answer string. Lowercase, trim and collapse whitespace runs (done for you), then drop **one** trailing period, remove thousands separators, and drop trailing zeros after a decimal point so \`42.0 → 42\` and \`3.50 → 3.5\` — but \`10.05\` must stay \`10.05\`.
+
+A thousands separator is a comma that sits after a digit and is followed by exactly three digits and then a word boundary (end of string, space, punctuation — not another digit or letter). So \`1,188 → 1188\` and \`1,234,567 → 1234567\`, but \`12,3456\` stays \`12,3456\`. Remove only the comma; keep the digits on both sides.
 
 \`extractFinal(text)\`: the part of a response that is the final answer. Everything after the **last** \`####\` if present (the GSM8K convention, done for you); otherwise the last number in the text; otherwise the trimmed text. \`NUMBER_RE\` at the top of the file matches integers, decimals and \`1,188\`.
 
 \`exactMatch(answer, reference)\`: \`1\` if the two normalise to the same string, else \`0\`. Return numbers, not booleans — graders are averaged.
 
-\`regexMatch(answer, pattern)\`: \`1\` if \`pattern\` matches anywhere in the answer. \`pattern\` may already be a \`RegExp\`; a string is compiled case-insensitively.
+\`regexMatch(answer, pattern)\`: \`1\` if \`pattern\` matches anywhere in the answer. \`pattern\` may already be a \`RegExp\`; a string is compiled case-insensitively. A grader must give the same answer on every call, and a \`RegExp\` with the \`g\` or \`y\` flag is stateful: \`.test()\` advances its \`lastIndex\`, so the same input alternates \`1, 0, 1\`. Rebuild such a pattern from \`pattern.source\` and \`pattern.flags\` with \`g\` and \`y\` removed before testing. Do not mutate the caller's \`RegExp\`.
 
 These four decide the score more than the model does, so they are step 1.
 `,
-      predict: { question: 'Before you write it: what does `normalizeAnswer("12,3456")` have to return, and why is that not the same rule as "remove all commas"?', answer: '`12,3456` unchanged. A thousands separator is a comma followed by exactly three digits and then a non-digit. `12,3456` is not a formatted number, so blindly stripping commas would silently turn two different strings into the same one.' },
+      predict: { question: 'Before you write it: what does `normalizeAnswer("12,3456")` have to return, and why is that not the same rule as "remove all commas"?', answer: '`12,3456` unchanged. A thousands separator is a comma after a digit, followed by exactly three digits and then a word boundary (not another digit or letter). `12,3456` is not a formatted number, so blindly stripping commas would silently turn two different strings into the same one.' },
       hints: [
         'Each rule is one `String.prototype.replace`, and the order you apply them in matters. Which rule has to run before you can tell whether `42.0.` has trailing decimal zeros? For `regexMatch`, what state does a `RegExp` object carry between calls?',
         'Strip the trailing period first, with the literal `/\\.$/`. For `regexMatch`, rebuild a `RegExp` pattern from its `source` and its `flags` minus `g` and `y`. Thousands separators: replace a comma that is followed by exactly three digits and then a word boundary. Lookahead lets you match the comma without consuming the digits. Trailing decimal zeros: match `digits . digits` and rewrite the fractional part, keeping it only if something non-zero remains.',
@@ -135,7 +137,7 @@ Draw \`B\` resamples of size \`n = scores.length\` **with replacement** using \`
 
 - \`mean\`: the plain mean of \`scores\` (not of the resamples),
 - \`lo\`, \`hi\`: the sorted resample means at positions \`floor((alpha/2) * (B - 1))\` and \`ceil((1 - alpha/2) * (B - 1))\`,
-- \`se\`: the standard deviation of the \`B\` resample means.
+- \`se\`: the standard deviation of the \`B\` resample means, as a population standard deviation (divide the summed squared deviations by \`B\`, not \`B - 1\`).
 
 That is the percentile bootstrap (Efron 1979). It assumes nothing about the distribution of the scores, which matters because per-task pass@k values are not normal — they pile up at 0 and 1.
 
@@ -155,7 +157,7 @@ The file already contains \`scriptedJudge(question, answer, reference) → strin
 
 \`judgeGrader(judge)\`: return a grader \`(answer, reference, question) → 0 | 1\` that calls \`judge(question, answer, reference)\` — note the argument order flip — and scores \`1\` iff the verdict text contains the **whole word** \`correct\`, any case. \`INCORRECT\` contains the letters \`correct\`; a substring test scores it 1 and silently inverts your eval.
 
-\`agreementRate(records, graderA, graderB)\`: the fraction of \`records\` (each \`{ question, answer, reference }\`) on which the two graders give the same verdict, treating \`score >= 0.5\` as "correct".
+\`agreementRate(records, graderA, graderB)\`: the fraction of \`records\` (each \`{ question, answer, reference }\`) on which the two graders give the same verdict, treating \`score >= 0.5\` as "correct". With no records there is nothing to disagree on: return \`1\`, the same convention \`positionBias\` uses for \`consistency\`.
 
 \`positionBias(pairwise, pairs)\`: judge every pair \`{ question, a, b, reference }\` twice, once as \`(a, b)\` and once as \`(b, a)\`. Return \`{ consistency, firstWinRate }\`: \`consistency\` is the fraction of pairs whose two verdicts mirror each other (\`A\` then \`B\`, \`B\` then \`A\`, or \`tie\` both times), and \`firstWinRate\` is the fraction of the calls that picked a side which picked \`A\` — ties are excluded from both the numerator and the denominator, so \`0.5\` always means "no preference for the first slot"; return \`0.5\` when no call picked a side. With no pairs, \`consistency\` is \`1\`. A fair judge scores \`consistency = 1\` and \`firstWinRate = 0.5\`.
 `,
@@ -171,7 +173,7 @@ The file already contains \`scriptedJudge(question, answer, reference) → strin
       instructions: `
 \`ngrams(text, n)\`: the \`Set\` of all consecutive \`n\`-word sequences in \`text\`, using \`wordTokens\` (already written: lowercase, punctuation dropped) and joining with single spaces. A 5-word text has 3 trigrams; text shorter than \`n\` has none.
 
-\`contamination(tasks, corpus, n = 13)\`: which tasks share at least one \`n\`-gram with \`corpus\`? Return \`{ rate, flagged, n }\`, where \`flagged\` is the array of task ids in task order and \`rate\` is \`flagged.length / tasks.length\` (\`0\` for no tasks). Build the corpus n-gram set **once**, outside the task loop — the whole point of the \`Set\` is that each lookup is O(1).
+\`contamination(tasks, corpus, n = 13)\`: which tasks share at least one \`n\`-gram with \`corpus\`? \`corpus\` is a single string (the training text, possibly many documents joined by spaces); build its n-gram set with \`ngrams(corpus, n)\` and compare each task's \`ngrams(task.question, n)\` against it. Return \`{ rate, flagged, n }\`, where \`flagged\` is the array of task ids in task order and \`rate\` is \`flagged.length / tasks.length\` (\`0\` for no tasks). Build the corpus n-gram set **once**, outside the task loop — the whole point of the \`Set\` is that each lookup is O(1).
 
 \`runEval({ tasks, model, grader, n = 10, ks = [1, 5, 10], next, B = 1000 })\`: the runner. For each task, sample \`n\` answers from \`model(task.question, next)\`, grade each with \`grader(answer, task.answer, task.question)\`, and count \`c\`, the number scoring \`>= 0.5\`. Throw before doing any work if any \`k > n\`. Return:
 

@@ -41,7 +41,7 @@ export const tests = [
     T.eq(m.normalizeAnswer('42.0'), '42', 'trailing zeros after the decimal point are not meaningful');
     T.eq(m.normalizeAnswer('3.50'), '3.5');
     T.eq(m.normalizeAnswer('10.05'), '10.05', 'an interior zero is meaningful: 10.05 must not become 10.5');
-    T.eq(m.normalizeAnswer('12,3456'), '12,3456', 'a comma that is not a thousands separator must stay');
+    T.eq(m.normalizeAnswer('12,3456'), '12,3456', 'a comma that is not a thousands separator must stay: strip a comma only when exactly three digits and then a word boundary follow it, not on /,\\d{3}/ alone');
   } },
   { step: 'graders', name: 'exactMatch compares normalised strings and returns the number 0 or 1', run(m, T) {
     T.eq(m.exactMatch('42.', '42'), 1, 'normalise both sides before comparing');
@@ -160,6 +160,7 @@ export const tests = [
     T.close(m.agreementRate(records, strict, lenient), 0.75, 1e-9, 'they disagree only on q3, so 3 of 4 agree');
     T.close(m.agreementRate(records, strict, strict), 1, 1e-9, 'a grader always agrees with itself');
     T.close(m.agreementRate(records, strict, () => 1), 0.25, 1e-9, 'an always-1 grader agrees only on q1');
+    T.close(m.agreementRate([], strict, lenient), 1, 1e-9, 'with no records there is nothing to disagree on: return 1, not 0 or NaN');
   } },
   { step: 'judge', name: 'positionBias runs every pair in both orders and measures consistency and first-slot wins', run(m, T) {
     const pairs = [

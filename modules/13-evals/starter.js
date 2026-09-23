@@ -98,7 +98,8 @@ export function formatReport(report) {
 /**
  * Canonical form of an answer string so that "42." and " 42" and "42.0" and "1,000"/"1000" compare equal:
  * lowercase; trim; collapse whitespace runs to one space; drop one trailing period;
- * remove thousands separators (a comma followed by exactly three digits); drop trailing zeros
+ * remove thousands separators (a comma after a digit, followed by exactly three digits and then a word
+ * boundary: 1,188 -> 1188 but 12,3456 stays); drop trailing zeros
  * after a decimal point (42.0 -> 42, 3.50 -> 3.5) but never an interior zero (10.05 stays).
  * The first two rules are done; add the rest.
  */
@@ -172,7 +173,7 @@ export function passPowK(n, c, k) {
  * record each resample's mean, sort them, and return
  *   { mean, lo, hi, se }
  * where mean is the plain mean of scores, lo/hi are the sorted resample means at positions
- * floor((alpha/2)*(B-1)) and ceil((1-alpha/2)*(B-1)), and se is the standard deviation of the resample means.
+ * floor((alpha/2)*(B-1)) and ceil((1-alpha/2)*(B-1)), and se is the population standard deviation of the resample means (divide by B).
  */
 export function bootstrapCI(scores, { B = 1000, alpha = 0.05, next = rng(0) } = {}) {
   // TODO: step 3
@@ -191,7 +192,7 @@ export function judgeGrader(judge) {
   return () => 0;
 }
 
-/** Fraction of records ({ question, answer, reference }) on which the two graders give the same verdict (score >= 0.5). */
+/** Fraction of records ({ question, answer, reference }) on which the two graders give the same verdict (score >= 0.5). 1 for no records. */
 export function agreementRate(records, graderA, graderB) {
   // TODO: step 4
   return 0;
@@ -220,7 +221,7 @@ export function ngrams(text, n) {
 }
 
 /**
- * Which tasks share at least one n-gram with `corpus`? Return { rate, flagged, n } where flagged is the
+ * Which tasks share at least one n-gram with `corpus` (a single string of training text)? Return { rate, flagged, n } where flagged is the
  * array of task ids in task order and rate = flagged.length / tasks.length (0 for no tasks).
  */
 export function contamination(tasks, corpus, n = 13) {
