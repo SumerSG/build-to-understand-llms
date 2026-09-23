@@ -17,7 +17,7 @@ export default async function demo(m, lab) {
   lab.log(`Cluster: ${gpus} ${topo.gpu.name} in ${nodes} nodes of ${topo.gpusPerNode}, ${topo.nodesPerPod} nodes per pod.`);
   const rungs = [topo.links.self, topo.links.node, topo.links.pod, topo.links.cluster];
   lab.bar({
-    title: 'The bandwidth hierarchy, one way, GB/s (log-scaled by eye: each rung is ~10x)',
+    title: 'The bandwidth hierarchy: approximate one-way GB/s per GPU (HBM ≈ 7x NVLink ≈ 9x one IB port)',
     labels: rungs.map((l) => l.name),
     values: rungs.map((l) => +(l.bandwidth / 1e9).toFixed(1)),
   });
@@ -26,7 +26,7 @@ export default async function demo(m, lab) {
   // ---------- 2. flat vs hierarchical all-reduce ----------
   const sizes = [8, 16, 32, 64, 128, 256, 512, 1024];
   const flat = [], hier = [];
-  const gradBytes = 16e9; // a 8B-parameter bf16 gradient buffer
+  const gradBytes = 16e9; // an 8B-parameter bf16 gradient buffer
   for (const n of sizes) {
     const group = range(n);
     flat.push(+(m.flatAllReduceTime(gradBytes, group, topo) * 1e3).toFixed(2));
@@ -74,6 +74,18 @@ export default async function demo(m, lab) {
     labels: [`tp=8 on ${tp8.links.tp.name}`, `tp=16 on ${tp16.links.tp.name}`],
     values: [S(tp8.tpComm), S(tp16.tpComm)],
   });
+  // Where the chosen layout's communication actually runs, grouped by the link each axis lands on.
+  const byLink = new Map();
+  for (const [axis, t] of [['tp', best.tpComm], ['pp', best.ppComm], ['dp', best.dpComm]]) {
+    if (t <= 0) continue;
+    const name = best.links[axis].name;
+    byLink.set(name, (byLink.get(name) || 0) + t);
+  }
+  lab.bar({
+    title: `Communication per step of the chosen layout ${best.layout.tp}/${best.layout.pp}/${best.layout.dp}, by link (seconds, before overlap)`,
+    labels: [...byLink.keys()],
+    values: [...byLink.values()].map(S),
+  });
   lab.log(`tp=16 needs ${GB(tp16.memory.total)} GB per GPU against tp=8's ${GB(tp8.memory.total)} GB — less memory — and is still ${((tp16.stepTime / tp8.stepTime - 1) * 100).toFixed(0)}% slower.`);
 
   // ---------- 4. the MoE all-to-all ----------
@@ -99,8 +111,8 @@ export default async function demo(m, lab) {
   lab.log(`Over 8 nodes a token reaches ${wide.nodesPerToken.toFixed(2)} of them; the cap takes that to ${wideLimited.nodesPerToken.toFixed(2)} and cuts inter-node traffic from ${mb(wide.interNodeBytes)} to ${mb(wideLimited.interNodeBytes)} per GPU per layer.`);
 
   // ---------- 5. failures and checkpoints ----------
-  const MTBF_HOURS = 45558; // per GPU; reproduces the Llama 3 paper's 466 interruptions in 54 days on 16,384 GPUs
-  const ckptSeconds = (model.params * m.BYTES.total) / 10e9; // 1.1 TB of state to storage at ~10 GB/s
+  const MTBF_HOURS = 50677; // per GPU; reproduces the Llama 3 paper's 419 unexpected interruptions in 54 days on 16,384 GPUs
+  const ckptSeconds = (model.params * m.BYTES.total) / 10e9; // 1.1 TB of state to storage at an assumed ~10 GB/s aggregate
   const clusterSizes = [128, 512, 1024, 4096, 8192, 16384, 32768];
   const perDay = [], wasted = [], intervals = [];
   for (const n of clusterSizes) {
@@ -129,14 +141,14 @@ export default async function demo(m, lab) {
   lab.done(`
 Planned **${model.name}** (${fmt(model.params)} parameters, ${model.layers} layers) on **${gpus} ${topo.gpu.name}** — ${nodes} nodes, ${(gpus / (topo.gpusPerNode * topo.nodesPerPod))} pods, approximately **${power.toFixed(2)} MW** of facility power (the same accounting puts 10,000 H100s at approximately ${m.clusterPowerMW(10000, topo.gpu).toFixed(0)} MW).
 
-**The winner:** \`tp=${best.layout.tp}, pp=${best.layout.pp}, dp=${best.layout.dp}\` at **${S(best.stepTime)} s** per step and **${GB(best.memory.total)} GB** per GPU — ${fmt(Math.round(best.tokensPerSec))} tokens/s across the cluster. Its tensor-parallel group is ${best.links.tp.tier === 'node' ? 'exactly one node, so its all-reduces stay on NVLink' : 'spread across nodes'}; its gradient all-reduce runs on the ${best.links.dp.name} and hides entirely behind ${S(best.compute)} s of arithmetic.
+**The winner:** \`tp=${best.layout.tp}, pp=${best.layout.pp}, dp=${best.layout.dp}\` at **${S(best.stepTime)} s** per step and **${GB(best.memory.total)} GB** per GPU — ${fmt(Math.round(best.tokensPerSec))} tokens/s across the cluster. Its tensor-parallel group is ${best.links.tp.tier === 'node' ? 'exactly one node, so its all-reduces stay on NVLink' : 'spread across nodes'}; its gradient all-reduce (${S(best.dpComm)} s) runs on the ${best.links.dp.name} and ${best.dpExposed <= 0 ? `hides entirely behind ${S(best.compute)} s of arithmetic` : `leaves ${S(best.dpExposed)} s exposed after overlapping with compute`}.
 
-**Why not wider tensor parallelism:** \`tp=16\` needs only ${GB(tp16.memory.total)} GB per GPU against ${GB(tp8.memory.total)} GB, yet its ${model.layers * 4} all-reduces per micro-batch cost **${S(tp16.tpComm)} s** instead of **${S(tp8.tpComm)} s** — the group straddles two nodes, so the same bytes move at approximately ${(topo.links.pod.bandwidth / 1e9).toFixed(0)} GB/s instead of ${(topo.links.node.bandwidth / 1e9).toFixed(0)} GB/s. Net result: ${((tp16.stepTime / tp8.stepTime - 1) * 100).toFixed(0)}% slower. Pure data parallelism (\`tp=1\`) would be fastest of all at ${S(pureDp.stepTime)} s, but wants ${GB(pureDp.memory.total)} GB per GPU and does not fit.
+**Why not wider tensor parallelism:** \`tp=16\` needs only ${GB(tp16.memory.total)} GB per GPU against ${GB(tp8.memory.total)} GB, yet its ${model.layers * 4} all-reduces per micro-batch add up to **${S(tp16.tpComm)} s** per step instead of **${S(tp8.tpComm)} s** — the group straddles two nodes, so the same bytes move at approximately ${(topo.links.pod.bandwidth / 1e9).toFixed(0)} GB/s instead of ${(topo.links.node.bandwidth / 1e9).toFixed(0)} GB/s. Net result: ${((tp16.stepTime / tp8.stepTime - 1) * 100).toFixed(0)}% slower. Pure data parallelism (\`tp=1\`) would take ${S(pureDp.stepTime)} s${pureDp.stepTime < best.stepTime ? ', faster than the winner,' : ''} but wants ${GB(pureDp.memory.total)} GB per GPU and ${pureDp.fits ? 'still fits' : 'does not fit'}.
 
 **On the wire:** a flat 16 GB all-reduce over 128 GPUs takes ${flat[sizes.indexOf(128)].toFixed(0)} ms; your two-level schedule does it in ${hier[sizes.indexOf(128)].toFixed(0)} ms, **${speedup.toFixed(2)}x** faster, because the spine carries ${gb(at128.phases[1].bytes)} rather than ${gb(gradBytes)}.
 
 **Mixture of experts:** spreading ${moe.name}'s experts over 8 nodes costs ${free[epNodes.indexOf(8)].toFixed(2)} ms of all-to-all per layer; node-limited routing to ${moe.maxNodes} nodes brings that to ${limited[epNodes.indexOf(8)].toFixed(2)} ms, a ${((1 - limited[epNodes.indexOf(8)] / free[epNodes.indexOf(8)]) * 100).toFixed(0)}% cut, without changing which experts the token uses.
 
-**Reliability:** at 16,384 GPUs this model predicts **${perDay[i16k].toFixed(1)} interruptions a day** (the Llama 3 paper reports 466 over 54 days, about 8.6 a day, roughly 78% hardware). Young's rule then says checkpoint every **${intervals[i16k].toFixed(0)} minutes**, which costs **${wasted[i16k].toFixed(1)}%** of wall clock. At ${gpus} GPUs the same job would lose only ${wasted[0].toFixed(2)}%.
+**Reliability:** at 16,384 GPUs this model predicts **${perDay[i16k].toFixed(1)} interruptions a day** (the Llama 3 paper reports 419 unexpected interruptions in 54 days, about 7.8 a day, roughly 78% of them hardware). Young's rule then says checkpoint every **${intervals[i16k].toFixed(0)} minutes**, which costs **${wasted[i16k].toFixed(1)}%** of wall clock. At ${gpus} GPUs the same job would lose only ${wasted[0].toFixed(2)}%.
 `);
 }

@@ -117,11 +117,12 @@ export function memoryPerGpu({ model, layout, microBatchSeqs = 1 }) {
  * Megawatts drawn by `gpus` accelerators, including everything else in the hall.
  * `pue` (power usage effectiveness) is the ratio of facility power to IT power; the Uptime Institute's
  * annual survey puts a typical large data centre near 1.5, and hyperscalers report closer to 1.1.
- * We also charge 1.4× the GPU board power for the CPUs, NICs, storage and fans in the node.
- * clusterPowerMW(10000, H100) ≈ 12.7 MW.
+ * We also charge 1.8× the GPU board power for the CPUs, NICs, NVSwitches, storage and fans in the node:
+ * NVIDIA's DGX H100 datasheet gives ~10.2 kW maximum for 8 GPUs, about 1.8 × 8 × 700 W.
+ * clusterPowerMW(10000, H100) ≈ 16.4 MW.
  */
 export function clusterPowerMW(gpus, gpu, pue = 1.3) {
-  return (gpus * gpu.watts * 1.4 * pue) / 1e6;
+  return (gpus * gpu.watts * 1.8 * pue) / 1e6;
 }
 
 // ---------- step 1: the bandwidth hierarchy ----------
@@ -133,8 +134,13 @@ export function clusterPowerMW(gpus, gpu, pue = 1.3) {
  * Throw if `gpu` is negative or not an integer.
  */
 export function location(gpu, topo) {
-  // TODO: step 1
-  return { gpu, node: 0, pod: 0, slot: 0 };
+  if (!Number.isInteger(gpu) || gpu < 0) throw new Error(`location: gpu must be a non-negative integer, got ${gpu}`);
+  const node = Math.floor(gpu / topo.gpusPerNode);
+  // TODO: step 1 — a pod is a contiguous block of topo.gpusPerNode * topo.nodesPerPod ids,
+  // and slot is the position inside the node.
+  const pod = 0;
+  const slot = 0;
+  return { gpu, node, pod, slot };
 }
 
 /**
@@ -171,8 +177,9 @@ export function flatAllReduceTime(bytes, gpus, topo) {
  * The hierarchical (two-level) all-reduce, in three sequential phases:
  *   1. reduce-scatter inside each node over `topo.links.node`: g−1 steps of bytes/g, where g is the
  *      number of GPUs of the group on one node.
- *   2. all-reduce the bytes/g chunks across the nodes, one rank per node, over the slowest link
- *      between those representatives.
+ *   2. all-reduce the bytes/g chunks across the nodes over the slowest link between the nodes (find
+ *      it from one representative GPU per node). The g GPUs of a node run g such rings at once, one
+ *      per slot, each on its own NIC, so the phase costs one ring of bytes/g over the node count.
  *   3. all-gather inside each node, the mirror of phase 1.
  * Skip a phase that has nothing to do (g = 1, or a single node). Throw if the group does not have
  * the same number of GPUs on every node it touches.

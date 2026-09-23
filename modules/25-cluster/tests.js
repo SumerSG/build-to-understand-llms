@@ -39,6 +39,15 @@ export const tests = [
       T.eq(m.location(70, m.CLUSTER).node, 8, '70 / 8 = 8 (floor)');
       T.eq(m.location(70, m.CLUSTER).pod, 1, '70 / 64 = 1 (floor)');
       T.eq(m.location(70, m.CLUSTER).slot, 6, '70 mod 8 = 6');
+      T.eq(m.location(6, TOY).slot, 0, 'GPU 6 is the FIRST GPU of node 3: slot is the position inside the node (6 mod 2), not inside the pod');
+      T.eq(m.location(13, m.CLUSTER).slot, 5, '13 mod 8 = 5: slot counts inside the node of 8, not the pod of 64');
+      // A topology where gpusPerNode != nodesPerPod, so mixing the two up cannot pass by coincidence.
+      // 4 GPUs per node, 2 nodes per pod: a pod is 8 GPUs.
+      const lopsided = { ...TOY, gpusPerNode: 4, nodesPerPod: 2 };
+      T.eq(m.location(9, lopsided).node, 2, '9 / 4 = 2 (floor)');
+      T.eq(m.location(9, lopsided).pod, 1, 'a pod is gpusPerNode x nodesPerPod = 8 GPUs, so 9 / 8 = 1. Dividing the node by gpusPerNode instead gives 0');
+      T.eq(m.location(9, lopsided).slot, 1, '9 mod 4 = 1');
+      T.eq(m.location(7, lopsided).pod, 0, 'GPUs 0-7 are pod 0');
       T.throws(() => m.location(-1, TOY), 'a negative GPU id is not a place in the machine and must throw');
       T.throws(() => m.location(1.5, TOY), 'a fractional GPU id must throw rather than silently floor');
     },
@@ -75,6 +84,9 @@ export const tests = [
       T.eq(m.slowestLink([5, 6], TOY).tier, 'pod');
       T.eq(m.slowestLink([1, 5, 6], TOY).tier, 'cluster', 'adding a GPU from another pod must drag the whole group down to the spine');
       T.eq(m.slowestLink([6, 5, 1], TOY).tier, 'cluster', 'the answer must not depend on the order of the group');
+      // The worst pair can be in the MIDDLE of an unsorted group: comparing only the ends is not enough.
+      T.eq(m.slowestLink([0, 4, 1], TOY).tier, 'cluster', 'GPU 4 is in the other pod even though the first and last ids (0, 1) share a node: check every GPU, not just the ends');
+      T.eq(m.slowestLink([0, 8, 1], m.CLUSTER).tier, 'pod', 'GPU 8 is on node 1; the group is not one node just because 0 and 1 are');
       T.eq(m.slowestLink(range(8), m.CLUSTER).tier, 'node', 'the first 8 GPUs of the real cluster are exactly one node');
       T.eq(m.slowestLink(range(9), m.CLUSTER).tier, 'pod', 'one extra GPU crosses a node boundary and costs a switch hop');
       T.throws(() => m.slowestLink([], TOY), 'an empty group is a bug in the caller and must throw');
@@ -238,6 +250,48 @@ export const tests = [
   },
   {
     step: 'planner',
+    name: 'with all three axes on, every term lands on the right link and multiplies out by hand',
+    run(m, T) {
+      // TOY with half the gradient traffic hideable behind compute. 8 GPUs, tp = pp = dp = 2.
+      const topo = { ...TOY, overlap: 0.5 };
+      const r = m.layoutStepTime({ model: TINY, gpus: 8, layout: { tp: 2, pp: 2, dp: 2 }, topo });
+      // m = 8 sequences / (dp 2 x 1) = 4 micro-batches; 4 layers per stage; actBytes = 2 x 128 x 512 = 131072 B.
+      T.eq(r.m, 4, 'm = batchSeqs / (dp x microBatchSeqs) = 8 / 2 = 4 micro-batches');
+      T.eq(r.links.tp.tier, 'node', 'tp group [0, 1] is one toy node');
+      T.eq(r.links.pp.tier, 'cluster', 'pp group [0, 4] is tp x dp = 4 ranks apart: the other pod');
+      T.eq(r.links.dp.tier, 'pod', 'dp group [0, 2] is two nodes of the same pod');
+      T.close(r.compute, 1.536, 1e-9, 'expected 6 x 1e9 x 1024 / (1e12 x 0.5 x 8 GPUs) = 1.536 s');
+      // ring over 2 GPUs on the node link: 2 steps x 65536 B / 1e6 = 0.131072 s; x 4 micro-batches x 4 layers x 4.
+      T.close(r.tpComm, 64 * 0.131072, 1e-7, 'expected 4 micro-batches x 4 layers per stage x 4 all-reduces x 0.131072 s = 8.389 s');
+      T.close(r.bubble, (1.536 + 8.388608) / 4, 1e-7,
+        'expected (compute + tpComm) x (pp - 1) / m = 9.9246 x 1/4 = 2.481 s. Leaving tpComm out of the bubble (0.384 s) forgets that the idle stages also wait for its all-reduces');
+      T.close(r.ppComm, 4 * 2 * 13.1072, 1e-6,
+        'expected m x 2 x (pp - 1) x (131072 B / 10 KB/s) = 4 x 2 x 13.1072 = 104.86 s on the spine. Charging it once per step (module 24) gives 26.2 s; every micro-batch crosses every boundary, forward and backward');
+      // dp all-reduce of 2 bytes x 2.5e8 owned params = 5e8 B over [0, 2] on the pod link: 2 x (2.5e8 / 1e5) = 5000 s.
+      T.close(r.dpComm, 5000, 1e-6, 'expected a 2-way ring of 5e8 gradient bytes on the 100 KB/s pod link: 2 x 2.5e8 / 1e5 = 5000 s');
+      T.close(r.dpExposed, 5000 - 0.5 * 1.536, 1e-6, 'expected dpComm - overlap x compute = 5000 - 0.768 s: half the compute hides some of the gradient traffic');
+      T.close(r.stepTime, 1.536 + 8.388608 + 2.481152 + 104.8576 + 4999.232, 1e-5, 'stepTime = compute + tpComm + bubble + ppComm + dpExposed');
+      T.close(r.memory.total, m.memoryPerGpu({ model: TINY, layout: { tp: 2, pp: 2, dp: 2 } }).total, 1e-3, 'memory must be the given memoryPerGpu for this layout');
+      T.eq(r.fits, true, 'a quarter of a 1B model fits easily in 80 GB');
+      T.eq(m.layoutStepTime({ model: TINY, gpus: 8, layout: { tp: 2, pp: 2, dp: 2 }, topo, memoryCap: 1e9 }).fits, false, 'the same layout must not fit under a 1 GB cap');
+    },
+  },
+  {
+    step: 'planner',
+    name: 'the gradient all-reduce uses the hierarchical schedule, not a flat ring on the worst link',
+    run(m, T) {
+      // Pure data parallelism over all 8 toy GPUs: the dp group is 0..7, two per node, over two pods.
+      const r = m.layoutStepTime({ model: TINY, gpus: 8, layout: { tp: 1, pp: 1, dp: 8 }, topo: TOY });
+      // 2e9 gradient bytes. Hierarchical: chunk 1e9; 1 step in node (1000 s) + 6 x (2.5e8 / 1e4) across 4 nodes on the spine
+      // (150000 s) + 1 step in node (1000 s) = 152000 s. The flat ring on the spine would be 14 x 2.5e8 / 1e4 = 350000 s.
+      T.close(r.dpComm, 152000, 1e-3,
+        'expected allReduceTime over the dp group = 152,000 s (1000 + 150000 + 1000). 350,000 s means you ran a flat ring on groupLink and threw away the hierarchy you built in step 2');
+      T.close(r.dpExposed, r.dpComm, 1e-6, 'TOY has overlap 0, so all of the gradient traffic is exposed');
+      T.close(r.tpComm + r.bubble + r.ppComm, 0, 1e-12, 'with tp = pp = 1 there is no tensor or pipeline traffic and no bubble');
+    },
+  },
+  {
+    step: 'planner',
     name: 'illegal layouts throw instead of returning a number',
     run(m, T) {
       T.throws(() => m.layoutStepTime({ model: TINY, gpus: 4, layout: { tp: 2, pp: 1, dp: 1 }, topo: TOY }),
@@ -256,7 +310,9 @@ export const tests = [
     run(m, T) {
       const model = m.LLAMA3_70B;
       const ranked = m.rankLayouts({ model, gpus: 128 });
-      T.ok(ranked.length >= 10, `expected a couple of dozen legal layouts of ${model.name} on 128 GPUs, got ${ranked.length}`);
+      // tp in {1,2,...,128} (powers of two divide 8192 and 28672), pp in {1,2,4,8,16} (divides 80) with
+      // tp*pp <= 128: 5 + 5 + 5 + 5 + 4 + 3 + 2 + 1 = 30 layouts.
+      T.eq(ranked.length, 30, `expected exactly 30 legal layouts of ${model.name} on 128 GPUs (every tp dividing 128, every pp dividing both 128/tp and 80); a planner that misses some can miss the best one`);
       for (let i = 1; i < ranked.length; i++) {
         const a = ranked[i - 1], b = ranked[i];
         T.ok(a.fits || !b.fits, 'every layout that fits in memory must be ranked ahead of every layout that does not');
@@ -350,9 +406,10 @@ export const tests = [
       T.close(m.failuresPerDay(1000, 50000), 0.48, 1e-9, 'expected 1000 x 24 / 50000 = 0.48 per day');
       T.close(m.failuresPerDay(2000, 50000), 2 * m.failuresPerDay(1000, 50000), 1e-9, 'twice the GPUs, twice the interruptions: the rates add');
       T.close(m.failuresPerDay(0, 50000), 0, 1e-12);
-      // Llama 3 405B: the Llama 3 paper reports 466 job interruptions over 54 days on 16,384 H100s.
-      T.close(m.failuresPerDay(16384, 45558), 466 / 54, 2e-3,
-        'a per-GPU MTBF of about 45,558 hours (5.2 years) reproduces the Llama 3 paper: 8.6 interruptions a day on 16,384 GPUs');
+      // Llama 3 405B: the Llama 3 paper reports 466 job interruptions in a 54-day snapshot on 16,384 H100s,
+      // of which 47 were planned and 419 unexpected. 16384 x 24 x 54 / 419 = 50,677 hours per GPU.
+      T.close(m.failuresPerDay(16384, 50677), 419 / 54, 2e-3,
+        'a per-GPU MTBF of about 50,677 hours (5.8 years) reproduces the Llama 3 paper: 419 unexpected interruptions in 54 days, 7.8 a day, on 16,384 GPUs');
       T.throws(() => m.failuresPerDay(100, 0), 'an MTBF of zero is not a number of hours and must throw');
     },
   },

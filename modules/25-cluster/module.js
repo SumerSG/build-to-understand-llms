@@ -43,7 +43,7 @@ export default {
       q: 'Ordered fastest to slowest, the four rungs of the hierarchy in this module are…',
       options: ['NVLink, HBM, InfiniBand leaf, spine', 'HBM, NVLink, InfiniBand leaf, spine', 'HBM, InfiniBand leaf, NVLink, spine'],
       answer: 1,
-      why: 'Approximately 3.35 TB/s of HBM3 on the package, ~450 GB/s per direction over NVLink 4, ~50 GB/s over one NDR 400 port, and less than that once the spine is oversubscribed. Each rung is roughly an order of magnitude apart.',
+      why: 'Approximately 3.35 TB/s of HBM3 on the package, ~450 GB/s per direction over NVLink 4, ~50 GB/s over one NDR 400 port, and less than that once the spine is oversubscribed. The first three rungs are each roughly an order of magnitude apart.',
     },
     {
       q: 'A hierarchical all-reduce over 16 nodes of 8 GPUs puts how much of a `B`-byte buffer on the inter-node link?',
@@ -73,7 +73,7 @@ export default {
   concept: `
 ## The machine is a hierarchy, not a pile
 
-Buy 128 H100s and you do not get 128 equal peers. You get 16 boxes. Inside one box — an NVIDIA HGX or DGX H100 baseboard — eight SXM modules hang off four NVSwitches, and any GPU can reach any other at approximately 900 GB/s bidirectional, so roughly 450 GB/s in each direction (NVIDIA's H100 datasheet). The box also holds eight InfiniBand NDR 400 network cards, one per GPU, each carrying 400 Gb/s, which is 50 GB/s (NVIDIA's Quantum-2 datasheet). Those cards are how the box talks to the other fifteen.
+Buy 128 H100s and you do not get 128 equal peers. You get 16 boxes. Inside one box — an NVIDIA HGX or DGX H100 baseboard — eight SXM modules hang off four NVSwitches, and any GPU can reach any other at approximately 900 GB/s bidirectional, so roughly 450 GB/s in each direction (NVIDIA's H100 datasheet). The box also holds eight ConnectX-7 InfiniBand NDR network cards, one per GPU, each carrying 400 Gb/s, which is 50 GB/s (NVIDIA's DGX H100 and ConnectX-7 datasheets). For comparison, the PCIe Gen5 x16 slot the GPU sits in carries approximately 64 GB/s each way, so NVLink is roughly 7× PCIe. Those cards are how the box talks to the other fifteen.
 
 Write the four numbers in a column and the shape of every decision in this module appears:
 
@@ -82,14 +82,14 @@ Write the four numbers in a column and the shape of every decision in this modul
 | HBM3 on the package | 3,350 GB/s | inside one GPU |
 | NVLink 4 through NVSwitch | 450 GB/s | inside one node (8 GPUs) |
 | InfiniBand NDR 400, one leaf hop | 50 GB/s | inside one pod |
-| the same port through an oversubscribed spine | 25 GB/s | anywhere |
+| the same port through a spine we make 2:1 oversubscribed | 25 GB/s | anywhere |
 
-Each rung is roughly an order of magnitude below the one above. Fabrics are built **rail-optimised**: GPU *k* of every node connects to leaf switch *k*, so a collective in which every rank talks to the same rank on other nodes stays on one rail and never touches the spine. Our model collapses that into two inter-node tiers.
+The first three rungs are each roughly an order of magnitude apart (3,350 → 450 → 50); the last one is our modelling choice, not a datasheet number. Large training fabrics are often built non-blocking, but real ones still lose bandwidth to congestion once traffic leaves a leaf switch, and halving it makes the planner's choices visible. Fabrics are built **rail-optimised**: GPU *k* of every node connects to leaf switch *k* (NVIDIA's DGX SuperPOD reference architecture groups 32 nodes per such unit), so a collective in which every rank talks to the same slot on other nodes stays on one rail and does not need the spine. Our model collapses that into two inter-node tiers, "same pod" and "anywhere".
 
 :::predict
 An all-reduce of a 16 GB gradient buffer over 128 GPUs. Schedule A rings through all 128 ranks on the inter-node link. Schedule B reduce-scatters inside each node over NVLink, all-reduces the resulting chunks across the 16 nodes, then all-gathers inside each node. How much faster is B?
 ---
-About 6×. In B the slow link carries only \`bytes/8\` — the chunk each GPU owns after the in-node reduce-scatter — and the ring across nodes is 16 ranks instead of 128. You will measure your own number in the demo.
+About 6× with this module's constants (213 ms against 1,276 ms). In B each GPU puts only \`bytes/8\` on the slow link — the chunk it owns after the in-node reduce-scatter — and the ring across nodes is 16 ranks instead of 128. The eight GPUs of a node run eight such cross-node rings at the same time, one per slot, each on its own NIC, so no single card carries the whole buffer. You will measure your own number in the demo.
 :::
 
 ## Why tensor parallelism is eight wide
@@ -109,18 +109,18 @@ The naive volume is \`tokens · k · hidden · bytes\`, twice. DeepSeek-V3's tri
 :::predict
 Node-limited routing cuts the nodes per token from 5.25 to 4. Which traffic drops — the NVLink traffic, the inter-node traffic, or both?
 ---
-Only the inter-node traffic, by 4/5.25 ≈ 24%. The token still visits 8 experts, so the number of copies delivered over NVLink inside the destination nodes is unchanged. You are moving traffic down the hierarchy, not removing it.
+Only the inter-node traffic: it falls to 4/5.25 ≈ 76% of its old value, a 24% cut. The token still visits 8 experts, so the number of copies delivered over NVLink inside the destination nodes is unchanged. You are moving traffic down the hierarchy, not removing it.
 :::
 
 ## Power, and things breaking
 
-An H100 SXM board is rated at approximately 700 W (NVIDIA's datasheet). Add CPUs, NICs, storage and fans, then multiply by a power usage effectiveness near 1.3, and 10,000 GPUs draw roughly 12–13 MW — the reason new clusters are sited next to substations.
+An H100 SXM board is rated at approximately 700 W (NVIDIA's H100 datasheet). A whole DGX H100 — eight GPUs plus CPUs, NICs, NVSwitches, storage and fans — is rated at approximately 10.2 kW maximum (NVIDIA's DGX H100 datasheet), about 1.8× the GPU boards alone. Multiply by a power usage effectiveness (facility power over IT power) near 1.3 for cooling and conversion losses, and 10,000 GPUs draw roughly 16 MW — the reason new clusters are sited next to substations.
 
-At that size, failures are continuous. The Llama 3 paper reports **466 job interruptions over 54 days** on 16,384 H100s, roughly 78% of them hardware — about 8.6 a day, implying a mean time between failures near 45,000 hours per GPU. A synchronous step is a single point of failure: one dead GPU stops all 16,384. The defence is checkpointing, priced by Young's formula: checkpoint every \`sqrt(2 · MTBF · checkpointTime)\` seconds and lose \`sqrt(2 · checkpointTime / MTBF)\` of your wall clock to writes and redone work.
+At that size, failures are continuous. The Llama 3 paper (Grattafiori et al. 2024) reports **466 job interruptions over a 54-day snapshot** on up to 16,384 H100s: 47 planned (maintenance) and **419 unexpected**, and roughly 78% of the unexpected ones were attributed to confirmed or suspected hardware issues, GPUs above all. 419 in 54 days is about 7.8 a day; if you charge every one to a GPU, that is one failure per GPU every ~50,700 hours (5.8 years). A tiny per-device rate times 16,384 devices is a failure every three hours. A synchronous step is a single point of failure: one dead GPU stops all 16,384. The defence is checkpointing, priced by Young's formula: checkpoint every \`sqrt(2 · MTBF · checkpointTime)\` seconds and lose \`sqrt(2 · checkpointTime / MTBF)\` of your wall clock to writes and redone work.
 
 ## Where this toy stops
 
-Every link here is a single alpha–beta number. Real fabrics have congestion, adaptive routing, SHARP in-network reduction on the switch and per-rail asymmetry; NCCL picks among ring, tree and double-binary-tree algorithms by message size and topology. Our "pod" and "cluster" tiers stand in for a real fat tree with measurable oversubscription, and we assume perfectly balanced expert routing and independent failures. The hierarchy and the arithmetic of routing traffic onto it are real; every constant is approximate.
+Every link here is a single alpha–beta number. Real fabrics have congestion, adaptive routing, SHARP in-network reduction on the switch and per-rail asymmetry; NCCL picks among ring, tree and double-binary-tree algorithms by message size and topology. Our "pod" and "cluster" tiers stand in for a real fat tree with measurable oversubscription, and we assume perfectly balanced expert routing and independent failures. Our reliability model treats every interruption as an independent, memoryless failure with no restart cost; real jobs also pay minutes to reschedule, reload and warm up. The hierarchy and the arithmetic of routing traffic onto it are real; every constant is approximate.
 `,
   steps: [
     {
@@ -129,7 +129,7 @@ Every link here is a single alpha–beta number. Real fabrics have congestion, a
       instructions: `
 A GPU is an integer id. The topology turns that id into a place in the machine, and a pair of places into a link.
 
-\`location(gpu, topo)\` — return \`{ gpu, node, pod, slot }\`. A node is a contiguous block of \`topo.gpusPerNode\` ids, a pod a contiguous block of \`topo.gpusPerNode * topo.nodesPerPod\`, and \`slot\` is the position inside the node. Throw on a negative or non-integer id.
+\`location(gpu, topo)\` — return \`{ gpu, node, pod, slot }\`. The starter has the validation and \`node\` already; finish \`pod\` and \`slot\`. A node is a contiguous block of \`topo.gpusPerNode\` ids, a pod a contiguous block of \`topo.gpusPerNode * topo.nodesPerPod\`, and \`slot\` is the position inside the node. Throw on a negative or non-integer id.
 
 \`linkBetween(a, b, topo)\` — return one of \`topo.links\`: \`self\` when the ids are equal, \`node\` when they share a node, \`pod\` when they share a pod, \`cluster\` otherwise.
 
@@ -144,7 +144,7 @@ Read the \`CLUSTER\` and link constants above the worked-examples line first. Th
       hints: [
         'Two integer divisions and one remainder give you node, pod and slot. `linkBetween` then compares those fields from most local to least.',
         'For `slowestLink`, the tiers form a hierarchy: two GPUs in the same node are always in the same pod. So the worst pair always contains the first GPU, and one pass comparing `gpus[0]` against every other id is enough.',
-        '`let worst = topo.links.self; for (const g of gpus) { const link = linkBetween(gpus[0], g, topo); if (TIERS.indexOf(link.tier) > TIERS.indexOf(worst.tier)) worst = link; } return worst;`',
+        '`location`: `node: Math.floor(gpu / topo.gpusPerNode)`, and the pod is the same idea with a bigger block. `slowestLink`: start from `let worst = topo.links.self;`, loop, and replace `worst` whenever `TIERS.indexOf(link.tier)` is larger. Do not stop at the ends of the array: in `[0, 4, 1]` the far GPU is in the middle.',
       ],
     },
     {
@@ -158,7 +158,7 @@ You built \`ringAllReduceTime(bytes, n, link)\` in module 24; it is given above.
 \`hierarchicalAllReduce(bytes, gpus, topo)\` — the two-level schedule, in three sequential phases. With \`g\` GPUs of the group on each node:
 
 1. reduce-scatter inside each node over \`topo.links.node\`: \`g − 1\` steps of \`bytes/g\`;
-2. all-reduce those \`bytes/g\` chunks across the nodes, one representative per node, over the slowest link between the representatives;
+2. all-reduce those \`bytes/g\` chunks across the nodes over the slowest link between the nodes. The \`g\` GPUs of a node each run their own cross-node ring at the same time (one per slot, each on its own NIC), so the phase costs one ring of \`bytes/g\` over \`nodes\` ranks. Find the link from one representative GPU per node;
 3. all-gather inside each node — the mirror of phase 1.
 
 Skip a phase with nothing to do (\`g = 1\`, or a single node). Throw if the group does not hold the same number of GPUs on every node it touches, because then there is no symmetric schedule. Return \`{ nodes, gpusPerNode, crossLink, phases: [{ name, bytes, link, time }], time }\`.
@@ -218,13 +218,13 @@ This is the step where the threshold concept becomes code: \`groupLink('tp', { t
 
 Throw unless \`tp*pp*dp === gpus\`, \`pp\` divides \`model.layers\`, \`tp\` divides both \`model.dModel\` and \`model.dFF\`, and \`dp * microBatchSeqs\` divides \`model.batchSeqs\`. A planner that silently returns a number for an illegal layout will recommend one.
 
-\`rankLayouts({ model, gpus, topo, microBatchSeqs, memoryCap })\` — every legal layout, priced, sorted with the ones that fit first and fastest first inside each group.
+\`rankLayouts({ model, gpus, topo, microBatchSeqs, memoryCap })\` — every legal layout, priced, sorted with the ones that fit first and fastest first inside each group. For both functions \`topo\` defaults to \`CLUSTER\`, \`microBatchSeqs\` to 1 and \`memoryCap\` to \`topo.gpu.memory\` (the starter's signatures already say so); \`fits\` is \`memory.total <= memoryCap\`. For Llama-3-70B on 128 GPUs there are exactly 30 legal layouts.
 
 Note the difference from module 24: \`ppComm\` is charged **per micro-batch**, because every micro-batch crosses every stage boundary in both directions.
 `,
       predict: {
         question: 'On 128 H100s, `tp = 16` needs about 36 GB per GPU and `tp = 8` about 64 GB. Which one will your planner pick, and why?',
-        answer: 'tp = 8, by roughly 25% of step time, even though it uses nearly twice the memory. A group of 16 consecutive ranks spans two nodes, so all 4 tensor-parallel all-reduces per layer drop from approximately 450 GB/s to approximately 50 GB/s. Memory decides what is *possible*; the link decides what is *fast*.',
+        answer: 'tp = 8. tp = 16 is about a third slower (roughly 54 s against 41 s per step) even though it uses barely half the memory. A group of 16 consecutive ranks spans two nodes, so all 4 tensor-parallel all-reduces per layer drop from approximately 450 GB/s to approximately 50 GB/s. Memory decides what is *possible*; the link decides what is *fast*.',
       },
       hints: [
         'Build it term by term and print each one for a layout you can check by hand — one GPU, `tp = pp = dp = 1`, should give `stepTime === compute` exactly.',
@@ -238,9 +238,9 @@ Note the difference from module 24: \`ppComm\` is charged **per micro-batch**, b
       instructions: `
 A mixture of experts routes each token to \`topK\` of \`E\` experts. When the experts live on different GPUs, every MoE layer costs two all-to-all exchanges: dispatch the token vectors and combine the results.
 
-\`expectedNodesPerToken(topK, nodes, maxNodes)\` — with experts spread uniformly, each of the \`topK\` choices lands on a given node with probability \`1/nodes\`, so the expected number of *distinct* nodes touched is \`nodes * (1 - (1 - 1/nodes)^topK)\`. Cap it at \`topK\`, at \`nodes\`, and at \`maxNodes\` — DeepSeek-V3's node-limited routing. Throw if \`topK\` or \`nodes\` is below 1.
+\`expectedNodesPerToken(topK, nodes, maxNodes)\` — with experts spread uniformly, each of the \`topK\` choices lands on a given node with probability \`1/nodes\`, so the expected number of *distinct* nodes touched is \`nodes * (1 - (1 - 1/nodes)^topK)\`. Cap it at \`topK\`, at \`nodes\`, and at \`maxNodes\` (default \`Infinity\`) — DeepSeek-V3's node-limited routing. Throw if \`topK\` or \`nodes\` is below 1.
 
-\`moeAllToAll({ tokensPerGpu, topK, dModel, gpus, topo, bytesPerElement, capacityFactor, maxNodes })\` — \`gpus\` is the expert-parallel group. With \`perToken = 2 * dModel * bytesPerElement * capacityFactor\` bytes per copy (the 2 is dispatch plus combine):
+\`moeAllToAll({ tokensPerGpu, topK, dModel, gpus, topo, bytesPerElement, capacityFactor, maxNodes })\` — \`gpus\` is the expert-parallel group; \`topo\` defaults to \`CLUSTER\`, \`bytesPerElement\` to 2, \`capacityFactor\` to 1 and \`maxNodes\` to \`Infinity\`. Throw on an empty group. With \`perToken = 2 * dModel * bytesPerElement * capacityFactor\` bytes per copy (the 2 is dispatch plus combine):
 
 - \`intraNodeBytes = tokensPerGpu * perToken * topK\` — every copy is delivered over NVLink;
 - \`interNodeBytes = tokensPerGpu * perToken * nodesPerToken * (nodes - 1) / nodes\` — **one copy per destination node**, which then fans out inside it, and of the nodes a token reaches a fraction \`(nodes−1)/nodes\` is remote.

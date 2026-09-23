@@ -116,11 +116,12 @@ export function memoryPerGpu({ model, layout, microBatchSeqs = 1 }) {
  * Megawatts drawn by `gpus` accelerators, including everything else in the hall.
  * `pue` (power usage effectiveness) is the ratio of facility power to IT power; the Uptime Institute's
  * annual survey puts a typical large data centre near 1.5, and hyperscalers report closer to 1.1.
- * We also charge 1.4× the GPU board power for the CPUs, NICs, storage and fans in the node.
- * clusterPowerMW(10000, H100) ≈ 12.7 MW.
+ * We also charge 1.8× the GPU board power for the CPUs, NICs, NVSwitches, storage and fans in the node:
+ * NVIDIA's DGX H100 datasheet gives ~10.2 kW maximum for 8 GPUs, about 1.8 × 8 × 700 W.
+ * clusterPowerMW(10000, H100) ≈ 16.4 MW.
  */
 export function clusterPowerMW(gpus, gpu, pue = 1.3) {
-  return (gpus * gpu.watts * 1.4 * pue) / 1e6;
+  return (gpus * gpu.watts * 1.8 * pue) / 1e6;
 }
 
 // ---------- step 1: the bandwidth hierarchy ----------
@@ -183,7 +184,8 @@ export function flatAllReduceTime(bytes, gpus, topo) {
  * The hierarchical (two-level) all-reduce every real library uses across nodes:
  *   1. reduce-scatter inside each node over NVLink — every GPU ends up with 1/g of the buffer, reduced
  *      across its node. g−1 sequential steps of bytes/g.
- *   2. all-reduce those bytes/g chunks across the nodes, one rank per node, over the slow link.
+ *   2. all-reduce those bytes/g chunks across the nodes over the slow link. The g GPUs of a node run
+ *      g such rings at once (one per slot, each on its own NIC), so the phase costs one of them.
  *   3. all-gather inside each node over NVLink to put the full result back on every GPU.
  * The slow link therefore carries bytes/g instead of bytes — that factor g is the whole point.
  * Requires the same number of GPUs on every node it touches.
