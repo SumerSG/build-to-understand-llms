@@ -150,7 +150,7 @@ export const tests = [
       expect += lse - row[y[0][t]];
     }
     expect /= 2;
-    T.close(loss.item(), expect, 1e-4, 'loss = sum(mask * nll) / sum(mask): divide by the number of masked-in positions, not by the batch size');
+    T.close(loss.item(), expect, 1e-4, `loss = sum(mask * nll) / sum(mask) = ${expect.toFixed(4)}: divide by the number of masked-in positions (here 2), not by the number of positions B·T = 4 (what lib crossEntropy does, which gives half of it) and not by the batch size B = 1 (which gives twice it)`);
     const all = m.maskedCrossEntropy(logits, y, [[1, 1, 1, 1]]);
     T.close(all.item(), crossEntropy(logits, y).item(), 1e-4, 'with an all-ones mask it must equal the ordinary mean cross-entropy');
   } },
@@ -184,6 +184,9 @@ export const tests = [
       for (let i = 0; i < 4; i++) T.close(g[t * 4 + i], (e[i] / z - (i === y[0][t] ? 1 : 0)) / 2, 1e-4, 'masked-in gradient must be (softmax - onehot) divided by the number of masked-in positions');
     }
     T.throws(() => m.maskedCrossEntropy(logits, y, [[0, 0, 0]]), 'an all-zero mask has no positions to average over and must throw rather than return NaN');
+    // V = 4 here. Without a range check, target 4 at position 0 would silently write into position 1's row of pick.
+    T.throws(() => m.maskedCrossEntropy(logits, [[4, 0, 3]], [[1, 0, 1]]), 'a target of V = 4 has no logit to pick (valid targets are 0..V-1) and must throw; without the check pick[t * V + 4] lands in the NEXT position\'s row and the loss is silently wrong');
+    T.throws(() => m.maskedCrossEntropy(logits, [[2, 0, -1]], [[1, 0, 1]]), 'a negative target has no logit to pick and must throw');
   } },
 
   // ---------- step 4 ----------
@@ -263,7 +266,7 @@ export const tests = [
     for (let i = 0; i < 20; i++) for (let j = 0; j < 16; j++) mean[j] += originalWte[i * 16 + j] / 20;
     for (let i = 20; i < 24; i++) T.close(Array.from(grown.wte.weight.data.subarray(i * 16, i * 16 + 16)), mean, 1e-5, `new row ${i} must be the column-wise mean of the trained rows (not zeros, not the fresh random init)`);
     T.eq(Array.from(model.wte.weight.data), Array.from(originalWte), 'the original model must not be modified');
-    T.eq(model.config.vocabSize, 20);
+    T.eq(model.config.vocabSize, 20, 'the input model must not change: model.config.vocabSize was 20. Build the new config as { ...model.config, vocabSize: newVocabSize } instead of editing model.config, which is the same object the base model still uses');
   } },
   { step: 'resize', name: 'every other parameter is copied, so logits for the old tokens are unchanged', run(m, T) {
     const model = tinyModel(20, 7);

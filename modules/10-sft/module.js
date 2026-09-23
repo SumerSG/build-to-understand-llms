@@ -79,7 +79,7 @@ SFT uses a learning rate about an order of magnitude below the pre-training peak
 
 ## Where the toy differs from production
 
-Your window is 64 tokens and the dataset 66 pairs; the demo runs 150 steps at batch 2 with \`lr = 1e-3\`, only 3× below the checkpoint's 3e-3 peak, because the budget is 60 seconds and the loss must visibly fall. No validation split, no epochs, no block-diagonal attention, no LoRA, no mixed pre-training data. The completions after SFT follow the template and stop; on prompts outside the training set they are fluent nonsense, because 66 pairs teach a format, not a world.
+Your window is 64 tokens and the dataset 66 pairs; the demo runs 150 steps at batch 2 with \`lr = 1e-3\`, only 3× below the checkpoint's 3e-3 peak, because the budget is 60 seconds and the loss must visibly fall. No validation split, no epochs, no block-diagonal attention, no LoRA, no mixed pre-training data. The completions after SFT follow the template and stop; on prompts outside the training set they are fluent nonsense, because 66 pairs teach a format, not a world. Even the training answers are not all reproduced: 150 steps at batch 2 is about 8 passes over the 38 packs, enough to learn the template and the stop token but not to memorise every answer (the demo counts how many come back word for word, roughly one in five). A training answer that comes back wrong, or missing its first token, is under-training, not a mask bug; the \`buildExample\` tests already prove the first response token is predicted from \`<|assistant|>\` and counted.
 `,
   steps: [
     {
@@ -96,7 +96,7 @@ formatChat([{ role: 'user', content: 'Hi' }])   // '<|user|>Hi<|end|><|assistant
 
 \`addChatTokens(tokenizer)\`: return a **new** \`BPETokenizer\` that knows the four \`MARKERS\` as special tokens. The constructor takes \`{ vocab, merges, specials }\`; append the markers that are not already in \`vocab\` to the end of both \`vocab\` and \`specials\`, so every existing id (including \`eos\`) keeps its meaning and the checkpoint's embedding rows still point at the right tokens. Do not mutate the input; calling it twice must not add the markers twice.
 
-\`lib/data.js\` exports a reference \`formatChat\`. Write yours first; the tests hold you to the same convention.
+The tests hold you to the convention the rest of the lab uses. Later modules import the same function from \`lib/data.js\`; once your step passes, compare yours with it.
 `,
       predict: { question: 'After `addChatTokens`, `tokenizer.encode("<|user|>hi")` returns how many ids compared with `base.encode("hi")`?', answer: 'Exactly one more: the marker is a special token and becomes a single id, and the text after it tokenizes exactly as before. If the marker were not registered as a special it would be split into a dozen sub-word ids.' },
       hints: [
@@ -113,7 +113,7 @@ formatChat([{ role: 'user', content: 'Hi' }])   // '<|user|>Hi<|end|><|assistant
 
 \`buildExample(tokenizer, prompt, response)\` returns \`shift(tokenizeExample(...))\`: \`{ x, y, mask }\` where \`x\` is every token but the last, \`y\` every token but the first, and the mask is sliced like \`y\`, because it says which **targets** count. The worked \`shift\` above the TODO line does that slicing; read it and notice which slice the mask takes.
 
-Encode the prompt part and the response part separately: the boundary between them is where the mask flips, and you cannot recover it from one combined encode.
+Encode the prompt part and the response part separately: the length of the prompt ids is then exactly where the mask flips, with no searching. In this lab a combined encode happens to give the same ids, because \`<|assistant|>\` is a special token and \`encode\` splits at specials before any merge, so no token can straddle the boundary. That is a property of this template, not a rule: in templates where the boundary is ordinary text rather than a special token (an Alpaca-style \`### Response:\` header, for example), the text around it can tokenize differently in context than on its own, so the split point is not where you expect (TRL's completion-only collator documents exactly this pitfall). Encoding the parts separately never has that problem.
 `,
       predict: { question: 'In `buildExample`, at the first position where `mask` is 1, what is `x[t]`?', answer: 'The `<|assistant|>` marker. The first response token is predicted from the assistant marker; that prediction is the first one that counts. If your mask were aligned with `x` instead of `y`, the first counted position would be one step LATER (x is the first response token, y the second), so the prediction that starts the answer would never be trained.' },
       hints: [
@@ -134,7 +134,7 @@ loss = sum_t( mask[t] · nll[t] ) / sum_t( mask[t] )     nll[t] = -logSoftmax(lo
 
 Build it from \`Tensor\` ops so that \`backward()\` flows through it. One way: a \`Float32Array\` \`pick\` of the same size as \`logits\`, with \`pick[t * V + y[t]] = mask[t]\` and zeros elsewhere; then \`-(logits.logSoftmax() * pick).sum() / count\`. Flatten \`y\` and \`mask\` with \`flat(Infinity)\`. Throw an \`Error\` if \`count\` is zero (the mean would be \`0 / 0\`) and if a target is outside \`0..V-1\`.
 
-\`lib/tensor.js\` has \`crossEntropy\`, which averages over **all** positions. The tests check that yours equals it for an all-ones mask, that prompt-position logits do not affect it, and that the gradient at masked-out positions is exactly zero.
+\`lib/tensor.js\` has \`crossEntropy\`, which averages over **all** positions. The tests check that yours equals it for an all-ones mask, that prompt-position logits do not affect it, that the gradient at masked-out positions is exactly zero, and that an all-zero mask or a target outside \`0..V-1\` (including a negative one) throws.
 `,
       hints: [
         '`crossEntropy` in the lib is a mean over every position; you need a weighted mean. `logSoftmax()` gives log-probabilities for every vocabulary entry; at each position you want one of them, the target\'s, multiplied by that position\'s mask.',

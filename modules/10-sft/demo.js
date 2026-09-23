@@ -1,7 +1,8 @@
 import { GPT } from 'lib/gpt.js';
 import { BPETokenizer } from 'lib/tokenizer.js';
 import { INSTRUCTIONS, CHAT } from 'lib/data.js';
-import { rng } from 'lib/util.js';
+import { rng, argmaxArray } from 'lib/util.js';
+import { noGrad } from 'lib/tensor.js';
 
 // The goal: take the pre-trained checkpoint, which has never seen a chat marker, and watch YOUR template,
 // mask, packing, embedding resize and loop turn it into a model that answers inside the template and stops.
@@ -78,14 +79,31 @@ export default async function demo(m, lab) {
   lab.table({
     title: 'Greedy completions of <|user|>prompt<|end|><|assistant|> before and after SFT',
     columns: ['prompt', 'before SFT', 'after SFT', 'emitted <|end|>?'],
-    rows: prompts.map((p, i) => [p + (heldOut.has(p) ? ' (not in the training set)' : ''), show(before[i].text), show(after[i].text), after[i].ended ? `yes, after ${after[i].tokens} tokens` : 'no']),
+    rows: prompts.map((p, i) => [p + (heldOut.has(p) ? ' (held out: not in the training set)' : ' (in the training set)'), show(before[i].text), show(after[i].text), after[i].ended ? `yes, after ${after[i].tokens} tokens` : 'no']),
   });
-  for (let i = 0; i < prompts.length; i++) lab.log(`after   ${prompts[i]}  ->  ${JSON.stringify(show(after[i].text))}`);
+  for (let i = 0; i < prompts.length; i++) lab.log(`after   ${prompts[i]}${heldOut.has(prompts[i]) ? ' (held out)' : ''}  ->  ${JSON.stringify(show(after[i].text))}`);
+
+  // How much of the training set came back word for word? 150 steps at batch 2 is about 8 passes over the packs:
+  // enough to learn the format and the stop token, not enough to memorise every answer.
+  // Greedy decoding reproduces an answer exactly when the argmax at every masked-in position is the target,
+  // so one teacher-forced forward pass per example counts it without generating token by token.
+  let verbatim = 0;
+  const V = model.config.vocabSize;
+  noGrad(() => {
+    for (const { prompt, response } of INSTRUCTIONS) {
+      const ex = m.buildExample(tokenizer, prompt, response);
+      const logits = model.forward([ex.x]);
+      let ok = true;
+      for (let t = 0; t < ex.y.length && ok; t++) if (ex.mask[t] && argmaxArray(logits.data.subarray(t * V, (t + 1) * V)) !== ex.y[t]) ok = false;
+      if (ok) verbatim++;
+    }
+  });
+  lab.log(`training answers reproduced verbatim: ${verbatim} of ${INSTRUCTIONS.length}`);
 
   const firstLoss = losses.slice(0, 10).reduce((a, b) => a + b, 0) / 10;
   const lastLoss = losses.slice(-10).reduce((a, b) => a + b, 0) / 10;
   const endedBefore = before.filter((g) => g.ended).length;
   const endedAfter = after.filter((g) => g.ended).length;
   const tokensSeen = config.steps * config.batchSize * model.config.blockSize;
-  lab.done(`Your SFT loop fine-tuned the ${model.numParams().toLocaleString()}-parameter checkpoint for **${config.steps} steps** (${tokensSeen.toLocaleString()} window positions, ${Math.round((packedIn / packedPositions) * 100)}% of them masked in) in ${seconds.toFixed(1)} s. The masked loss fell from **${firstLoss.toFixed(3)}** to **${lastLoss.toFixed(3)}** nats per assistant token. Before SFT, ${endedBefore} of ${prompts.length} completions emitted \`${CHAT.end}\`; after, **${endedAfter} of ${prompts.length}** did. "${prompts[0]}" went from "${show(before[0].text).slice(0, 40)}" to "${show(after[0].text)}"; the held-out prompt "${[...heldOut][0]}" gave "${show(after[prompts.indexOf([...heldOut][0])].text)}", which shows the format was learned even where the content was not.`);
+  lab.done(`Your SFT loop fine-tuned the ${model.numParams().toLocaleString()}-parameter checkpoint for **${config.steps} steps** (${tokensSeen.toLocaleString()} window positions, ${Math.round((packedIn / packedPositions) * 100)}% of them masked in) in ${seconds.toFixed(1)} s. The masked loss (mean of the first 10 steps, then of the last 10; step 0 alone was ${losses[0].toFixed(3)}) fell from **${firstLoss.toFixed(3)}** to **${lastLoss.toFixed(3)}** nats per assistant token. Before SFT, ${endedBefore} of ${prompts.length} completions emitted \`${CHAT.end}\`; after, **${endedAfter} of ${prompts.length}** did. "${prompts[0]}" went from "${show(before[0].text).slice(0, 40)}" to "${show(after[0].text)}"; the held-out prompt "${[...heldOut][0]}" gave "${show(after[prompts.indexOf([...heldOut][0])].text)}", which shows the format was learned even where the content was not. Only **${verbatim} of ${INSTRUCTIONS.length}** training answers come back word for word: ${config.steps} steps at batch ${config.batchSize} is about ${Math.round((config.steps * config.batchSize) / packs.length)} passes over the ${packs.length} packs, enough to learn the template and the stop token but not to memorise every answer. A training answer that is wrong, or missing its first token, is under-training, not a mask bug: your \`buildExample\` tests already prove the first response token is predicted from \`<|assistant|>\` and counted.`);
 }
