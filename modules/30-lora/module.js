@@ -65,7 +65,7 @@ Nothing would ever train. \`dL/dB = s·(x·A)ᵀ·g\` is zero when \`A = 0\`, an
 
 Hu et al. adapted only the attention query and value projections. **QLoRA** (Dettmers et al. 2023) found that adapting *all* linear layers is what matches full fine-tuning, and that the rank matters less than coverage. In your GPT \`attn.qkv\` is one fused Linear, so targeting it adapts query, key and value together.
 
-QLoRA also stores the frozen base in 4-bit **NF4** (a 16-level grid placed at normal-distribution quantiles, the block-wise quantisation of module 19), dequantises each block on the fly, and pages optimizer state to CPU RAM on memory spikes. The adapters stay in bf16. That combination fine-tuned a 65B model on a single 48 GB GPU.
+QLoRA also stores the frozen base in 4-bit **NF4** (a 16-level grid placed at normal-distribution quantiles, a block-wise quantisation of the kind module 19 builds later), dequantises each block on the fly, and pages optimizer state to CPU RAM on memory spikes. The adapters stay in bf16. That combination fine-tuned a 65B model on a single 48 GB GPU.
 
 :::predict
 Llama 2 7B has approximately 6.74 billion parameters. With \`r = 8\` on all seven linear projections of its 32 layers, the adapters hold approximately 20 million. Using 2 bytes per frozen parameter and 16 per trainable one, how much persistent training state do you need, against full fine-tuning?
@@ -77,7 +77,7 @@ Llama 2 7B has approximately 6.74 billion parameters. With \`r = 8\` on all seve
 
 Because \`x·W + s·(x·A)·B = x·(W + s·A·B)\`, you can fold the adapter back into the weight after training. The merged model has the base's shape, parameter count and speed; the adapter was free at inference.
 
-Keeping adapters **unmerged** has its own payoff. One base model in GPU memory can serve hundreds of fine-tunes, each only megabytes to tens of megabytes (the rank-8, all-linear Llama 2 7B adapter above is 20 million parameters, about 40 MB in bf16), by applying the right \`A\` and \`B\` per request inside a batch. S-LoRA (Sheng et al. 2023) and Punica (Chen et al. 2023, with its batched SGMV kernel) do exactly that, and module 26's router has to become adapter-aware to exploit it.
+Keeping adapters **unmerged** has its own payoff. One base model in GPU memory can serve hundreds of fine-tunes, each only megabytes to tens of megabytes (the rank-8, all-linear Llama 2 7B adapter above is 20 million parameters, about 40 MB in bf16), by applying the right \`A\` and \`B\` per request inside a batch. S-LoRA (Sheng et al. 2023) and Punica (Chen et al. 2023, with its batched SGMV kernel) do exactly that, and the cluster router of module 26, later in the path, has to become adapter-aware to exploit it.
 
 ## Where the toy differs from production
 
@@ -194,13 +194,13 @@ Handing AdamW \`model.parameters()\` instead would still leave the frozen weight
   ],
   reflection: [
     'Explain to a colleague why training `r·(nIn + nOut)` numbers per matrix can recover most of what training all `nIn·nOut` achieves. What would have to be true about fine-tuning updates for LoRA to fail?',
-    'Your demo compared LoRA and full fine-tuning on the same data and steps. Account for the difference in trainable parameters and optimizer bytes, and say which of the two memory savings (no gradients, no optimizer state) matters more.',
+    'Your demo compared LoRA and full fine-tuning on the same data and steps. Account for the difference in trainable parameters and in gradient-plus-optimizer bytes (the `grads` and `optimizer` fields of `trainingMemory`), and say which of the two memory savings (no gradients, no optimizer state) matters more.',
     'When would you merge an adapter into the weights, and when would you keep it separate? Think about a company serving one fine-tune versus a platform serving five hundred customers\' fine-tunes.',
   ],
   stretch: [
     'Implement rsLoRA (scaling `alpha / sqrt(r)`, Kalajdzievski 2023) and sweep r = 2, 4, 8, 16 with a fixed learning rate; plot final loss against r for both scalings. Hugging Face `peft` exposes this as `use_rslora=True`.',
     'Implement DoRA (Liu et al. 2024): store each column\'s magnitude `m = ||W[:, j]||` as a trainable vector and apply LoRA to the normalised direction. Compare it with plain LoRA at the same rank.',
-    'Build QLoRA in miniature: quantise the frozen base weights with module 19\'s group-wise int4 (or an NF4 grid, as `bitsandbytes` does), dequantise in the forward pass, and train bf16-style adapters on top. Measure the loss penalty against an fp32 base.',
+    'Build QLoRA in miniature: after module 19, quantise the frozen base weights with its group-wise int4 (or an NF4 grid, as `bitsandbytes` does), dequantise in the forward pass, and train bf16-style adapters on top. Measure the loss penalty against an fp32 base.',
     'Serve several adapters unmerged at once, S-LoRA/Punica style: keep one base model, give each request in a batch its own (A, B), and compute `x·W` once for the batch plus a per-request `(x·A)·B`. Count the extra FLOPs against merging each adapter into its own model copy.',
   ],
   timeouts: { tests: 20000, demo: 120000 },
