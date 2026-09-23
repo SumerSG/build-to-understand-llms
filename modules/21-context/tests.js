@@ -318,7 +318,7 @@ export const tests = [
     T.ok(b.tokens <= 120);
     T.ok(!b.messages.some((x) => x.content.includes(fact)), 'with oldest-first dropping and no retrieval the fact is gone: that is the failure compaction exists to prevent');
   } },
-  { step: 'assemble', name: 'retrieval injects the relevant notes just before the latest user message, inside the budget', run(m, T) {
+  { step: 'assemble', name: 'retrieval injects the relevant notes just before the newest history message, inside the budget', run(m, T) {
     const tok = wordTokenizer();
     const notes = ['the deploy key is in vault slot 7', 'the build server is called atlas', 'lunch is at noon on fridays', 'the office plant is named fern'];
     const cm = new m.ContextManager({ tokenizer: tok, budget: 60, system: 'You are terse.', policy: 'drop', topK: 2, notes });
@@ -328,7 +328,7 @@ export const tests = [
     T.eq(a.retrieved, ['lunch is at noon on fridays'], 'BM25 over the note store with the latest user message as the query; only the one matching note scores > 0');
     const n = a.messages.length;
     T.eq(a.messages[n - 1].content, 'when do we eat lunch?');
-    T.ok(a.messages[n - 2].retrieved === true && a.messages[n - 2].content.includes('lunch is at noon on fridays'), 'the retrieval message sits immediately before the latest user message, where the model attends to it best and where it does not break the cached prefix');
+    T.ok(a.messages[n - 2].retrieved === true && a.messages[n - 2].content.includes('lunch is at noon on fridays'), 'the retrieval message sits immediately before the newest history message (here the user\'s question), where the model attends to it best and where it does not break the cached prefix');
     T.ok(a.tokens <= 60, `the retrieval message must be paid for out of the budget BEFORE the history is trimmed (got ${a.tokens} > 60)`);
     T.eq(a.messages[0].role, 'system');
     cm.add({ role: 'assistant', content: 'noon' }).add({ role: 'user', content: 'what is the plant named and where is the deploy key?' });
@@ -338,6 +338,11 @@ export const tests = [
     const off = new m.ContextManager({ tokenizer: tok, budget: 60, system: 'You are terse.', policy: 'drop', topK: 0, notes });
     off.add({ role: 'user', content: 'when is lunch?' });
     T.eq(off.assemble().messages.length, 2, 'topK = 0 means no retrieval message at all');
+    const noUser = new m.ContextManager({ tokenizer: tok, budget: 60, system: 'You are terse.', policy: 'drop', topK: 2, notes });
+    noUser.add({ role: 'assistant', content: 'lunch is at noon' });
+    const nu = noUser.assemble();
+    T.eq(nu.retrieved, [], 'with no user message the query is empty, so nothing is retrieved (do not fall back to the newest message of another role)');
+    T.eq(nu.messages.length, 2, 'no retrieval message when nothing was retrieved: system prompt + the one history message');
   } },
   { step: 'assemble', name: 'memory: facts harvested from the conversation come back by retrieval after they were dropped', run(m, T) {
     const fact = 'the deploy key is in vault slot 7';

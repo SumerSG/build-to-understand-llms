@@ -122,7 +122,7 @@ The tests use a tokenizer with one id per word so you can check every number by 
       instructions: `
 Three functions; none of them may modify its input.
 
-**\`truncateText(tokenizer, text, maxTokens)\`**: if the text already fits, return it unchanged. Otherwise keep \`keep = maxTokens − tokens(TRUNCATION_MARKER)\` tokens of the original: the first \`ceil(keep / 2)\` and the last \`keep − ceil(keep / 2)\`, decoded back to text, with \`TRUNCATION_MARKER\` between them. The result must cost exactly \`maxTokens\` on the test tokenizer. Head and tail both matter: a log's command line is at the top, its error at the bottom.
+**\`truncateText(tokenizer, text, maxTokens)\`**: if the text already fits, return it unchanged. Otherwise keep \`keep = maxTokens − tokens(TRUNCATION_MARKER)\` tokens of the original: the first \`ceil(keep / 2)\` and the last \`keep − ceil(keep / 2)\`, decoded back to text, with \`TRUNCATION_MARKER\` between them. The result must cost exactly \`maxTokens\` on the test tokenizer. When \`keep\` is 0 (the budget only pays for the marker) the result is the marker alone; if \`maxTokens\` is smaller than the marker's own cost, clamp \`keep\` to 0 and return the marker alone too (the tests do not go below \`keep = 0\`). Head and tail both matter: a log's command line is at the top, its error at the bottom.
 
 **\`truncateToolResults(tokenizer, messages, maxToolTokens)\`**: a new array where each message with role \`'tool'\` whose content costs more than \`maxToolTokens\` is replaced by a copy (\`{ ...msg, content }\`) with truncated content. Every other message is the same object.
 
@@ -141,13 +141,13 @@ Three functions; none of them may modify its input.
       instructions: `
 **\`extractFacts(text)\`** is the scripted summariser: every line that starts (after optional whitespace) with \`remember:\` in any case yields the rest of the line, trimmed and non-empty. Drop duplicates, keep first-occurrence order, return \`[]\` for missing text.
 
-**\`compact(messages, { keepLast = 4 })\`**: take the non-system messages; all but the last \`keepLast\` of them form the span to compact, together with any earlier summary message (\`summary: true\`) that sits before them. Replace the span by **one** message placed where the span began:
+**\`compact(messages, { keepLast = 4 })\`**: the conversation messages are those whose role is not \`'system'\`. The last \`keepLast\` of them are kept verbatim. The **span** to compact is every other conversation message plus every summary message (\`summary: true\`) that comes before the first kept message. A plain system message (no \`summary\` flag) is an instruction, not conversation: it is never in the span, never counted, and stays where it is. Replace the span by **one** message placed at the position of the span's first member:
 
 \`\`\`
 { role: 'system', summary: true, count, content: 'Summary of <count> earlier messages.\\nremember: fact\\nremember: fact' }
 \`\`\`
 
-\`count\` is how many original messages the summary stands for; an old summary contributes its own \`count\`. The role \`'system'\` pins it (your dropOldest will never remove it), and writing facts back as \`remember:\` lines means the next compaction reads them again. If nothing is older than \`keepLast\`, return a copy unchanged.
+\`count\` is how many original messages the summary stands for; an old summary contributes its own \`count\`, every other span member 1. The facts are \`extractFacts\` of the span's contents joined with \`'\\n'\`, oldest first, so an old summary's facts come before newer ones. The header is always \`Summary of <count> earlier messages.\` (no singular form for 1), and with no facts the content is the header line alone. The role \`'system'\` pins it (your dropOldest will never remove it), and writing facts back as \`remember:\` lines means the next compaction reads them again. If there are \`keepLast\` or fewer conversation messages, return a copy unchanged. \`keepLast = 0\` compacts every conversation message.
 `,
       predict: { question: 'You compact once, the conversation continues, and you compact again. If your second compaction ignored the first summary, what would the model lose?', answer: 'Every fact from before the first compaction. Folding the old summary into the new one, with its facts and its count, is what makes compaction repeatable. Agents that forget after their second compaction usually have exactly this bug.' },
       hints: [
@@ -185,9 +185,9 @@ Two methods of \`ContextManager\` remain; \`remember\` and \`add\` are done for 
 
 **\`assemble()\`** returns \`{ messages, tokens, retrieved }\`:
 
-1. Query = content of the newest user message in the history. \`retrieved = this.retrieve(query)\`; if non-empty, build \`{ role: 'user', retrieved: true, content: 'Relevant notes:\\n- note\\n- note' }\`.
+1. Query = content of the newest message with role \`'user'\` in the history, even if a tool result or assistant reply came after it; with no user message the query is \`''\`, which matches nothing, so \`retrieved\` is \`[]\`. \`retrieved = this.retrieve(query)\`; if non-empty, build \`{ role: 'user', retrieved: true, content: 'Relevant notes:\\n- note\\n- note' }\`.
 2. Unless the policy is \`'none'\`: truncate tool results to \`maxToolTokens\`; reserve the system prompt and the retrieval message from the budget; with \`'compact'\`, compact the history if it does not fit what remains; then \`dropOldest\` to what remains (compaction's last resort).
-3. \`messages\` = system prompt, then the managed history with the retrieval message inserted **immediately before the newest history message**. \`tokens\` = \`contextTokens(messages)\`.
+3. \`messages\` = system prompt, then the managed history with the retrieval message inserted **immediately before the newest history message**. That is usually the user's question; if a tool result followed it, the notes go just before the tool result, so the context still ends with the newest history message. If the budget left no history message at all, append the retrieval message right after the system prompt. \`tokens\` = \`contextTokens(messages)\`.
 
 \`this.history\` is never modified: assemble is a view computed from it on every call.
 `,
@@ -210,6 +210,8 @@ BM25 cannot match "credentials" to "key". A dense retriever can, if its embeddin
 - **\`reciprocalRankFusion(rankings, { k = 60 } = {})\`**: \`rankings\` is a list of hit lists, each best first. Document \`d\` scores \`Σ 1 / (k + rank_d)\` over the lists it appears in, with \`rank_d\` counted from 1; the hits' own scores are ignored. Return every document that appears in any list as \`[{ index, score }]\`, best first, ties by index.
 
 RRF fuses ranks rather than scores because BM25 scores are unbounded and cosines lie in [−1, 1]: added together, whichever scale is larger would decide. The constant \`k = 60\` is the one Cormack et al. (2009) used. It keeps first place from dominating: a note ranked second by both retrievers (\`2/62\`) beats one ranked first by only one of them (\`1/61\`).
+
+This step is off the goal demo's path: the demo's memory policy uses BM25 alone, because the lab has no trained embedding model to feed \`denseSearch\`. The second stretch goal trains one and wires \`denseSearch\` and \`reciprocalRankFusion\` into \`retrieve\`.
 
 The tests write the embedding rows by hand as a stand-in for a contrastively trained model, so that "credentials", "key", "password" and "passphrase" share one direction. On their query BM25 ranks the deploy-key note second, behind a shorter note that also says "vault"; dense retrieval ranks it second, behind the password note; the fused ranking puts it first.
 `,
