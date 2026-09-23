@@ -59,6 +59,7 @@ node tools/verify.mjs                      # every module: schema, tests on star
 node tools/verify.mjs --module 05-attention
 node --test 'lib/tests/*.test.mjs'                     # shared library tests
 npm i -D playwright-core && npm run e2e    # drive every module through the real UI in headless Chromium
+npm run e2e -- --base http://localhost:8080/build-to-understand-llms/   # same, against a server hosting a subfolder like GitHub Pages
 ```
 
 ## Chat playground

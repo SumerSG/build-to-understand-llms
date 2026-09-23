@@ -3,7 +3,9 @@
 // For each module: open Build, check all steps on the starter (must not all pass), load the
 // reference solution, check all steps (must all pass), open Goal, run the demo (must reach the
 // done banner). Reports timings and failures. Needs `npm i -D playwright-core` and a Chromium.
-//   node tools/e2e.mjs [--module 05-attention] [--headed]
+//   node tools/e2e.mjs [--module 05-attention] [--headed] [--base http://host/sub/path/]
+// --base tests an already-running server, e.g. one that serves the repo under a subfolder the way
+// GitHub Pages does; without it the script starts tools/serve.mjs at the site root.
 import { spawn } from 'node:child_process';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -12,6 +14,7 @@ const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const args = process.argv.slice(2);
 const only = args.includes('--module') ? args[args.indexOf('--module') + 1] : null;
 const PORT = 8790;
+const baseArg = args.includes('--base') ? args[args.indexOf('--base') + 1] : null;
 
 let chromium;
 try { ({ chromium } = await import('playwright-core')); }
@@ -20,15 +23,15 @@ catch { console.error('playwright-core is not installed: npm i -D playwright-cor
 const { MODULES } = await import(pathToFileURL(path.join(ROOT, 'modules/index.js')).href);
 const targets = MODULES.filter((m) => m.status === 'ready' && (!only || m.id === only));
 
-const server = spawn('node', [path.join(ROOT, 'tools/serve.mjs'), String(PORT)], { stdio: 'ignore' });
-await new Promise((r) => setTimeout(r, 800));
+const server = baseArg ? null : spawn('node', [path.join(ROOT, 'tools/serve.mjs'), String(PORT)], { stdio: 'ignore' });
+if (server) await new Promise((r) => setTimeout(r, 800));
 const exe = process.env.CHROMIUM_PATH || (process.env.PLAYWRIGHT_BROWSERS_PATH ? path.join(process.env.PLAYWRIGHT_BROWSERS_PATH, 'chromium') : undefined);
 const browser = await chromium.launch({ headless: !args.includes('--headed'), executablePath: exe });
 const page = await browser.newPage({ viewport: { width: 1400, height: 900 } });
 const pageErrors = [];
 page.on('pageerror', (e) => pageErrors.push(e.message));
 page.on('dialog', (d) => d.accept());
-const base = `http://localhost:${PORT}/`;
+const base = baseArg ? baseArg.replace(/\/?$/, '/') : `http://localhost:${PORT}/`;
 await page.goto(base);
 await page.evaluate(() => localStorage.clear());
 
@@ -73,5 +76,5 @@ for (const m of targets) {
 if (pageErrors.length) console.log(`page errors: ${[...new Set(pageErrors)].slice(0, 5).join(' | ')}`);
 console.log(`\n${targets.length - failed}/${targets.length} modules pass end to end`);
 await browser.close();
-server.kill();
+server?.kill();
 process.exit(failed ? 1 : 0);
