@@ -590,6 +590,9 @@ label.small input { width: 72px; padding: 6px var(--s2); font-size: var(--text-s
   --r-card: 0; --r-input: 0; --r-chip: 0; --r-pill: 0; --r-bubble: 0;
   --ease: cubic-bezier(0.2, 0, 0, 1); --dur: 180ms; --dur-slow: 320ms;
   --gutter: 64px; --sidebar-w: 260px;
+  /* chart palette: validated with the dataviz validator on #f3f1ea (light) and #0b0b0b (dark) */
+  --chart-1: #34569c; --chart-2: #c1331f; --chart-3: #1f8766; --chart-4: #b17c12; --chart-5: #9a4a90; --chart-6: #6b8222; --chart-7: #4f86c6; --chart-8: #a35c2c;
+  --heat-lo: #e9e6dd; --heat-hi: #101010;
 }
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
@@ -603,6 +606,8 @@ label.small input { width: 72px; padding: 6px var(--s2); font-size: var(--text-s
     --bad: #e0463f; --bad-ink: #ef6a64; --bad-tint: rgba(224, 70, 63, 0.10);
     --code-bg: rgba(236, 235, 229, 0.08); --scrim: rgba(0, 0, 0, 0.6); --glass: #0b0b0b;
     --grid: rgba(236, 235, 229, 0.12); --axis: rgba(236, 235, 229, 0.5);
+    --chart-1: #6f93d6; --chart-2: #e0513c; --chart-3: #30a07c; --chart-4: #b98420; --chart-5: #c06db8; --chart-6: #76902c; --chart-7: #5890d0; --chart-8: #c5733a;
+    --heat-lo: #1c1c1c; --heat-hi: #ecebe5;
   }
 }
 :root[data-theme="dark"] {
@@ -616,6 +621,8 @@ label.small input { width: 72px; padding: 6px var(--s2); font-size: var(--text-s
   --bad: #e0463f; --bad-ink: #ef6a64; --bad-tint: rgba(224, 70, 63, 0.10);
   --code-bg: rgba(236, 235, 229, 0.08); --scrim: rgba(0, 0, 0, 0.6); --glass: #0b0b0b;
   --grid: rgba(236, 235, 229, 0.12); --axis: rgba(236, 235, 229, 0.5);
+  --chart-1: #6f93d6; --chart-2: #e0513c; --chart-3: #30a07c; --chart-4: #b98420; --chart-5: #c06db8; --chart-6: #76902c; --chart-7: #5890d0; --chart-8: #c5733a;
+  --heat-lo: #1c1c1c; --heat-hi: #ecebe5;
 }
 
 /* type: serif for anything that speaks, tracked caps for anything that labels */
@@ -757,3 +764,10 @@ input:focus, textarea:focus { border-color: var(--ink); box-shadow: none; }
   .sidebar { border-right: 1px solid var(--border-strong); border-radius: 0; }
   .phases { gap: var(--s4); }
 }
+
+/* legend and tooltip swatches are HTML, so they need a background, not an SVG fill */
+.swatch { border-radius: 0; width: 12px; height: 3px; position: relative; top: -3px; }
+.swatch.s1 { background: var(--chart-1); } .swatch.s2 { background: var(--chart-2); } .swatch.s3 { background: var(--chart-3); } .swatch.s4 { background: var(--chart-4); }
+.swatch.s5 { background: var(--chart-5); } .swatch.s6 { background: var(--chart-6); } .swatch.s7 { background: var(--chart-7); } .swatch.s8 { background: var(--chart-8); }
+.bar.s1 { fill: var(--ink); stroke: var(--bg); }
+.chart-svg .marker { stroke: var(--bg); }

@@ -65,6 +65,13 @@ function tableHtml(columns, rows) {
 
 function esc(s) { return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;'); }
 
+/** Read a colour token (#rrggbb) from the current theme; fall back when it is missing or not hex. */
+function cssRgb(name, fallback) {
+  const v = getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+  const m = /^#([0-9a-f]{6})$/i.exec(v);
+  return m ? [0, 2, 4].map((i) => parseInt(m[1].slice(i, i + 2), 16)) : fallback;
+}
+
 // A diverging loss or a 1/0 in learner code produces NaN/Infinity; say so instead of drawing a silent gap.
 function noteSkipped(f, n) {
   if (!n) return;
@@ -212,9 +219,9 @@ export function renderHeatmap(container, spec) {
   }
   if (!Number.isFinite(vmin) || !Number.isFinite(vmax)) { vmin = 0; vmax = 1; }
   if (vmin === vmax) vmax = vmin + 1;
-  const dark = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches && document.documentElement.dataset.theme !== 'light' || document.documentElement.dataset.theme === 'dark';
-  const lo = dark ? [24, 79, 149] : [205, 226, 251];
-  const hi = dark ? [205, 226, 251] : [13, 54, 107];
+  // Sequential ramp from the theme tokens (--heat-lo → --heat-hi): one ramp, light to strong, in either mode.
+  const lo = cssRgb('--heat-lo', [233, 230, 221]);
+  const hi = cssRgb('--heat-hi', [16, 16, 16]);
   let skipped = 0;
   const color = (v) => {
     if (!Number.isFinite(v)) { skipped++; return 'var(--grid)'; }
@@ -222,19 +229,21 @@ export function renderHeatmap(container, spec) {
     const c = lo.map((a, i) => Math.round(a + (hi[i] - a) * t));
     return `rgb(${c[0]},${c[1]},${c[2]})`;
   };
-  const labelW = spec.rowLabels ? 60 : 8, labelH = spec.colLabels ? 22 : 8;
+  const clip = (t, n) => { t = String(t); return t.length > n ? t.slice(0, n - 1) + '…' : t; };
+  const longest = spec.rowLabels ? Math.max(...spec.rowLabels.map((l) => clip(l, 22).length)) : 0;
+  const labelW = spec.rowLabels ? Math.min(150, 12 + 6.2 * longest) : 8, labelH = spec.colLabels ? 22 : 8;
   const cell = Math.max(6, Math.min(28, Math.floor((W - labelW - 16) / nc), Math.floor((H - labelH - 8) / nr)));
   const width = labelW + nc * cell + 16, height = labelH + nr * cell + 8;
   const svg = el('svg', { viewBox: `0 0 ${width} ${height}`, class: 'chart-svg heatmap', role: 'img', style: `max-width:${width}px` }, f.body);
   rows.forEach((r, i) => {
-    if (spec.rowLabels) el('text', { x: labelW - 6, y: labelH + i * cell + cell * 0.7, class: 'tick', 'text-anchor': 'end' }, svg).textContent = String(spec.rowLabels[i]).slice(0, 8);
+    if (spec.rowLabels) el('text', { x: labelW - 6, y: labelH + i * cell + cell * 0.7, class: 'tick', 'text-anchor': 'end' }, svg).textContent = clip(spec.rowLabels[i], 22);
     r.forEach((v, j) => {
       const rect = el('rect', { x: labelW + j * cell, y: labelH + i * cell, width: cell - 1, height: cell - 1, fill: color(v), rx: 1 }, svg);
       rect.addEventListener('mousemove', (e) => showTip(f, e.clientX, e.clientY, `<div>row ${esc(spec.rowLabels ? spec.rowLabels[i] : i)}, col ${esc(spec.colLabels ? spec.colLabels[j] : j)}: <b>${fmtNum(v)}</b></div>`));
       rect.addEventListener('mouseleave', () => f.tip.classList.add('hidden'));
     });
   });
-  if (spec.colLabels) rows[0].forEach((_, j) => { el('text', { x: labelW + j * cell + cell / 2, y: labelH - 6, class: 'tick', 'text-anchor': 'middle' }, svg).textContent = String(spec.colLabels[j]).slice(0, 4); });
+  if (spec.colLabels) rows[0].forEach((_, j) => { el('text', { x: labelW + j * cell + cell / 2, y: labelH - 6, class: 'tick', 'text-anchor': 'middle' }, svg).textContent = clip(spec.colLabels[j], Math.max(3, Math.floor(cell / 6))); });
   noteSkipped(f, skipped);
   f.table.innerHTML = tableHtml(['', ...(spec.colLabels || Array.from({ length: nc }, (_, j) => j))], rows.map((r, i) => [spec.rowLabels ? spec.rowLabels[i] : i, ...r]));
 }
