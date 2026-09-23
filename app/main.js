@@ -1,7 +1,7 @@
 // app/main.js — the lab UI: router, sidebar, home, module page (Recall → Concept → Build → Goal → Reflect), review queue.
 import { TRACKS, MODULES, moduleById, nextModule, loadModule } from '../modules/index.js';
 import { store, scheduleReview, enrollReview, dueReviews, reviewSummary, LEITNER_DAYS } from './storage.js';
-import { render as md, inline, activatePredicts, escapeHtml as esc, configureModuleRefs, moduleLink, linkModuleRefs } from './markdown.js';
+import { render as md, inline, activatePredicts, escapeHtml as esc, configureModuleRefs, moduleLink, linkModuleRefs, moduleRefsText, stepReference } from './markdown.js';
 import { renderChart } from './charts.js';
 import { createEditor } from './editor.js';
 import { Runner } from './runner.js';
@@ -142,7 +142,7 @@ function appendLogLines($c, lines) {
   for (const l of lines) {
     const d = document.createElement('div');
     d.className = `log-line ${l.level === 'error' ? 'log-error' : l.level === 'warn' ? 'log-warn' : ''}`;
-    d.textContent = l.text;
+    d.textContent = moduleRefsText(l.text);   // "module 15" in a message means the number on the path
     frag.appendChild(d);
   }
   $c.appendChild(frag);
@@ -154,6 +154,7 @@ const logLinesOf = (msg) => msg.lines || [{ level: msg.level, text: msg.text }];
 /** An error status line; a syntax error with a known line becomes a link that moves the editor there. */
 function errorLine(msg, editor = null) {
   const el = h(`<div class="status-line bad"></div>`);
+  msg = { ...msg, message: moduleRefsText(msg.message || '') };
   if (msg.line && editor) {
     const before = msg.message.split(/\bon line \d+/)[0];
     el.append(before, h(`<a href="#" data-goto>on line ${msg.line}${msg.col ? `, column ${msg.col}` : ''}</a>`), msg.message.slice(before.length).replace(/^on line \d+(, column \d+)?/, ''));
@@ -162,6 +163,31 @@ function errorLine(msg, editor = null) {
     el.textContent = msg.message.startsWith('Your file') || msg.message.startsWith('Timed out') ? msg.message : `Error: ${msg.message}`;
   }
   return el;
+}
+
+// Wide tables scroll inside their own box. When one overflows (a results table on a phone), its right edge
+// fades, a "Scroll sideways" cue sits above it and its first column stays put (styles.css, section 17);
+// the fade goes once the table is scrolled to its end. Idempotent: call it on any freshly rendered subtree.
+const SCROLLABLE = '.table-wrap, .chart-body, .chart-table';
+const scrollRO = typeof ResizeObserver !== 'undefined' ? new ResizeObserver((entries) => entries.forEach((e) => updateScrollable(e.target))) : null;
+function updateScrollable(el) {
+  const over = el.scrollWidth - el.clientWidth > 2;
+  el.classList.toggle('is-scrollable', over);
+  el.classList.toggle('at-end', over && el.scrollLeft + el.clientWidth >= el.scrollWidth - 2);
+  const prev = el.previousElementSibling;
+  let cue = prev && prev.classList.contains('scroll-cue') ? prev : null;
+  if (over && !cue) { cue = h(`<div class="scroll-cue" aria-hidden="true">Scroll sideways for more <span>→</span></div>`); el.before(cue); }
+  if (cue) cue.classList.toggle('hidden', !over);
+}
+function markScrollables(root) {
+  if (!root) return;
+  root.querySelectorAll(SCROLLABLE).forEach((el) => {
+    if (el.dataset.scrollWatch) return;
+    el.dataset.scrollWatch = '1';
+    el.addEventListener('scroll', () => el.classList.toggle('at-end', el.scrollLeft + el.clientWidth >= el.scrollWidth - 2), { passive: true });
+    if (scrollRO) scrollRO.observe(el);
+    updateScrollable(el);
+  });
 }
 
 function storageWarning() {
@@ -184,7 +210,7 @@ function renderSidebar(activeId = null) {
     }).join('')}</div>`);
   }
   const due = dueReviews().length;
-  parts.push(`<div class="nav-links"><a href="#/review">Review queue${due ? ` (${due} due)` : ''}</a><a href="#/chat">Chat playground</a><a href="#/about">How this lab works</a><a href="https://github.com/SumerSG/build-to-understand-llms" target="_blank" rel="noopener">Source</a><a href="#" id="theme-toggle">Theme</a></div>`);
+  parts.push(`<div class="nav-links"><a href="#/read">Reader's shortlist</a><a href="#/review">Review queue${due ? ` (${due} due)` : ''}</a><a href="#/chat">Chat playground</a><a href="#/about">How this lab works</a><a href="https://github.com/SumerSG/build-to-understand-llms" target="_blank" rel="noopener">Source</a><a href="#" id="theme-toggle">Theme</a></div>`);
   $sidebar.innerHTML = parts.join('');
   $sidebar.querySelector('#theme-toggle').addEventListener('click', (e) => {
     e.preventDefault();
@@ -211,7 +237,7 @@ function renderHome() {
   const next = READY.find((m) => !isComplete(m.id));
   const first = READY[0];
   const js = jsModule();
-  // Readers skip the JavaScript warm-up: their path starts at the first module about language models.
+  // The first module after the JavaScript warm-up, for the "Already fluent? Skip to" link.
   const readerStart = READY.find((m) => m.id !== JS_ID) || first;
   const buildTarget = lastMod || next || first;
   const buildLabel = lastMod ? `Continue: ${esc(lastMod.title)}` : `Start: ${esc(buildTarget ? buildTarget.title : '')}`;
@@ -223,11 +249,6 @@ function renderHome() {
     <h1>Build to understand the LLM stack</h1>
     <p class="lede">${cap(numberWord(n))} short projects that take apart a large language model (LLM), the kind of system behind ChatGPT and Claude,
     by having you rebuild each piece in your browser: tokens, attention, training, the KV cache, serving.</p>
-    <dl class="hero-facts">
-      <div><dt>What it is</dt><dd>Each module is a short read, a few small coding steps that automatic tests check, and a demo that runs the result.</dd></div>
-      <div><dt>Who it is for</dt><dd>Anyone who wants to know how these models really work: engineers, students, product people. You can build every piece or just read.</dd></div>
-      <div><dt>What you need</dt><dd>A browser on a laptop. You write JavaScript right in the page, with nothing to install. The maths is high-school level and explained as it comes.</dd></div>
-    </dl>
     <div class="ways">
       <div class="way">
         <div class="way-label">Build it</div>
@@ -236,12 +257,17 @@ function renderHome() {
       </div>
       <div class="way">
         <div class="way-label">Just read</div>
-        <p>No coding. Read each module's Concept, then on the Goal tab press <em>Run the demo on the reference code</em> to watch the finished version work.</p>
-        ${readerStart ? `<a class="btn" id="way-read" href="#/m/${readerStart.id}/concept">Start reading: ${esc(readerStart.title)}</a>` : ''}
+        <p>No coding. A short list of the topics people hear about at work, from tokens to agents: about ten to fifteen minutes each, with a demo.</p>
+        <a class="btn" id="way-read" href="#/read">The reader's shortlist</a>
       </div>
     </div>
+    <dl class="hero-facts">
+      <div><dt>What it is</dt><dd>Each module is a short read, a few small coding steps that automatic tests check, and a demo that runs the result.</dd></div>
+      <div><dt>Who it is for</dt><dd>Anyone who wants to know how these models really work: engineers, students, product people. You can build every piece or just read.</dd></div>
+      <div><dt>What you need</dt><dd>A browser. Reading and the demos work on a phone; building is easier on a laptop, where you write JavaScript right in the page with nothing to install. The maths is high-school level and explained as it comes.</dd></div>
+    </dl>
     ${js ? `<p class="js-note">New to JavaScript? <a href="#/m/${js.id}">Start with ${esc(js.title)}</a>, a warm-up that teaches exactly the JavaScript the modules use.${buildTarget && buildTarget.id === js.id && readerStart && readerStart.id !== js.id ? ` Already fluent? <a href="#/m/${readerStart.id}">Skip to ${esc(readerStart.title)}</a>.` : ''}</p>` : ''}
-    <p class="time-note">The minutes shown for each module are for someone fluent in JavaScript. If you are new to it, expect two to three times longer; reading a Concept alone is much quicker.</p>
+    <p class="time-note">The minutes shown for each module are building times for someone fluent in JavaScript. If you are new to it, expect two to three times longer; reading a Concept and watching its demo takes ten to fifteen minutes.</p>
     <div class="hero-actions">
       ${lastMod && next && next.id !== lastMod.id ? `<a class="btn" href="#/m/${next.id}">Next up: ${esc(next.title)}</a>` : ''}
       ${due.length ? `<a class="btn" href="#/review">Review ${due.length} due item${due.length > 1 ? 's' : ''}</a>` : ''}
@@ -291,13 +317,58 @@ function renderHome() {
   $app.querySelector('#reset-progress').addEventListener('click', () => { if (confirm('Erase all saved code, answers and progress in this browser?')) { store.reset(); route(); } });
 }
 
+// ---------- the reader's shortlist ----------
+
+// "Just read" leads here, not to the build order: the topics people hear about at work, each a plain promise and
+// an honest time (the plain-words box, a skim of the Concept, the reference demo). Entries whose modules are not
+// on the path are left out; numbers shown are path numbers.
+const READER_LIST = [
+  { topic: 'Tokens', ids: ['03-tokenizer'], promise: 'What a token is, why services bill by it, and why the same text costs more tokens in some languages.' },
+  { topic: 'The KV cache', ids: ['15-kv-cache'], promise: 'Why long chats and long documents cost more to serve, and where the memory goes.' },
+  { topic: 'Prompt caching', ids: ['17-prefix-caching'], promise: 'Why a prompt that starts the same way every time is cheaper and faster, and how to order a prompt to get that discount.' },
+  { topic: 'Fine-tuning and LoRA', ids: ['10-sft', '30-lora'], promise: 'What fine-tuning changes that a prompt cannot, why LoRA makes it cheap, and why it is a weak way to add facts.' },
+  { topic: 'Quantisation', ids: ['19-quantization'], promise: 'What a "4-bit" or "fp8" model is: smaller and cheaper to run, at a small cost in accuracy.' },
+  { topic: 'Context and retrieval', ids: ['21-context'], promise: 'What the context window is, why assistants forget, and how retrieval (RAG) picks what goes in.' },
+  { topic: 'Serving cost and speed', ids: ['26-serving'], promise: 'Time to first token, why output tokens cost several times more than input, and where the cost per million tokens comes from.' },
+  { topic: 'Reasoning models', ids: ['34-test-time-compute'], promise: 'What "thinking longer" buys, and why thinking tokens are billed like output tokens.' },
+  { topic: 'Agents', ids: ['20-agent-loop'], promise: 'What an agent really is: a loop that lets a model call tools, and why its rules and safety live in the code around the model.' },
+];
+
+function renderReader() {
+  $app.innerHTML = '';
+  $app.appendChild(sidebarButton());
+  const items = READER_LIST.map((e) => ({ ...e, ids: e.ids.filter((mid) => POSITION.has(mid)) })).filter((e) => e.ids.length);
+  const read = (mid) => !!store.module(mid).conceptRead;
+  const wrap = h(`<div class="measure reader-list">
+    <h1>The reader's shortlist</h1>
+    <p class="lede-p">The topics people hear about at work, in plain words. For each one: read the <em>In plain words</em> box at the top of
+    the Concept, skim the rest (the collapsed <em>Going deeper</em> parts are optional), then open the Goal tab and press
+    <em>Run the demo on the reference code</em> to watch the finished version work. No code, and no need to go in order.</p>
+    <ol class="shortlist"></ol>
+    <p class="small muted">Every other module can be read the same way; the full list, in building order, is on the <a href="#/">home page</a> and in the menu.</p>
+  </div>`);
+  const $list = wrap.querySelector('.shortlist');
+  for (const e of items) {
+    const mins = e.ids.length > 1 ? 'About 25 min for both' : 'About 10–15 min';
+    const links = e.ids.map((mid) => `<a class="btn ${e.ids.length > 1 && mid !== e.ids[0] ? '' : 'btn-primary'}" href="#/m/${mid}/concept" data-read>${e.ids.length > 1 ? `Read ${esc(moduleById(mid).title)}` : 'Read it'}<span class="num">${pathNum(mid)}</span></a>`).join('');
+    const done = e.ids.every(read);
+    $list.appendChild(h(`<li class="short-item ${done ? 'done' : ''}">
+      <div class="short-head"><h2>${esc(e.topic)}</h2><span class="short-meta">${mins}${done ? ' · read ✓' : ''}</span></div>
+      <p class="short-promise">${esc(e.promise)}</p>
+      <p class="short-mods">${e.ids.map((mid) => `Module ${pathNum(mid)}, ${esc(moduleById(mid).title)}`).join('; then ')}. Plain-words box, a skim of the Concept, the demo.</p>
+      <div class="row">${links}</div>
+    </li>`));
+  }
+  wrap.querySelectorAll('[data-read]').forEach((a) => a.addEventListener('click', () => setPathMode('reader')));
+  $app.appendChild(wrap);
+}
+
 // ---------- about ----------
 
 function renderAbout() {
   $app.innerHTML = '';
   $app.appendChild(sidebarButton());
   const js = jsModule();
-  const readerStart = READY.find((m) => m.id !== JS_ID);
   const n = READY.length;
   // "module 35" in the text below is rewritten by markdown.js into the warm-up's number on the path, as a link.
   const jsLine = js ? ` If you have not written JavaScript before, start with **${js.title}** (module ${js.id.slice(0, 2)}): it teaches exactly the JavaScript the other modules use.` : '';
@@ -320,7 +391,7 @@ JavaScript, typed straight into the page. Nothing to install: everything runs in
 
 ### Can I just read?
 
-Yes. In each module, read the **Concept** tab (make the predictions if you like; they help), then open the **Goal** tab and press **Run the demo on the reference code**. That runs the lab's finished version and draws the results, so you see the idea working without writing anything. The Recall questions at the start of a module are optional; skip them if you have not done the earlier modules.${readerStart ? ` A good first module to read is [${readerStart.title}](#/m/${readerStart.id}/concept).` : ''}
+Yes. In each module, read the **Concept** tab (make the predictions if you like; they help), then open the **Goal** tab and press **Run the demo on the reference code**. That runs the lab's finished version and draws the results, so you see the idea working without writing anything. The Recall questions at the start of a module are optional; skip them if you have not done the earlier modules. To choose where to start, the [reader's shortlist](#/read) lists the topics people hear about at work (tokens, the KV cache, prompt caching, fine-tuning, serving cost and more), about ten to fifteen minutes each. Reading and the demos work on a phone; building is easier on a laptop.
 
 ### How long does it take?
 
@@ -357,6 +428,7 @@ Isolation of failure. If the pre-training module (module 07) ran on your own aut
 Everything runs in your browser on plain JavaScript typed arrays. The models are tiny (about a hundred thousand parameters), the training texts are kilobytes, and the "clusters" are simulators. The point is the mechanism, and each module says plainly where the toy differs from production.
 :::
 `)}</div>`));
+  markScrollables($app);
 }
 
 // ---------- review queue ----------
@@ -444,7 +516,7 @@ async function renderModulePage(id, phaseArg, seq) {
   const head = h(`<div class="mod-head" data-num="${pathNum(id)}">
     <nav class="crumbs" aria-label="Breadcrumb"><span>${esc(track ? track.title : meta.track)}</span><span class="sep"></span><span class="num" title="Internal id ${idNum(id)}">Module ${pathNum(id)} of 00–${LAST_POS}</span><span class="sep"></span><span class="num" title="For someone fluent in JavaScript; if you are new to it, expect two to three times longer">About ${meta.minutes} min</span></nav>
     <h1>${esc(def.title)}</h1>
-    <div class="goal-banner"><p class="goal">${prose(def.goal)}</p><p class="threshold"><b>The idea to take away.</b> ${prose(def.threshold || '')}</p>${missingPrereqs.length ? `<p class="prereq-note">Builds on ${missingPrereqs.map((p) => moduleLink(p, `${esc(moduleById(p)?.title || p)}${pathNum(p) ? ` (${pathNum(p)})` : ''}`)).join(', ')}.</p>` : ''}</div>
+    <div class="goal-banner"><p class="goal">${prose(def.goal)}</p><p class="threshold"><b>The idea to take away.</b> ${prose(def.threshold || '')}</p>${missingPrereqs.length ? `<p class="prereq-note">Building uses code from ${missingPrereqs.map((p) => moduleLink(p, `${esc(moduleById(p)?.title || p)}${pathNum(p) ? ` (${pathNum(p)})` : ''}`)).join(', ')}. Just reading? Start here: the plain-words box needs nothing earlier.</p>` : ''}</div>
   </div>`);
   $app.appendChild(head);
   if (!store.lastWriteOk) $app.appendChild(storageWarning());
@@ -532,9 +604,13 @@ function renderRecall(body, id, def) {
   const state = store.module(id);
   const js = jsModule();
   const jsHelp = js && id !== js.id ? ` If the JavaScript is unfamiliar, ${moduleLink(js.id, esc(js.title))} (module ${pathNum(js.id)}) covers it.` : '';
-  const about = (def.prereqs || []).length
-    ? `These questions are about <em>earlier</em> modules; getting one wrong is useful information, not a penalty. They are optional: skip them if you have not done those modules yet.${jsHelp}`
-    : `These questions check the JavaScript this lab assumes and how the lab works; getting one wrong is useful information, not a penalty.${jsHelp}`;
+  // The first module on the path has nothing earlier to recall: its questions are everyday ideas, not code.
+  const firstOnPath = POSITION.get(id) === 0;
+  const about = firstOnPath
+    ? 'These are everyday ideas the module builds on; no JavaScript needed yet. Getting one wrong is useful information, not a penalty.'
+    : (def.prereqs || []).length
+      ? `These questions are about <em>earlier</em> modules; getting one wrong is useful information, not a penalty. They are optional: skip them if you have not done those modules yet.${jsHelp}`
+      : `These questions check the JavaScript this lab assumes and how the lab works; getting one wrong is useful information, not a penalty.${jsHelp}`;
   body.appendChild(h(`<p class="muted measure">Before building, pull a few things back out of memory. ${about}</p>`));
   const wrap = h(`<div class="card measure"></div>`);
   let answered = Object.keys(state.recall).length;
@@ -585,8 +661,14 @@ function renderConcept(body, id, def) {
     if (allRevealed) refreshPhases();
   } });
   body.appendChild(el);
-  const row = h(`<div class="row" style="margin-top:24px"><a class="btn btn-primary" href="#/m/${id}/build">I'm ready to build</a></div>`);
-  row.firstElementChild.addEventListener('click', () => store.update(id, { conceptRead: true }));
+  markScrollables(el);
+  // Two ways on from the end of a long read: build it, or (for readers) see it working on the Goal tab,
+  // so nobody has to scroll back to the tabs. Readers get the demo first.
+  const reader = readerMode();
+  const build = `<a class="btn ${reader ? '' : 'btn-primary'}" id="btn-to-build" href="#/m/${id}/build">I'm ready to build</a>`;
+  const see = `<a class="btn ${reader ? 'btn-primary' : ''}" id="btn-see-demo" href="#/m/${id}/goal">Just reading? See it working</a>`;
+  const row = h(`<div class="concept-end measure"><div class="row">${reader ? see + build : build + see}</div><p class="caption">The demo runs the lab's finished code on the Goal tab; no coding needed.</p></div>`);
+  row.querySelectorAll('a').forEach((a) => a.addEventListener('click', () => store.update(id, { conceptRead: true })));
   body.appendChild(row);
 }
 
@@ -598,7 +680,7 @@ function buildHelpCard(onClose) {
       <li><b>Type in the code editor</b> (below the step on a phone, beside it on a wide screen). Find that function and replace the lines marked <code>TODO</code>, usually a placeholder such as <code>return []</code>, with your own code. Leave the rest of the file alone.</li>
       <li><b>Press Check this step.</b> The tests run on your code in a second or two.</li>
       <li><b>Read the messages below the editor.</b> Each failing test says what it expected and what your code gave. Fix one message at a time and check again.</li>
-      <li><b>Hints unlock after your first check</b>, one at a time, from a nudge to nearly the code. <em>Show reference</em> reveals the finished file if you are stuck for good.</li>
+      <li><b>Hints unlock after your first check</b>, one at a time, from a nudge to nearly the code. <em>Show reference</em> reveals the finished code for the step you are on if you are stuck for good (the whole file is one more click).</li>
     </ol>
   </aside>`);
   el.querySelector('[data-dismiss]').addEventListener('click', () => { setUiFlag(BUILD_HELP_KEY, '1'); el.remove(); if (onClose) onClose(); });
@@ -725,6 +807,7 @@ function renderBuild(body, id, def, starter, timeouts) {
       hints.appendChild(hint);
     });
     $panel.appendChild(hints);
+    markScrollables($panel);
     panelStatus = stepStatus(state, s.id, currentCode(state, starter));
     if (panelStatus === 'pass') $panel.appendChild(h(`<div class="status-line ok"><span>This step's tests pass.${stepIdx + 1 < def.steps.length ? ` <a href="#" data-next>Next step ›</a>` : ` <a href="#/m/${id}/goal">Run the goal ›</a>`}</span></div>`));
     else if (panelStatus === 'stale') $panel.appendChild(h(`<div class="status-line hint-stale">${staleMark()} This step ${STALE_NOTE}.</div>`));
@@ -761,7 +844,7 @@ function renderBuild(body, id, def, starter, timeouts) {
         if (msg.type === 'log') appendLogLines($console, logLinesOf(msg));
         if (msg.type === 'test') {
           const stepTitle = def.steps.find((s) => s.id === msg.step)?.title || msg.step;
-          $results.appendChild(h(`<div class="test ${msg.pass ? 'pass' : 'fail'}"><span class="mark" role="img" aria-label="${msg.pass ? 'passed' : 'failed'}"></span><div><div>${stepId ? '' : `<span class="muted">${esc(stepTitle)} · </span>`}${esc(msg.name)}</div>${msg.pass ? '' : `<div class="msg">${esc(msg.message)}</div>`}</div><span class="ms">${msg.ms.toFixed(0)} ms</span></div>`));
+          $results.appendChild(h(`<div class="test ${msg.pass ? 'pass' : 'fail'}"><span class="mark" role="img" aria-label="${msg.pass ? 'passed' : 'failed'}"></span><div><div>${stepId ? '' : `<span class="muted">${esc(stepTitle)} · </span>`}${esc(moduleRefsText(msg.name))}</div>${msg.pass ? '' : `<div class="msg">${esc(moduleRefsText(msg.message))}</div>`}</div><span class="ms">${msg.ms.toFixed(0)} ms</span></div>`));
         }
         if (msg.type === 'error') $results.appendChild(errorLine(msg, editor));
       } });
@@ -808,19 +891,42 @@ function renderBuild(body, id, def, starter, timeouts) {
   $checkAll.addEventListener('click', () => check(null));
   layout.querySelector('#btn-reset').addEventListener('click', () => { if (confirm('Replace your code with the starter file?')) { editor.setValue(starter); commit(starter); } });
   layout.querySelector('#btn-download').addEventListener('click', () => download(`${id}.js`, editor.getValue()));
+  // Show reference: by default only the function(s) the current step asks for, so looking does not spoil the
+  // later steps; "Show the whole file" is one click further. "Load into editor" (#sol-copy) always loads the
+  // whole reference file, since a step's functions alone are not a runnable module.
   layout.querySelector('#btn-solution').addEventListener('click', async () => {
     const existing = layout.querySelector('.ref-panel');
-    if (existing) { existing.scrollIntoView({ behavior: smooth(), block: 'start' }); return; }
-    const cur = def.steps[stepIdx].id;
-    const attempts = (state.attempts && typeof state.attempts === 'object' && state.attempts[cur]) || 0;
-    const nudge = attempts < 2 ? ' If you want to learn to write it yourself, the hints are a gentler next step.' : '';
-    if (!confirm(`Show the reference solution? It is the finished code for every step of this module.${nudge}`)) return;
+    if (existing && +existing.dataset.step === stepIdx) { existing.scrollIntoView({ behavior: smooth(), block: 'start' }); return; }
+    const step = def.steps[stepIdx], n = stepIdx + 1;
     let sol;
     try { sol = await fetchSolution(id); } catch (err) { $results.before(h(`<div class="status-line bad">Could not load the reference: ${esc(err.message)}</div>`)); return; }
     if (!layout.isConnected) return;
-    const wrap = h(`<div class="card ref-panel"><div class="row"><b>Reference solution</b><span class="spacer"></span><button class="btn btn-small" id="sol-copy" type="button">Load into editor</button><button class="btn btn-small" id="sol-close" type="button">Close</button></div><p class="caption">The whole module's finished code. Reading it is fine; loading it replaces your version.</p><pre class="code"><code>${esc(sol)}</code></pre></div>`);
+    const part = stepReference(sol, step.instructions, { starter, stepNumber: n });
+    const names = part ? part.names.map((x) => `<code>${esc(x)}</code>`).join(', ') : '';
+    const attempts = (state.attempts && typeof state.attempts === 'object' && state.attempts[step.id]) || 0;
+    const nudge = attempts < 2 ? ' If you want to learn to write it yourself, the hints are a gentler next step.' : '';
+    const what = part ? `the finished code for step ${n} only (${part.names.join(', ')}); the other steps stay hidden unless you ask for the whole file` : 'the finished code for every step of this module';
+    if (!confirm(`Show the reference solution? It is ${what}.${nudge}`)) return;
+    if (existing) existing.remove();
+    const stepCaption = `Step ${n} only: ${names}. Reading it is fine; nothing in your file changes unless you load the reference.`;
+    const wholeCaption = "The whole module's finished code, every step. Reading it is fine; loading it replaces your version.";
+    const wrap = h(`<div class="card ref-panel" data-step="${stepIdx}">
+      <div class="row"><b>${part ? `Reference: step ${n}` : 'Reference solution'}</b><span class="spacer"></span>
+        ${part ? '<button class="btn btn-small" id="sol-whole" type="button">Show the whole file</button>' : ''}
+        <button class="btn btn-small" id="sol-copy" type="button">Load the whole file into the editor</button>
+        <button class="btn btn-small" id="sol-close" type="button">Close</button></div>
+      <p class="caption ref-caption"></p><pre class="code"><code></code></pre></div>`);
+    const $cap = wrap.querySelector('.ref-caption'), $code = wrap.querySelector('pre code'), $whole = wrap.querySelector('#sol-whole');
+    const show = (whole) => {
+      $code.textContent = whole || !part ? sol : part.code;
+      $cap.innerHTML = whole || !part ? wholeCaption : stepCaption;
+      if ($whole) $whole.textContent = whole ? `Show step ${n} only` : 'Show the whole file';
+      wrap.dataset.whole = whole ? '1' : '';
+    };
+    show(false);
+    if ($whole) $whole.addEventListener('click', () => show(!wrap.dataset.whole));
     wrap.querySelector('#sol-close').addEventListener('click', () => wrap.remove());
-    wrap.querySelector('#sol-copy').addEventListener('click', () => { if (confirm('Replace your code with the reference? Your version will be lost.')) { editor.setValue(sol); commit(sol); } });
+    wrap.querySelector('#sol-copy').addEventListener('click', () => { if (confirm('Replace your whole file with the reference? Your version will be lost.')) { editor.setValue(sol); commit(sol); } });
     $results.before(wrap);
     wrap.scrollIntoView({ behavior: smooth(), block: 'start' });
   });
@@ -831,23 +937,32 @@ function renderBuild(body, id, def, starter, timeouts) {
 
 function renderGoal(body, id, def, starter, timeouts) {
   const state = store.module(id);
-  const demo = demoStatus(state, currentCode(state, starter));
+  const code0 = currentCode(state, starter);
+  const demo = demoStatus(state, code0);
   const reader = readerMode();
+  // Someone who has not passed a single step (a reader, or a builder who has not started) sees the reference
+  // run first; once any step passes, running your own code leads.
+  const refFirst = demo !== 'pass' && !def.steps.some((s) => stepStatus(state, s.id, code0) !== 'no');
+  const refPrimary = refFirst || reader;
+  const offer = `<div class="reader-offer ${refFirst ? 'first' : ''}">
+        <p class="small"><b>${refFirst ? 'See the finished version work' : 'Just reading, or not finished building?'}</b> Run ${refFirst ? 'this' : 'the same'} demo on the lab's reference code to see what the finished version does. It is a normal way to use the lab; it does not mark the goal as done.</p>
+        <div class="row ref-actions"><button class="btn ${refPrimary ? 'btn-primary' : ''}" id="btn-run-ref" type="button">Run the demo on the reference code</button><span class="muted small run-state" id="ref-state"></span></div>
+      </div>`;
+  const own = `<div class="own-run">
+        ${refFirst ? '<p class="small own-label"><b>Built the steps?</b></p>' : ''}
+        <p class="muted small" id="goal-status"></p>
+        <div class="row goal-actions">
+          <button class="btn ${refPrimary ? '' : 'btn-primary'}" id="btn-run" type="button">Run the goal demo on your code</button>
+          <button class="btn" id="btn-stop" type="button" disabled>Stop</button>
+          <span class="muted small run-state" id="goal-state"></span>
+        </div>
+      </div>`;
   const wrap = h(`<div>
     <div class="card measure">
       <h2>Run the goal</h2>
       <p>${prose(def.goal)}</p>
-      <p class="muted small" id="goal-status"></p>
-      <div class="row goal-actions">
-        <button class="btn ${reader ? '' : 'btn-primary'}" id="btn-run" type="button">Run the goal demo on your code</button>
-        <button class="btn" id="btn-stop" type="button" disabled>Stop</button>
-        <span class="muted small" id="goal-state"></span>
-      </div>
-      <div class="reader-offer">
-        <p class="small"><b>Just reading, or not finished building?</b> Run the same demo on the lab's reference code to see what the finished version does. It is a normal way to use the lab; it does not mark the goal as done.</p>
-        <button class="btn ${reader ? 'btn-primary' : ''}" id="btn-run-ref" type="button">Run the demo on the reference code</button>
-      </div>
-      ${demo === 'pass' ? `<div class="done-banner"><b>Working goal achieved</b> (last run)<div>${md(state.demoSummary || '')}</div></div>` : ''}
+      ${refFirst ? offer + own : own + offer}
+      ${demo === 'pass' ? `<div class="done-banner last-run"><b>Working goal achieved</b> (last run)<div>${md(state.demoSummary || '')}</div></div>` : ''}
       ${demo === 'stale' ? `<div class="status-line hint-stale">${staleMark()} The goal demo ${STALE_NOTE} — run it again on this version.</div>` : ''}
     </div>
     <div class="goal-out"></div>
@@ -855,6 +970,7 @@ function renderGoal(body, id, def, starter, timeouts) {
   body.appendChild(wrap);
   const $out = wrap.querySelector('.goal-out');
   const $state = wrap.querySelector('#goal-state');
+  const $refState = wrap.querySelector('#ref-state');
   const $status = wrap.querySelector('#goal-status');
   const $run = wrap.querySelector('#btn-run');
   const $runRef = wrap.querySelector('#btn-run-ref');
@@ -867,7 +983,7 @@ function renderGoal(body, id, def, starter, timeouts) {
     const ready = stepsAllDone(def, st, code);
     const passed = def.steps.filter((s) => stepStatus(st, s.id, code) === 'pass').length;
     const checking = testsInFlight && testsInFlight.id === id;
-    $status.innerHTML = `The first button runs <em>your</em> code from the Build tab. ${checking ? 'Your steps are being checked…' : ready ? 'All steps pass on the current code.' : `${passed} of ${def.steps.length} steps pass on the current code, so the demo may stop partway or show odd results; the reference run below always works.`}`;
+    $status.innerHTML = `This button runs <em>your</em> code from the Build tab. ${checking ? 'Your steps are being checked…' : ready ? 'All steps pass on the current code.' : `${passed} of ${def.steps.length} steps pass on the current code, so the demo may stop partway or show odd results; the reference run always works.`}`;
   }
   updateStatus();
   const onProgress = (e) => { if (!wrap.isConnected) { document.removeEventListener('btu:progress', onProgress); return; } if (e.detail && e.detail.id === id) updateStatus(); };
@@ -904,15 +1020,21 @@ function renderGoal(body, id, def, starter, timeouts) {
   async function run(onReference) {
     $out.innerHTML = '';
     consoleEl = null; progressEl = null;
+    // Each button has its own status line, so a reference run never reports under the "your code" button.
+    const $st = onReference ? $refState : $state;
+    (onReference ? $state : $refState).textContent = '';
+    $st.before($stop);   // Stop sits beside the run that is going
     $run.disabled = true; $runRef.disabled = true; $stop.disabled = false;
-    $state.textContent = onReference ? 'running on the reference code…' : 'running…';
+    $st.textContent = onReference ? 'running the reference code…' : 'running your code…';
     let runCode;
     if (onReference) {
-      try { runCode = await fetchSolution(id); } catch (err) { $state.textContent = `could not load the reference: ${err.message}`; $run.disabled = false; $runRef.disabled = false; $stop.disabled = true; return; }
+      try { runCode = await fetchSolution(id); } catch (err) { $st.textContent = `could not load the reference: ${err.message}`; $run.disabled = false; $runRef.disabled = false; $stop.disabled = true; return; }
       if (!wrap.isConnected) return;
-      $out.appendChild(h(`<p class="ref-note caption">Running on the lab's reference code, not yours.</p>`));
+      $out.appendChild(h(`<p class="ref-note">This run uses the reference code, so “your” in the output below means the reference.</p>`));
     } else {
       runCode = currentCode(state, starter);
+      // A fresh run of your code replaces the "(last run)" summary rather than showing it a second time.
+      wrap.querySelectorAll('.done-banner.last-run').forEach((el) => el.remove());
     }
     let errored = false;
     try {
@@ -921,8 +1043,8 @@ function renderGoal(body, id, def, starter, timeouts) {
           if (!consoleEl) { consoleEl = h(`<div class="console"></div>`); $out.appendChild(consoleEl); }
           appendLogLines(consoleEl, logLinesOf(msg));
         }
-        else if (msg.type === 'md') { const d = h(`<div class="card md">${md(msg.markdown)}</div>`); $out.appendChild(d); }
-        else if (msg.type === 'plot' || msg.type === 'bar' || msg.type === 'heatmap' || msg.type === 'table') { consoleEl = null; renderChart($out, msg.type, msg.spec); }
+        else if (msg.type === 'md') { const d = h(`<div class="card md">${md(msg.markdown)}</div>`); $out.appendChild(d); markScrollables(d); }
+        else if (msg.type === 'plot' || msg.type === 'bar' || msg.type === 'heatmap' || msg.type === 'table') { consoleEl = null; renderChart($out, msg.type, msg.spec); markScrollables($out); }
         else if (msg.type === 'progress') {
           if (!progressEl) { progressEl = h(`<div class="progress-row"><div class="progress-bar"><i style="width:0%"></i></div><span class="plabel"></span></div>`); $out.appendChild(progressEl); }
           progressEl.querySelector('i').style.width = `${Math.round(100 * Math.max(0, Math.min(1, msg.fraction)))}%`;
@@ -943,9 +1065,9 @@ function renderGoal(body, id, def, starter, timeouts) {
           showDemoError(msg, onReference);
         }
       } });
-      $state.textContent = res.error || errored ? 'finished with errors' : onReference ? 'finished (reference code)' : 'finished';
+      $st.textContent = res.error || errored ? 'finished with errors' : onReference ? 'finished: this run used the reference code, not yours' : 'finished on your code';
     } catch (err) {
-      $state.textContent = err.message === 'stopped' ? 'stopped' : err.message;
+      $st.textContent = err.message === 'stopped' ? 'stopped' : err.message;
     } finally {
       if (wrap.isConnected) { $run.disabled = false; $runRef.disabled = false; $stop.disabled = true; }
     }
@@ -964,7 +1086,7 @@ function whereNextCard(id) {
   return `<div class="card where-next">
       <h3>Where next</h3>
       <div class="row">${nx ? `<a class="btn btn-primary" href="#/m/${nx.id}">Next module: ${esc(nx.title)}</a>` : ''}</div>
-      ${jumps.length ? `<p class="jump-row">Or jump to a topic: ${jumps.length > 1 ? `${jumps.slice(0, -1).join(', ')} or ${jumps[jumps.length - 1]}` : jumps[0]}. Each one opens on its Concept tab, which you can read without the modules before it.</p>` : ''}
+      ${jumps.length ? `<p class="jump-row">Or jump to a topic: ${jumps.length > 1 ? `${jumps.slice(0, -1).join(', ')} or ${jumps[jumps.length - 1]}` : jumps[0]}. Each one opens on its Concept tab, which you can read without the modules before it; the <a class="jump" href="#/read">reader's shortlist</a> has more.</p>` : ''}
     </div>`;
 }
 
@@ -1188,6 +1310,7 @@ function route() {
       renderSidebar(null);
       if (parts[0] === 'review') p = renderReview(seq);
       else if (parts[0] === 'about') renderAbout();
+      else if (parts[0] === 'read') renderReader();
       else if (parts[0] === 'chat') renderChat();
       else renderHome();
     }

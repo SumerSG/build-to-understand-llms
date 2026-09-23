@@ -112,7 +112,7 @@ disables every transition and animation.
 - Do use one accent per screen for the primary action; don't colour secondary buttons.
 - Do keep prose inside `.measure`; don't stretch reading text across the full main column.
 - Do keep the ids and classes `main.js` and `tools/e2e.mjs` rely on (`#btn-check`, `#btn-check-all`,
-  `#btn-solution`, `#sol-copy`, `#btn-run`, `#btn-run-ref`, `#btn-complete`, `.step-chip`, `.results .status-line`,
+  `#btn-solution`, `#sol-copy` (loads the whole reference), `#btn-run`, `#btn-run-ref`, `#btn-complete`, `.step-chip`, `.results .status-line`,
   `.goal-out .done-banner`, `.goal-out .status-line.bad`, `.test.fail`, `.chart`, `.quiz-opt`, `.predict`,
   `.reflect textarea`, `.sidebar-toggle`); add new classes rather than renaming these. The first
   `.status-line` inside `.results` must stay the "N/M tests passed" summary; the pass count beside the buttons
@@ -139,23 +139,49 @@ for anything that speaks.
   and "module-NN" in prose (never in code) to the path number, linked, with the title as tooltip; unknown ids
   are left alone. Inside buttons (quiz options) they are `span.modref`. `configureModuleRefs`, `moduleLink`
   and `linkModuleRefs` are exported for `main.js` (goal, threshold, prereqs, chat intro).
-- **Home hero**: `.hero-facts` (what it is / who it is for / what you need, three ruled columns, one on
-  phones), `.ways` with two `.way` columns ("Build it" primary, "Just read" secondary, serif italic
-  headings), `.js-note` (guarded: only when `35-javascript` is registered) and `.time-note`.
+- **Home hero**: headline and lede, then `.ways` with two `.way` columns ("Build it" primary, "Just read"
+  secondary, serif italic headings) directly under the lede so both ways in are on the first phone screen;
+  then `.hero-facts` (what it is / who it is for / what you need, three ruled columns, one on phones; "what you
+  need" says reading and demos work on a phone and building is easier on a laptop), `.js-note` (guarded: only
+  when `35-javascript` is registered) and `.time-note`.
+- **Reader's shortlist** (`#/read`, `renderReader()` and `READER_LIST` in `main.js`): "Just read" leads here,
+  not to the build order. `.shortlist` of `.short-item`s, ruled like the track lists: a serif italic topic,
+  a tracked-caps honest time ("About 10–15 min": plain box, concept skim, reference demo), a serif one-line
+  promise, the module(s) by path number, and a "Read it" button to the Concept (which sets `btu:path = reader`).
+  Entries whose modules are not on the path drop out. Linked from the sidebar, About and Where next.
 - **Build screen guide** (`.screen-help`): a ruled note with a numbered list and a "Got it" button, shown on
   the first Build visit and remembered in `localStorage` (`btu:buildHelpDismissed`); `#show-help` brings it
   back. After a check the check row scrolls into view and `#check-count` says "N/M passed". A stale step
   (`.step-chip.stale`, `.stale-mark` ↻) carries a tooltip explaining it, and `.stale-legend` appears under
   the chips when any step is stale.
 - **Reference solution** (`.ref-panel`): always behind a plain, non-scolding confirm; it opens scrolled into
-  view and wraps long lines on phones.
+  view and wraps long lines on phones. By default it shows only the current step's code: `stepReference()`
+  in `markdown.js` takes the names the step's instructions put in code spans that are top-level declarations
+  of `solution.js`, narrowed to the ones the starter marks "TODO: step N" (plus helpers the starter lacks).
+  `#sol-whole` toggles the whole file; `#sol-copy` always loads the WHOLE reference into the editor.
+- **Module numbers in messages**: test names, failure messages, error lines and console lines go through
+  `moduleRefsText()` (plain text, no links), so "module 15" in a message shows the path number.
 - **Hints**: the padding sits on `.hint-inner > div` (inside the clipping element) and a closed hint body is
   `visibility: hidden`, so a locked or folded hint shows nothing.
+- **Concept end** (`.concept-end`): "I'm ready to build" (`#btn-to-build`) and "Just reading? See it working"
+  (`#btn-see-demo`, to the Goal tab); in reader mode the demo link comes first and is primary.
 - **Reader path on Goal**: `.reader-offer` with `#btn-run-ref` runs the demo on `solution.js` without
-  recording the goal; its result ends in `.ref-banner`, not `.done-banner`. A failure on the learner's code
-  shows `.demo-fail` (a plain sentence, the reference offer, and the stack folded in `details.tech`). Choosing
-  "Just read" on the home page stores `btu:path = reader`, which makes the reference button primary and opens
+  recording the goal. For a learner with no passing step it comes first (`.reader-offer.first`, primary) and
+  the own-code run (`.own-run`, `#btn-run`) follows under "Built the steps?"; otherwise the own-code run leads.
+  Each button has its own status (`#goal-state`, `#ref-state`), and `#btn-stop` moves beside the run in
+  progress, so a reference run never reports under the "your code" button. A reference run opens with
+  `.ref-note` ("This run uses the reference code, so 'your' in the output below means the reference", a
+  ruled serif line) and ends in `.ref-banner`, not `.done-banner`. A run on your own code removes the
+  "(last run)" banner (`.done-banner.last-run`) so the summary never shows twice. A failure on the learner's
+  code shows `.demo-fail` (a plain sentence, the reference offer, and the stack folded in `details.tech`).
+  Choosing "Just read" stores `btu:path = reader`, which makes the reference button primary and opens
   unstarted modules on Concept.
+- **Recall intro**: the first module on the path says its questions are everyday ideas, no JavaScript needed.
+- **Phones**: `pre.code` wraps (`pre-wrap`, `overflow-wrap: anywhere`) under 800px so right-hand comments stay
+  on screen. A wide table (`.table-wrap`, `.chart-body`, `.chart-table`) that overflows gets `.is-scrollable`
+  from `markScrollables()` in `main.js`: a `.scroll-cue` ("Scroll sideways for more →") above it, a mask fade at
+  the right edge until it is scrolled to the end (`.at-end`), and a sticky first column on the page colour with
+  a hairline (capped at 40vw on phones).
 - **Where next** (`.where-next`, Reflect of the first two modules): "Next module" plus jumps to tokens, the
   KV cache and serving cost, each labelled with its path number.
 

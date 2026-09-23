@@ -788,7 +788,7 @@ input:focus, textarea:focus { border-color: var(--ink); box-shadow: none; }
 
 /* In plain words: a ruled box that opens a concept. */
 .callout-plain { border: 1px solid var(--border-strong); border-left-width: 1px; padding: var(--s4) var(--s6) var(--s4); margin: 0 0 var(--s8); }
-.callout-label, .deeper > summary, .way-label, .hero-facts dt, .screen-help-label, .check-count, .reader-offer b, .demo-fail details > summary, .ref-banner > b, .where-next h3, .ref-note {
+.callout-label, .deeper > summary, .way-label, .hero-facts dt, .screen-help-label, .check-count, .reader-offer b, .demo-fail details > summary, .ref-banner > b, .where-next h3 {
   font-family: var(--font); text-transform: uppercase; letter-spacing: 0.12em; font-size: 11px; font-weight: 500;
 }
 .callout-label { color: var(--ink); margin-bottom: var(--s3); }
@@ -858,7 +858,6 @@ pre.code { max-width: 100%; }
 .reader-offer p { color: var(--ink-2); margin-bottom: var(--s3); }
 .reader-offer b { color: var(--ink); display: block; margin-bottom: 4px; }
 .goal-actions .btn { white-space: normal; text-align: left; }
-.ref-note { color: var(--muted); margin: var(--s2) 0; }
 .demo-fail { border-top: 1px solid var(--bad); padding-top: var(--s2); margin: var(--s4) 0; }
 .demo-fail .status-line { margin-top: 0; }
 .demo-fail p { color: var(--ink-2); }
@@ -884,11 +883,55 @@ pre.code { max-width: 100%; }
 .about h3 { font-family: var(--font-display); font-size: 32px; font-weight: 500; letter-spacing: 0; margin: var(--s8) 0 var(--s2); }
 .about h4 { font-family: var(--font-display); font-size: 24px; font-weight: 500; letter-spacing: 0; margin: var(--s6) 0 var(--s2); }
 
+/* The reader's shortlist (#/read): topics people hear about at work, each a serif heading, a plain promise,
+   an honest time and the way in. Rules between entries, like the track lists. */
+.shortlist { list-style: none; margin: var(--s6) 0 var(--s8); padding: 0; counter-reset: short; }
+.short-item { border-top: 1px solid var(--border-strong); padding: var(--s4) 0 var(--s6); }
+.short-item:last-child { border-bottom: 1px solid var(--border-strong); }
+.short-head { display: flex; align-items: baseline; justify-content: space-between; gap: var(--s3); flex-wrap: wrap; }
+.short-head h2 { font-size: 30px; font-style: italic; margin: 0; }
+.short-meta { font-family: var(--font); text-transform: uppercase; letter-spacing: 0.12em; font-size: 11px; color: var(--muted); white-space: nowrap; }
+.short-promise { font-family: var(--font-display); font-size: 21px; line-height: 1.35; color: var(--ink); margin: var(--s2) 0; }
+.short-mods { font-size: 14px; color: var(--muted); line-height: 1.5; margin: 0 0 var(--s3); }
+.short-item .btn { white-space: normal; text-align: left; gap: var(--s2); }
+.short-item .btn .num { font-family: var(--font-display); font-size: 15px; letter-spacing: 0; text-transform: none; opacity: 0.7; }
+.reader-list .lede-p em { font-style: italic; }
+
+/* End of a Concept: build it, or see it working. */
+.concept-end { margin-top: var(--s6); }
+.concept-end .btn { white-space: normal; text-align: left; }
+.concept-end .caption { margin-top: var(--s2); }
+
+/* Goal: whichever way comes first sits under the goal sentence without a rule; the second is ruled off. */
+.reader-offer.first { border-top: 0; margin-top: var(--s2); padding-top: 0; }
+.reader-offer.first + .own-run { border-top: 1px solid var(--border); margin-top: var(--s4); padding-top: var(--s4); }
+.own-run .own-label b { font-family: var(--font); text-transform: uppercase; letter-spacing: 0.12em; font-size: 11px; font-weight: 500; color: var(--ink); }
+.own-run .own-label { margin-bottom: 4px; }
+.ref-actions { margin-top: var(--s1); }
+.run-state:empty { display: none; }
+.ref-note { border: 1px solid var(--border-strong); padding: var(--s3) var(--s4); margin: var(--s4) 0; max-width: var(--measure); color: var(--ink); line-height: 1.4; font-family: var(--font-display); font-size: 19px; font-style: italic; }
+
+/* Wide tables: a cue above, a fade at the right edge until scrolled to the end, the first column held. */
+.scroll-cue { font-family: var(--font); text-transform: uppercase; letter-spacing: 0.12em; font-size: 10px; color: var(--muted); text-align: right; margin: var(--s2) 0 2px; }
+.scroll-cue span { font-family: var(--font-display); font-size: 16px; letter-spacing: 0; }
+.is-scrollable:not(.at-end) { -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 40px), transparent); mask-image: linear-gradient(to right, #000 calc(100% - 40px), transparent); }
+.scroll-cue:has(+ .at-end) { visibility: hidden; }
+.is-scrollable > table tr > :first-child { position: sticky; left: 0; z-index: 1; background: var(--bg); box-shadow: inset -1px 0 0 var(--border); }
+
 @media (max-width: 800px) {
   :root { --gutter: 16px; }
+  /* code examples wrap on a phone, so the explanation in a right-hand comment stays on screen */
+  pre.code { white-space: pre-wrap; overflow-wrap: anywhere; }
+  .short-head h2 { font-size: 26px; }
+  .short-promise { font-size: 19px; }
+  .short-item .btn, .concept-end .btn { width: 100%; }
+  .ref-note { font-size: 17px; }
+  .is-scrollable > table tr > :first-child { max-width: 40vw; white-space: normal; overflow-wrap: anywhere; }
   .hero-facts, .ways { grid-template-columns: minmax(0, 1fr); }
   .hero-facts > div { padding-bottom: var(--s3); }
-  .way { padding-bottom: var(--s6); }
+  .way { padding-bottom: var(--s4); }
+  .way p { margin-bottom: var(--s3); }
+  .hero .lede { margin: var(--s4) 0 var(--s6); }
   .way .btn, .where-next .btn, .goal-actions .btn, .reader-offer .btn { width: 100%; }
   .callout-plain { padding: var(--s3) var(--s4); }
   .callout-plain p { font-size: 19px; }
@@ -896,7 +939,7 @@ pre.code { max-width: 100%; }
   .steps-nav { flex-wrap: nowrap; overflow-x: auto; margin: 0 0 var(--s4); padding: 0 0 var(--s1); max-width: 100%; }
   .screen-help { padding: var(--s3) var(--s4); }
   .check-row .kbd { display: none; }
-  .goal-actions #btn-stop:disabled { display: none; }
+  #btn-stop:disabled { display: none; }
   .ref-panel pre.code { white-space: pre-wrap; overflow-wrap: anywhere; }
   .mod-head::before { right: 0; max-width: 100%; overflow: hidden; }
   .about h4 { font-size: 22px; }

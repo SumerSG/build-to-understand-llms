@@ -7,6 +7,9 @@
 // "modules 04–06", "module-06"), because ids are names that survive reordering the path. At display time
 // every such mention in prose (never inside code) becomes the number the learner sees on the path, linked to
 // that module with its title as the tooltip. main.js supplies the path with configureModuleRefs().
+// moduleRefsText() does the same rewrite on plain text (test messages, console lines), without links.
+//
+// It also holds stepReference(), which cuts one Build step's functions out of a module's solution.js.
 
 export function escapeHtml(s) {
   return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
@@ -84,6 +87,95 @@ export function linkModuleRefs(html, { links = true } = {}) {
   // "module 15", "Module 07", "module-06"
   s = s.replace(ONE_RE, (m, word, sep, nn) => (known(nn) ? hold(moduleLink(nn, `${word}${sep}${moduleRef(nn).num}`, { links })) : m));
   return s.replace(/\u0002(\d+)\u0002/g, (_, i) => held[+i]);
+}
+
+/**
+ * The same rewrite for plain text (test messages, console lines shown with textContent): "module 15" becomes
+ * "module 20" (its number on the path), with no markup. Unknown ids are left as written.
+ */
+export function moduleRefsText(text) {
+  const s = String(text ?? '');
+  if (!REFS.byPrefix.size || !/module/i.test(s)) return s;
+  const known = (nn) => REFS.byPrefix.has(nn);
+  const num = (nn) => moduleRef(nn).num;
+  const held = [];
+  const hold = (x) => { held.push(x); return `\u0002${held.length - 1}\u0002`; };
+  let out = s.replace(RANGE_RE, (m, word, sp, a, dash, b) => {
+    if (!known(a) || !known(b)) return m;
+    const lo = Math.min(+a, +b), hi = Math.max(+a, +b);
+    const ids = [];
+    for (let k = lo; k <= hi; k++) { const nn = String(k).padStart(2, '0'); if (known(nn)) ids.push(nn); }
+    const pos = ids.map((nn) => REFS.byPrefix.get(nn).pos).sort((x, y) => x - y);
+    if (pos.every((p, i) => i === 0 || p === pos[i - 1] + 1)) return hold(`${word}${sp}${num(a)}${dash}${num(b)}`);
+    ids.sort((x, y) => REFS.byPrefix.get(x).pos - REFS.byPrefix.get(y).pos);
+    return hold(`${word}${sp}${joinList(ids.map(num))}`);
+  });
+  out = out.replace(LIST_RE, (m, word, sp, list) => {
+    const nums = list.match(/\d{2}/g);
+    return nums.every(known) ? hold(`${word}${sp}${list.replace(/\d{2}/g, num)}`) : m;
+  });
+  out = out.replace(ONE_RE, (m, word, sep, nn) => (known(nn) ? hold(`${word}${sep}${num(nn)}`) : m));
+  return out.replace(/\u0002(\d+)\u0002/g, (_, i) => held[+i]);
+}
+
+// ---------- the reference for one step ----------
+
+/** Identifiers a markdown text puts in inline code spans (`topK(counts, k)` gives topK, counts, k), in order. */
+export function codeSpanNames(md) {
+  const text = String(md || '').replace(/^```[\s\S]*?^```\s*$/gm, '');   // fenced examples are not the step's names
+  const names = [];
+  for (const [, span] of text.matchAll(/`([^`\n]+)`/g)) {
+    for (const [id] of span.matchAll(/[A-Za-z_$][\w$]*/g)) if (!names.includes(id)) names.push(id);
+  }
+  return names;
+}
+
+/**
+ * Top-level declarations of a source file: [{ name, exported, start, end }] as line ranges (end exclusive),
+ * each including the comment lines directly above it. Relies on the lab's formatting: top-level code starts
+ * in column 0 and everything inside a block is indented or closes with a column-0 bracket.
+ */
+export function topLevelBlocks(source) {
+  const lines = String(source).split('\n');
+  const DECL = /^(export\s+)?(?:default\s+)?(?:async\s+)?(?:function\s*\*?\s*|class\s+|(?:const|let|var)\s+)([A-Za-z_$][\w$]*)/;
+  const TOP = /^(export|function|async|class|const|let|var|import|\/\/|\/\*)/;
+  const blocks = [];
+  for (let i = 0; i < lines.length; i++) {
+    const m = lines[i].match(DECL);
+    if (!m) continue;
+    let start = i;
+    while (start > 0 && /^(\/\/|\/\*\*?|\s\*)/.test(lines[start - 1]) && lines[start - 1].trim()) start--;
+    let end = i + 1;
+    while (end < lines.length && !TOP.test(lines[end])) end++;
+    while (end > i + 1 && !lines[end - 1].trim()) end--;
+    blocks.push({ name: m[2], exported: !!m[1], start, end });
+  }
+  return blocks;
+}
+
+/**
+ * The part of the reference `source` one step covers: every top-level function, class or const whose name
+ * the step's instructions put in a code span. Instructions also name earlier functions ("call `prefill`"),
+ * so when the starter file marks its placeholders with "TODO: step N", the list narrows to the declarations
+ * marked for this step, plus any helper the step names that the starter does not have at all (such as a
+ * private `binary` used by `add` and `mul`). Returns { names, code } in file order, or null when the step
+ * covers no exported declaration (the caller then offers the whole file).
+ * @param {string} source        solution.js
+ * @param {string} instructions  the step's markdown
+ * @param {{ starter?: string, stepNumber?: number }} [o]  starter.js and the 1-based step number
+ */
+export function stepReference(source, instructions, { starter = '', stepNumber = 0 } = {}) {
+  const wanted = new Set(codeSpanNames(instructions));
+  const starterLines = String(starter).split('\n');
+  const starterBlocks = starter ? topLevelBlocks(starter) : [];
+  const inStarter = new Set(starterBlocks.map((b) => b.name));
+  const marker = new RegExp(`TODO:?\\s*step\\s+${stepNumber}\\b`, 'i');
+  const marked = new Set(stepNumber ? starterBlocks.filter((b) => marker.test(starterLines.slice(b.start, b.end).join('\n'))).map((b) => b.name) : []);
+  let blocks = topLevelBlocks(source).filter((b) => wanted.has(b.name));
+  if (marked.size) blocks = topLevelBlocks(source).filter((b) => marked.has(b.name) || (wanted.has(b.name) && !inStarter.has(b.name)));
+  if (!blocks.some((b) => b.exported)) return null;
+  const lines = String(source).split('\n');
+  return { names: blocks.filter((b) => b.exported).map((b) => b.name), code: blocks.map((b) => lines.slice(b.start, b.end).join('\n')).join('\n\n') };
 }
 
 function joinList(items) {
